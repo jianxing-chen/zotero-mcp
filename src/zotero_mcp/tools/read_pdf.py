@@ -8,6 +8,7 @@ from pathlib import Path
 from fastmcp import Context
 
 from zotero_mcp import client as _client
+from zotero_mcp import mineru_client
 from zotero_mcp import utils as _utils
 from zotero_mcp._app import mcp
 from zotero_mcp.tools import _helpers
@@ -25,12 +26,13 @@ def _cleanup_path(file_path: str) -> None:
         pass
 
 
-def _get_pdf_path(item_key: str, ctx: Context) -> tuple[str, str] | None:
-    """Download a PDF attachment and return (file_path, title).
+def _get_pdf_path(item_key: str, ctx: Context) -> tuple[str, str, str | None] | None:
+    """Download a PDF attachment and return (file_path, title, attachment_key).
 
     Tries local storage first (via LocalZoteroReader), then downloads via API.
-    Returns None if no PDF attachment is found.
-    The caller is responsible for cleaning up the returned file_path.
+    Returns None if no PDF attachment is found. The ``attachment_key`` is the
+    Zotero attachment item key used as the MinerU cache key (None when only the
+    parent item is known). The caller is responsible for cleaning up file_path.
     """
     zot = _client.get_zotero_client()
     item = zot.item(item_key)
@@ -56,7 +58,7 @@ def _get_pdf_path(item_key: str, ctx: Context) -> tuple[str, str] | None:
                         if ctype == "application/pdf":
                             resolved = reader._resolve_attachment_path(att_key, path or "")
                             if resolved and resolved.exists():
-                                return str(resolved), local_item.title or item_key
+                                return str(resolved), local_item.title or item_key, att_key
     except Exception:
         pass
 
@@ -88,7 +90,7 @@ def _get_pdf_path(item_key: str, ctx: Context) -> tuple[str, str] | None:
         raise
 
     if download.path and download.path.exists() and download.path.stat().st_size > 0:
-        return str(download.path), attachment.title
+        return str(download.path), attachment.title, attachment.key
 
     _cleanup_path(probe)
     return None
@@ -99,6 +101,9 @@ def _get_pdf_path(item_key: str, ctx: Context) -> tuple[str, str] | None:
     description="Read specific page range(s) from a PDF attachment of a Zotero item. "
     "Use this when you know which pages to read — for example after getting the PDF "
     "outline via zotero_get_pdf_outline. Pages are 1-indexed. "
+    "When MinerU is configured (see ``mineru`` block in config.json), the tool returns "
+    "structured Markdown with formulas as LaTeX and tables as HTML — far more accurate "
+    "than plain text extraction for papers. Otherwise falls back to PyMuPDF text layer. "
     "Requires PyMuPDF: pip install zotero-mcp-server[pdf]",
 )
 def read_pdf_pages(
@@ -132,43 +137,152 @@ def read_pdf_pages(
         if result is None:
             return f"No PDF attachment found for item: {item_key}"
 
-        pdf_path, title = result
+        pdf_path, title, attachment_key = result
 
-        try:
-            import fitz
-        except ImportError:
-            return "PyMuPDF is required for PDF page reading. Install it with: pip install zotero-mcp-server[pdf]"
+        # Determine total page count via PyMuPDF (lightweight, needed for range
+        # validation regardless of which extractor runs). If PyMuPDF is missing,
+        # we cannot safely validate ranges — but MinerU may still work, so only
+        # block when MinerU is also unavailable.
+        total_pages = _probe_total_pages(pdf_path)
+        if total_pages is None:
+            # PyMuPDF unavailable. MinerU may still be usable, but we lose
+            # range validation. Surface a clear error to avoid unsafe slicing.
+            return ("PyMuPDF is required for PDF page reading (to validate page ranges). "
+                    "Install it with: pip install zotero-mcp-server[pdf]")
 
-        doc = fitz.open(pdf_path)
-        total_pages = len(doc)
         actual_end = end_page if end_page is not None else start_page
-
         if start_page < 1 or start_page > total_pages:
-            doc.close()
             _cleanup_path(pdf_path)
             return f"Start page {start_page} is out of range. PDF has {total_pages} pages (1-{total_pages})."
         if end_page is not None and end_page > total_pages:
-            doc.close()
             _cleanup_path(pdf_path)
             return f"End page {end_page} is out of range. PDF has {total_pages} pages (1-{total_pages})."
 
-        # Zero-indexed page numbers for PyMuPDF
+        page_count = actual_end - start_page + 1
+        if page_count > 50:
+            _cleanup_path(pdf_path)
+            return f"Requested {page_count} pages (max 50). Please narrow your page range."
+
+        # --- MinerU preferred path (structured: formulas as LaTeX, tables as HTML) ---
+        mineru_output = _try_mineru(
+            attachment_key, pdf_path, start_page, actual_end, total_pages, title, item_key, ctx
+        )
+        if mineru_output is not None:
+            _cleanup_path(pdf_path)
+            return mineru_output
+
+        # --- Fallback: PyMuPDF text-layer extraction ---
+        return _extract_with_pymupdf(pdf_path, title, item_key, start_page, actual_end, total_pages)
+
+    except Exception as e:
+        ctx.error(f"Error reading PDF pages: {str(e)}")
+        return f"Error reading PDF pages: {str(e)}"
+
+
+def _probe_total_pages(pdf_path: str) -> int | None:
+    """Return PDF page count, or None if PyMuPDF is unavailable."""
+    try:
+        import fitz
+    except ImportError:
+        return None
+    doc = fitz.open(pdf_path)
+    try:
+        return len(doc)
+    finally:
+        doc.close()
+
+
+def _try_mineru(
+    attachment_key: str | None,
+    pdf_path: str,
+    start_page: int,
+    actual_end: int,
+    total_pages: int,
+    title: str,
+    item_key: str,
+    ctx: Context,
+) -> str | None:
+    """Attempt MinerU structured extraction. Returns Markdown str, or None to fall back.
+
+    None is returned when MinerU is disabled, unavailable, or fails — the caller
+    then falls back to PyMuPDF. This guarantees reading always works.
+    """
+    config = mineru_client.load_mineru_config()
+    if not mineru_client.is_mineru_enabled(config):
+        return None
+    if not mineru_client.is_mineru_available(config):
+        ctx.warning("MinerU is enabled but unavailable (no CLI/API configured); using PyMuPDF fallback.")
+        return None
+    if not attachment_key:
+        # Without an attachment key we cannot cache; skip MinerU rather than
+        # parse uncached on every call (MinerU is too slow for that).
+        ctx.warning("MinerU enabled but attachment key unknown; using PyMuPDF fallback.")
+        return None
+
+    ctx.info("Extracting with MinerU (structured: formulas + tables)...")
+    try:
+        parsed = mineru_client.read_cached_or_parse(attachment_key, Path(pdf_path), config)
+    except Exception as e:
+        ctx.warning(f"MinerU parse raised an error; using PyMuPDF fallback: {e}")
+        return None
+    if parsed is None:
+        ctx.warning("MinerU parse returned no result; using PyMuPDF fallback.")
+        return None
+
+    # Slice the requested page range from the per-page split.
+    pages = parsed.pages
+    zstart = start_page - 1
+    zend = actual_end - 1
+    # If MinerU returned a single whole-document page (page split failed),
+    # deliver the whole document but flag the caveat.
+    single_page_caveat = len(pages) == 1 and total_pages > 1
+
+    output = [
+        f"# PDF Pages {start_page}-{actual_end} of {title}",
+        f"**Item Key:** {item_key}",
+        f"**Total pages in PDF:** {total_pages}",
+        f"**Extraction:** MinerU ({parsed.source.replace('mineru:', '')})",
+    ]
+    if single_page_caveat:
+        output.append(
+            f"**Note:** page-level split unavailable; showing full document for pages "
+            f"{start_page}-{actual_end}."
+        )
+    output.append("")
+
+    if single_page_caveat:
+        output.append(pages[0].strip() or "*[No extractable text]*")
+    else:
+        for page_num in range(zstart, zend + 1):
+            page_text = pages[page_num] if page_num < len(pages) else ""
+            output.append(f"## Page {page_num + 1}")
+            output.append("")
+            output.append(page_text.strip() if page_text.strip() else "*[No extractable text on this page]*")
+            output.append("")
+
+    return _helpers._prepend_size_warning(
+        "\n".join(output),
+        "MinerU output preserves formula LaTeX and table HTML — richer than plain text.",
+    )
+
+
+def _extract_with_pymupdf(
+    pdf_path: str, title: str, item_key: str, start_page: int, actual_end: int, total_pages: int
+) -> str:
+    """Fallback path: PyMuPDF text-layer extraction (current behavior)."""
+    import fitz
+
+    doc = fitz.open(pdf_path)
+    try:
         zstart = start_page - 1
         zend = actual_end - 1
-
         output = [
             f"# PDF Pages {start_page}-{actual_end} of {title}",
             f"**Item Key:** {item_key}",
             f"**Total pages in PDF:** {total_pages}",
+            f"**Extraction:** PyMuPDF (fallback)",
             "",
         ]
-
-        page_count = zend - zstart + 1
-        if page_count > 50:
-            doc.close()
-            _cleanup_path(pdf_path)
-            return f"Requested {page_count} pages (max 50). Please narrow your page range."
-
         for page_num in range(zstart, zend + 1):
             page = doc[page_num]
             text = page.get_text()
@@ -180,13 +294,10 @@ def read_pdf_pages(
                 output.append("*[No extractable text on this page]*")
             output.append("")
 
-        doc.close()
-        _cleanup_path(pdf_path)
         return _helpers._prepend_size_warning(
             "\n".join(output),
             "Consider using zotero_semantic_search to find specific content instead of reading full pages.",
         )
-
-    except Exception as e:
-        ctx.error(f"Error reading PDF pages: {str(e)}")
-        return f"Error reading PDF pages: {str(e)}"
+    finally:
+        doc.close()
+        _cleanup_path(pdf_path)

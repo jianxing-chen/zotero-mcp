@@ -12,6 +12,7 @@ import getpass
 import json
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -453,6 +454,139 @@ def load_semantic_search_config(semantic_config_path: Path) -> dict:
         return {}
 
 
+def load_mineru_config(config_path: Path) -> dict:
+    """Load the existing ``mineru`` block from config.json (empty dict if absent)."""
+    if not config_path.exists():
+        return {}
+    try:
+        with open(config_path) as f:
+            return json.load(f).get("mineru", {}) or {}
+    except Exception:
+        return {}
+
+
+def setup_mineru_config(existing: dict | None = None) -> dict:
+    """Interactive setup for MinerU structured PDF parsing.
+
+    MinerU gives the ``zotero_read_pdf_pages`` tool accurate formulas (LaTeX)
+    and tables (HTML). It is optional and disabled by default; the tool falls
+    back to PyMuPDF text extraction when MinerU is off or unavailable.
+    """
+    existing = existing or {}
+    print("\n" + "=" * 60)
+    print("MinerU structured PDF parsing (optional)")
+    print("=" * 60)
+    print(
+        "MinerU extracts formulas as LaTeX and tables as HTML, far more accurate\n"
+        "than PyMuPDF text-layer extraction for papers. It is only used by the\n"
+        "zotero_read_pdf_pages tool for precise reading — semantic search keeps\n"
+        "using the fast PyMuPDF path. Disabled = no behavior change."
+    )
+
+    enabled = existing.get("enabled", False)
+    print(f"\nCurrently: {'enabled' if enabled else 'disabled'}")
+    print("Enable MinerU for read_pdf_pages? (y/n): ", end="")
+    try:
+        choice = input().strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        choice = "n"
+    if choice not in ("y", "yes"):
+        # Keep existing but ensure disabled if user said no
+        cfg = dict(existing)
+        cfg["enabled"] = False
+        return cfg
+
+    cfg = {"enabled": True}
+
+    # Backend selection
+    print("\nChoose a backend:")
+    print("  1) api       — call a remote MinerU FastAPI service (no local torch/ray)")
+    print("  2) hybrid    — local mineru CLI with GPU (fast, needs GPU 8GB+)")
+    print("  3) pipeline  — local mineru CLI, CPU-only (slower, always works)")
+    print("Hybrid automatically falls back to pipeline on GPU OOM/failure.")
+    print(f"Default [1-3, current={existing.get('backend', 'hybrid')}]: ", end="")
+    try:
+        bchoice = input().strip()
+    except (EOFError, KeyboardInterrupt):
+        bchoice = ""
+    if bchoice == "1":
+        cfg["backend"] = "api"
+    elif bchoice == "3":
+        cfg["backend"] = "pipeline"
+    else:
+        cfg["backend"] = "hybrid"
+
+    if cfg["backend"] == "api":
+        print(f"\nMinerU API URL (e.g. http://gpu-host:8000) [current={existing.get('api_url') or 'none'}]: ", end="")
+        try:
+            api_url = input().strip()
+        except (EOFError, KeyboardInterrupt):
+            api_url = ""
+        cfg["api_url"] = api_url or None
+    else:
+        # Local CLI: probe the executable and offer to set an explicit path.
+        which = shutil.which("mineru")
+        default_exe = existing.get("executable") or which
+        print(f"\nmineru executable path [blank=auto-detect, found={which or 'none'}]: ", end="")
+        try:
+            exe = input().strip()
+        except (EOFError, KeyboardInterrupt):
+            exe = ""
+        cfg["executable"] = (exe or default_exe or None)
+        # Liveness probe — non-blocking.
+        target = cfg["executable"] or which
+        if target:
+            try:
+                result = subprocess.run(
+                    [target, "--version"], capture_output=True, text=True, timeout=10
+                )
+                if result.returncode == 0:
+                    print(f"  ✓ mineru CLI reachable: {result.stdout.strip()[:60]}")
+                else:
+                    print("  ⚠ mineru CLI returned non-zero. Install with: pip install mineru[all]")
+            except Exception:
+                print("  ⚠ could not run mineru CLI. Install with: pip install mineru[all]")
+        else:
+            print("  ⚠ mineru not on PATH. Install with: pip install mineru[all]")
+
+    # Timeout
+    print(f"\nPer-PDF timeout in seconds [current={existing.get('timeout', 600)}]: ", end="")
+    try:
+        tout = input().strip()
+        cfg["timeout"] = int(tout) if tout else existing.get("timeout", 600)
+    except (ValueError, EOFError, KeyboardInterrupt):
+        cfg["timeout"] = existing.get("timeout", 600)
+
+    # Cache dir (advanced; default is fine for most users)
+    cfg["cache_dir"] = existing.get("cache_dir", None)
+
+    print("\nMinerU configured. read_pdf_pages will now return structured output;")
+    print("falls back to PyMuPDF automatically if MinerU is unavailable at runtime.")
+    return cfg
+
+
+def save_mineru_config(config: dict, config_path: Path) -> bool:
+    """Merge the ``mineru`` block into config.json (preserves other blocks)."""
+    try:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        full = {}
+        if config_path.exists():
+            try:
+                with open(config_path) as f:
+                    full = json.load(f)
+            except json.JSONDecodeError:
+                print("Warning: existing config.json is invalid JSON; overwriting.")
+        full["mineru"] = config
+        with open(config_path, "w") as f:
+            json.dump(full, f, indent=2)
+        _restrict_file_permissions(config_path)
+        print(f"MinerU configuration saved to: {config_path}")
+        return True
+    except Exception as e:
+        print(f"Error saving MinerU config: {e}")
+        return False
+
+
 def update_claude_config(config_path, zotero_mcp_path, local=True, api_key=None, library_id=None, library_type="user", semantic_config=None):
     """Update Claude Desktop config to add zotero-mcp."""
     # Create directory if it doesn't exist
@@ -594,6 +728,8 @@ def main(cli_args=None):
     parser.add_argument("--config-path", help="Path to Claude Desktop config file")
     parser.add_argument("--skip-semantic-search", action="store_true",
                         help="Skip semantic search configuration")
+    parser.add_argument("--skip-mineru", action="store_true",
+                        help="Skip MinerU structured PDF parsing configuration")
     parser.add_argument("--semantic-config-only", action="store_true",
                         help="Only configure semantic search, skip Zotero setup")
     parser.add_argument("--show-secrets", action="store_true",
@@ -688,6 +824,20 @@ def main(cli_args=None):
                 semantic_config_changed = True
                 existing_semantic_config = new_semantic_config  # Update the config to use
                 save_semantic_search_config(existing_semantic_config, semantic_config_path)
+
+    # Configure MinerU structured PDF parsing if not skipped
+    if not args.skip_mineru:
+        existing_mineru = load_mineru_config(semantic_config_path)
+        print("\nFound existing MinerU configuration." if existing_mineru.get("enabled")
+              else "\nMinerU not yet configured.")
+        print("Configure MinerU for structured PDF reading? (y/n): ", end="")
+        try:
+            mineru_choice = input().strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            mineru_choice = "n"
+        if mineru_choice in ("y", "yes"):
+            new_mineru = setup_mineru_config(existing_mineru)
+            save_mineru_config(new_mineru, semantic_config_path)
 
     print("\nSetup with the following settings:")
     print(f"  Local API: {use_local}")

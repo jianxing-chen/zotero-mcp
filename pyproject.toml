@@ -48,6 +48,15 @@ pdf = [
 scite = [
     "requests>=2.28.0",
 ]
+mineru = [
+    # Structured PDF parsing (formulas as LaTeX, tables as HTML) for the
+    # zotero_read_pdf_pages tool. Only needed for local backends (hybrid/pipeline);
+    # the ``api`` backend needs just ``requests`` (already a core dep). Heavy:
+    # pulls torch/ray. Install in a separate venv and point ``mineru.executable``
+    # at the CLI to keep this package's dep tree light.
+    "mineru[all]",
+    "requests>=2.28.0",
+]
 all = [
     "zotero-mcp-server[semantic,pdf,scite]",
 ]

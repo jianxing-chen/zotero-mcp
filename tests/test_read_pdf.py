@@ -74,7 +74,7 @@ class TestHappyPath:
         _patch_fitz(monkeypatch, [FakePage("Page 1 content.")] * 10, total=10)
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/tmp/test.pdf", "Test Paper"),
+            lambda _k, _c: ("/tmp/test.pdf", "Test Paper", "ATTKEY"),
         )
 
         result = server.read_pdf_pages(item_key="ITEM01", start_page=3, ctx=dummy_ctx)
@@ -93,7 +93,7 @@ class TestHappyPath:
         _patch_fitz(monkeypatch, pages)
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/tmp/test.pdf", "Test Paper"),
+            lambda _k, _c: ("/tmp/test.pdf", "Test Paper", "ATTKEY"),
         )
 
         result = server.read_pdf_pages(item_key="ITEM01", start_page=2, end_page=4, ctx=dummy_ctx)
@@ -111,7 +111,7 @@ class TestHappyPath:
         _patch_fitz(monkeypatch, [FakePage("hello")])
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/tmp/test.pdf", "My Paper Title"),
+            lambda _k, _c: ("/tmp/test.pdf", "My Paper Title", "ATTKEY"),
         )
 
         result = server.read_pdf_pages(item_key="KEY123", start_page=1, ctx=dummy_ctx)
@@ -150,7 +150,7 @@ class TestErrors:
         _patch_fitz(monkeypatch, [FakePage("p1")], total=1)
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/tmp/test.pdf", "Paper"),
+            lambda _k, _c: ("/tmp/test.pdf", "Paper", "ATTKEY"),
         )
 
         result = server.read_pdf_pages(item_key="ITEM01", start_page=5, ctx=dummy_ctx)
@@ -162,7 +162,7 @@ class TestErrors:
         _patch_fitz(monkeypatch, [FakePage("p1")] * 3, total=3)
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/tmp/test.pdf", "Paper"),
+            lambda _k, _c: ("/tmp/test.pdf", "Paper", "ATTKEY"),
         )
 
         result = server.read_pdf_pages(item_key="ITEM01", start_page=1, end_page=10, ctx=dummy_ctx)
@@ -174,7 +174,7 @@ class TestErrors:
         _patch_fitz(monkeypatch, [FakePage("p")] * 100, total=100)
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/tmp/test.pdf", "Paper"),
+            lambda _k, _c: ("/tmp/test.pdf", "Paper", "ATTKEY"),
         )
 
         result = server.read_pdf_pages(item_key="ITEM01", start_page=1, end_page=55, ctx=dummy_ctx)
@@ -184,7 +184,7 @@ class TestErrors:
     def test_missing_fitz_module(self, monkeypatch, dummy_ctx, fake_zot):
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/tmp/test.pdf", "Paper"),
+            lambda _k, _c: ("/tmp/test.pdf", "Paper", "ATTKEY"),
         )
         monkeypatch.setitem(sys.modules, "fitz", None)
 
@@ -201,7 +201,7 @@ class TestEdgeCases:
         _patch_fitz(monkeypatch, [FakePage("p1"), FakePage("p2"), FakePage("p3")])
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/tmp/test.pdf", "Test Paper"),
+            lambda _k, _c: ("/tmp/test.pdf", "Test Paper", "ATTKEY"),
         )
 
         result = server.read_pdf_pages(item_key="ITEM01", start_page=2, end_page=2, ctx=dummy_ctx)
@@ -214,7 +214,7 @@ class TestEdgeCases:
         _patch_fitz(monkeypatch, [FakePage("first"), FakePage("last")])
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/tmp/test.pdf", "Paper"),
+            lambda _k, _c: ("/tmp/test.pdf", "Paper", "ATTKEY"),
         )
 
         result = server.read_pdf_pages(item_key="ITEM01", start_page=2, ctx=dummy_ctx)
@@ -226,7 +226,7 @@ class TestEdgeCases:
         _patch_fitz(monkeypatch, [FakePage(""), FakePage("has text"), FakePage("")])
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/tmp/test.pdf", "Paper"),
+            lambda _k, _c: ("/tmp/test.pdf", "Paper", "ATTKEY"),
         )
 
         result = server.read_pdf_pages(item_key="ITEM01", start_page=1, end_page=3, ctx=dummy_ctx)
