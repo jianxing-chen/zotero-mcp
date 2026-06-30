@@ -1777,38 +1777,80 @@ class ZoteroSemanticSearch:
                     f"Processed {seen_items}/{total} items (added: {stats['added_items']}, skipped: {stats['skipped_items']})"
                 )
 
-            # Retry any documents that failed during the main run
+            # Retry any documents that failed during the main run.
+            # BUT: detect deterministic failures (embedding-dimension mismatch,
+            # schema errors) and skip the retry loop entirely — retrying those
+            # only re-calls the (paid) embedding API for vectors that can never
+            # be stored, burning quota with zero benefit.
             if _failed_docs:
-                try:
-                    sys.stderr.write(f"\r{' ' * 120}\r")
-                    sys.stderr.write(f"\n  Retrying {len(_failed_docs)} failed items...\n")
-                except Exception:
-                    pass
-
-                import time as _retry_time
-
-                _retry_time.sleep(1)  # Brief pause before retry
-
-                retry_ok = 0
-                retry_fail = 0
-                for doc, meta, doc_id in _failed_docs:
+                # Sniff the first failure's error to decide whether retry is
+                # worthwhile. Dimension mismatch is permanent until the user
+                # rebuilds the collection; re-embedding N chunks one-by-one
+                # just multiplies the wasted API calls.
+                _retry_skippable = False
+                _first_err = ""
+                # Re-attempt one probe to capture a fresh error string.
+                if _failed_docs:
+                    _doc, _meta, _did = _failed_docs[0]
                     try:
-                        self.chroma_client.upsert_documents([doc], [meta], [doc_id])
-                        retry_ok += 1
-                        stats["errors"] -= 1  # Remove from error count
-                        # Don't classify as added vs updated — when the
-                        # original batch failed, the add/update lookup never
-                        # ran, so we don't know which category it belongs in.
-                        # Track recovered items in their own bucket.
+                        self.chroma_client.upsert_documents([_doc], [_meta], [_did])
+                        # Unexpected success on probe — the batch failure was
+                        # transient. Re-queue this one as recovered and proceed
+                        # with the rest.
+                        _failed_docs.pop(0)
+                        stats["errors"] -= 1
                         stats["recovered_items"] += 1
-                    except Exception as e2:
-                        retry_fail += 1
-                        logger.error(f"Retry failed for {doc_id}: {e2}")
+                    except Exception as _probe_e:
+                        _first_err = str(_probe_e).lower()
+                        _retry_skippable = (
+                            "dimension" in _first_err
+                            or "embedding function conflict" in _first_err
+                        )
 
-                try:
-                    sys.stderr.write(f"  Retry: {retry_ok} recovered, {retry_fail} still failed\n")
-                except Exception:
-                    pass
+                if _retry_skippable:
+                    # Deterministic failure — stop immediately, don't burn
+                    # more API quota on retries that cannot succeed.
+                    try:
+                        sys.stderr.write(f"\r{' ' * 120}\r")
+                        sys.stderr.write(
+                            f"\n  Skipping retry of {len(_failed_docs)} failed items: "
+                            f"deterministic error ({_first_err[:80]}).\n"
+                            f"  Run 'zotero-mcp update-db --force-rebuild' after "
+                            f"fixing the embedding configuration.\n"
+                        )
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        sys.stderr.write(f"\r{' ' * 120}\r")
+                        sys.stderr.write(f"\n  Retrying {len(_failed_docs)} failed items...\n")
+                    except Exception:
+                        pass
+
+                    import time as _retry_time
+
+                    _retry_time.sleep(1)  # Brief pause before retry
+
+                    retry_ok = 0
+                    retry_fail = 0
+                    for doc, meta, doc_id in _failed_docs:
+                        try:
+                            self.chroma_client.upsert_documents([doc], [meta], [doc_id])
+                            retry_ok += 1
+                            stats["errors"] -= 1  # Remove from error count
+                            # Don't classify as added vs updated — when the
+                            # original batch failed, the add/update lookup never
+                            # ran, so we don't know which category it belongs in.
+                            # Track recovered items in their own bucket.
+                            stats["recovered_items"] += 1
+                        except Exception as e2:
+                            retry_fail += 1
+                            logger.error(f"Retry failed for {doc_id}: {e2}")
+
+                    try:
+                        sys.stderr.write(f"  Retry: {retry_ok} recovered, {retry_fail} still failed\n")
+                    except Exception:
+                        pass
 
             # Clear the progress line and show summary
             try:

@@ -508,6 +508,39 @@ class ChromaClient:
                     except Exception:
                         pass  # Best-effort check; proceed with existing collection
 
+                # Dimension-mismatch guard. The config_json_str check above is
+                # unreliable: older collections may store an empty `{}`, and
+                # ``_sysdb`` may not even exist on some chromadb versions. A
+                # direct dimension probe is authoritative — if the persisted
+                # vectors' dimension differs from what the newly configured
+                # embedding function produces, every upsert will fail with
+                # "Collection expecting embedding with dimension of X, got Y".
+                # Detect that here and recreate the collection once, so the
+                # caller can re-embed from scratch instead of burning API
+                # quota on vectors that can never be stored.
+                try:
+                    if self.collection.count() > 0:
+                        probe = self.collection.get(limit=1, include=["embeddings"])
+                        stored_embs = probe.get("embeddings") or []
+                        if stored_embs:
+                            stored_dim = len(stored_embs[0])
+                            # Embed a one-token probe to learn the new dim.
+                            new_emb = self.embedding_function(["dimension probe"])[0]
+                            new_dim = len(new_emb)
+                            if stored_dim != new_dim:
+                                logger.warning(
+                                    f"Persisted collection dimension {stored_dim} != "
+                                    f"configured embedding dimension {new_dim}; "
+                                    f"resetting collection for rebuild."
+                                )
+                                self.client.delete_collection(name=self.collection_name)
+                                self.collection = self.client.create_collection(
+                                    name=self.collection_name,
+                                    embedding_function=self.embedding_function
+                                )
+                except Exception as e:
+                    logger.debug(f"Dimension probe failed (non-fatal): {e}")
+
             except Exception as e:
                 if "embedding function conflict" in str(e).lower():
                     logger.warning(
