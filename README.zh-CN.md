@@ -1,4 +1,4 @@
-# Zotero MCP：与你的文献库对话——本地或云端——接入 Claude、ChatGPT 等
+# Zotero MCP：与你的文献库对话——本地或云端——接入 Claude、ChatGPT、ZCode 等
 
 <p align="center">
   <a href="https://www.zotero.org/">
@@ -13,9 +13,12 @@
   <a href="https://modelcontextprotocol.io/introduction">
     <img src="https://img.shields.io/badge/MCP-0175C2?style=for-the-badge&logoColor=white" alt="MCP">
   </a>
+  <a href="https://zcode.dev/">
+    <img src="https://img.shields.io/badge/ZCode-FF6B35?style=for-the-badge&logoColor=white" alt="ZCode">
+  </a>
 </p>
 
-**Zotero MCP** 通过 [Model Context Protocol](https://modelcontextprotocol.io/introduction) 将你的 [Zotero](https://www.zotero.org/) 文献库与 [ChatGPT](https://openai.com)、[Claude](https://www.anthropic.com/claude) 等 AI 助手（如 [Cherry Studio](https://cherry-ai.com/)、[Chorus](https://chorus.sh)、[Cursor](https://www.cursor.com/)）无缝连接。审阅论文、获取摘要、分析引用关系、提取 PDF 批注、导入天体物理文献……一句话搞定。
+**Zotero MCP** 通过 [Model Context Protocol](https://modelcontextprotocol.io/introduction) 将你的 [Zotero](https://www.zotero.org/) 文献库与 [ChatGPT](https://openai.com)、[Claude](https://www.anthropic.com/claude)、[ZCode](https://zcode.dev/) 等 AI 助手（如 [Cherry Studio](https://cherry-ai.com/)、[Chorus](https://chorus.sh)、[Cursor](https://www.cursor.com/)）无缝连接。审阅论文、获取摘要、分析引用关系、提取 PDF 批注、导入天体物理文献……一句话搞定。
 
 > 本 fork 在原版基础上新增了 **MinerU 结构化 PDF 精读** 和 **NASA ADS 文献接入**两个特性。
 

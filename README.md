@@ -1,4 +1,4 @@
-# Zotero MCP: Chat with your Research Library—Local or Web—in Claude, ChatGPT, and more.
+# Zotero MCP: Chat with your Research Library—Local or Web—in Claude, ChatGPT, ZCode, and more.
 
 <p align="center">
   <a href="https://www.zotero.org/">
@@ -19,9 +19,12 @@
   <a href="https://discord.gg/BvgjbcBUqg">
     <img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord">
   </a>
+  <a href="https://zcode.dev/">
+    <img src="https://img.shields.io/badge/ZCode-FF6B35?style=for-the-badge&logoColor=white" alt="ZCode">
+  </a>
 </p>
 
-**Zotero MCP** seamlessly connects your [Zotero](https://www.zotero.org/) research library with [ChatGPT](https://openai.com), [Claude](https://www.anthropic.com/claude), and other AI assistants (e.g., [Cherry Studio](https://cherry-ai.com/), [Chorus](https://chorus.sh), [Cursor](https://www.cursor.com/)) via the [Model Context Protocol](https://modelcontextprotocol.io/introduction). Review papers, get summaries, analyze citations, extract PDF annotations, import astrophysics literature, and more!
+**Zotero MCP** seamlessly connects your [Zotero](https://www.zotero.org/) research library with [ChatGPT](https://openai.com), [Claude](https://www.anthropic.com/claude), [ZCode](https://zcode.dev/), and other AI assistants (e.g., [Cherry Studio](https://cherry-ai.com/), [Chorus](https://chorus.sh), [Cursor](https://www.cursor.com/)) via the [Model Context Protocol](https://modelcontextprotocol.io/introduction). Review papers, get summaries, analyze citations, extract PDF annotations, import astrophysics literature, and more!
 
 > This fork adds **MinerU structured PDF reading** and **NASA ADS literature integration** on top of the original.
 
