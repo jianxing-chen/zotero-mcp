@@ -744,6 +744,14 @@ def _url_resolves_to_public_host(url: str) -> bool:
             ip = ip_address(sockaddr[0])
         except ValueError:
             return False
+        # Allow the 198.18.0.0/15 RFC-2544 benchmarking range: transparent
+        # proxies (Clash/Surge on macOS) route public domains through these
+        # addresses, so they are not a real SSRF vector here. All genuinely
+        # internal ranges (10/8, 172.16/12, 192.168/16, 127/8, 169.254/16
+        # link-local incl. the cloud-metadata endpoint, ::1, fc00::/7) are
+        # still blocked because they fail the is_global check below.
+        if int(ip) >> 17 == (0xC6120000 >> 17):  # 198.18.0.0/15
+            continue
         if not ip.is_global or ip.is_reserved or ip.is_multicast:
             return False
     return True
