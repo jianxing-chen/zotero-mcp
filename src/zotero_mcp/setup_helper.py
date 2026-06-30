@@ -587,7 +587,41 @@ def save_mineru_config(config: dict, config_path: Path) -> bool:
         return False
 
 
-def update_claude_config(config_path, zotero_mcp_path, local=True, api_key=None, library_id=None, library_type="user", semantic_config=None):
+def setup_ads_config() -> str | None:
+    """Interactive prompt for the NASA ADS API token. Returns the token or None.
+
+    The token is free (https://ui.adsabs.harvard.edu/#user/settings/token) and
+    enables zotero_add_by_bibcode, zotero_search_ads, and
+    zotero_ads_citation_network. Input is hidden via getpass to avoid leaking
+    in shell history.
+    """
+    print("\n" + "=" * 60)
+    print("NASA ADS API token (optional)")
+    print("=" * 60)
+    print(
+        "ADS provides bibcode-based paper import, search, and citation graph\n"
+        "exploration for astrophysics literature. A free token is required.\n"
+        "Get one at: https://ui.adsabs.harvard.edu/#user/settings/token"
+    )
+    print("\nConfigure ADS? (y/n): ", end="")
+    try:
+        choice = input().strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        choice = "n"
+    if choice not in ("y", "yes"):
+        return None
+    try:
+        token = getpass.getpass("Enter your ADS API token (hidden): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        token = ""
+    if not token:
+        print("Warning: no token entered. Set ADS_API_TOKEN env var manually later.")
+        return None
+    print("  ✓ ADS token saved.")
+    return token
+
+
+def update_claude_config(config_path, zotero_mcp_path, local=True, api_key=None, library_id=None, library_type="user", semantic_config=None, ads_token=None):
     """Update Claude Desktop config to add zotero-mcp."""
     # Create directory if it doesn't exist
     config_dir = config_path.parent
@@ -651,6 +685,10 @@ def update_claude_config(config_path, zotero_mcp_path, local=True, api_key=None,
             if base_url := embedding_config.get("base_url"):
                 env_settings["OLLAMA_BASE_URL"] = base_url
 
+    # ADS token (for zotero_add_by_bibcode / zotero_search_ads / citation network)
+    if ads_token:
+        env_settings["ADS_API_TOKEN"] = ads_token
+
     # Add or update zotero config
     config["mcpServers"]["zotero"] = {
         "command": zotero_mcp_path,
@@ -670,7 +708,7 @@ def update_claude_config(config_path, zotero_mcp_path, local=True, api_key=None,
     return config_path
 
 
-def _write_standalone_config(local: bool, api_key: str, library_id: str, library_type: str, semantic_config: dict, no_claude: bool = False) -> Path:
+def _write_standalone_config(local: bool, api_key: str, library_id: str, library_type: str, semantic_config: dict, no_claude: bool = False, ads_token: str | None = None) -> Path:
     """Write a central config file used by semantic search and provide client env."""
     cfg_dir = Path.home() / ".config" / "zotero-mcp"
     cfg_dir.mkdir(parents=True, exist_ok=True)
@@ -703,6 +741,8 @@ def _write_standalone_config(local: bool, api_key: str, library_id: str, library
             client_env["ZOTERO_LIBRARY_ID"] = library_id
         if library_type:
             client_env["ZOTERO_LIBRARY_TYPE"] = library_type
+    if ads_token:
+        client_env["ADS_API_TOKEN"] = ads_token
 
     full["client_env"] = client_env
 
@@ -730,6 +770,8 @@ def main(cli_args=None):
                         help="Skip semantic search configuration")
     parser.add_argument("--skip-mineru", action="store_true",
                         help="Skip MinerU structured PDF parsing configuration")
+    parser.add_argument("--skip-ads", action="store_true",
+                        help="Skip NASA ADS API token configuration")
     parser.add_argument("--semantic-config-only", action="store_true",
                         help="Only configure semantic search, skip Zotero setup")
     parser.add_argument("--show-secrets", action="store_true",
@@ -839,12 +881,19 @@ def main(cli_args=None):
             new_mineru = setup_mineru_config(existing_mineru)
             save_mineru_config(new_mineru, semantic_config_path)
 
+    # Configure NASA ADS API token (optional, for astrophysics literature tools)
+    ads_token = None
+    if not getattr(args, "skip_ads", False):
+        ads_token = setup_ads_config()
+
     print("\nSetup with the following settings:")
     print(f"  Local API: {use_local}")
     if not use_local:
         print(f"  API Key: {_obfuscate_sensitive(api_key)}")
         print(f"  Library ID: {library_id or 'Not provided'}")
         print(f"  Library Type: {library_type}")
+    if ads_token:
+        print(f"  ADS Token: {_obfuscate_sensitive(ads_token)}")
 
     # Use the potentially updated semantic config
     semantic_config = existing_semantic_config
@@ -858,7 +907,8 @@ def main(cli_args=None):
                 library_id=library_id,
                 library_type=library_type,
                 semantic_config=semantic_config,
-                no_claude=args.no_claude
+                no_claude=args.no_claude,
+                ads_token=ads_token,
             )
             print("\nSetup complete (standalone/web mode)!")
             print(f"Config saved to: {cfg_path}")
@@ -896,7 +946,8 @@ def main(cli_args=None):
                 api_key=api_key,
                 library_id=library_id,
                 library_type=library_type,
-                semantic_config=semantic_config
+                semantic_config=semantic_config,
+                ads_token=ads_token,
             )
             if updated_config_path:
                 print("\nSetup complete!")

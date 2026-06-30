@@ -11,6 +11,7 @@ from typing import Annotated, Literal
 import requests
 from pydantic import Field
 
+from zotero_mcp import ads_client as _ads_client
 from zotero_mcp import citation_import as _citation_import
 from zotero_mcp import client as _client
 from zotero_mcp import utils as _utils
@@ -3245,6 +3246,189 @@ def add_by_bibtex(
     except Exception as e:
         ctx.error(f"Error adding by BibTeX: {e}")
         return f"Error adding by BibTeX: {e}"
+
+
+def _try_ads_pdf(write_zot, item_key: str, bibcode: str, ctx: Context) -> str | None:
+    """Attempt to attach a PDF via the ADS link_gateway.
+
+    Returns a status string (for the batch result) or None. Uses
+    ``_helpers._download_and_attach_pdf`` which applies SSRF guards on every
+    redirect hop. Failures are silent — many astronomy PDFs are paywalled.
+    """
+    if not bibcode:
+        return None
+    try:
+        pdf_url = _ads_client.get_pdf_url(bibcode)
+    except Exception as e:
+        ctx.warning(f"ADS PDF URL lookup failed for {bibcode}: {e}")
+        return None
+    if not pdf_url:
+        return None
+    try:
+        _helpers._download_and_attach_pdf(write_zot, item_key, pdf_url, None, ctx)
+        return "PDF attached via ADS"
+    except Exception as e:
+        ctx.warning(f"ADS PDF download failed for {bibcode}: {e}")
+        return f"ADS PDF unavailable ({type(e).__name__})"
+
+
+@mcp.tool(
+    name="zotero_add_by_bibcode",
+    description=(
+        "Add one or more items to Zotero from NASA ADS bibcodes. "
+        "Provide `bibcode` as a single bibcode (e.g. '2003ApJ...589L..21B') "
+        "or a comma/JSON-separated list. Fetches metadata from the ADS API "
+        "and converts it to a Zotero item. The bibcode is stored in the Extra "
+        "field for dedup. If the record has a DOI, an open-access PDF is "
+        "attempted (Unpaywall/arXiv cascade); ADS-hosted PDFs are tried as a "
+        "fallback. Requires ADS_API_TOKEN (free at "
+        "https://ui.adsabs.harvard.edu/#user/settings/token). "
+        "collections accepts keys, names, or '/'-paths. if_exists: 'file' "
+        "(default — reuse matching item, add missing collections/tags) | "
+        "'skip' | 'duplicate'."
+    )
+)
+def add_by_bibcode(
+    bibcode: str | list[str] | None = None,
+    collections: list[str] | str | None = None,
+    tags: list[str] | str | None = None,
+    attach_mode: str = "auto",
+    if_exists: Literal["duplicate", "file", "skip"] = "file",
+    create_missing_collections: bool = False,
+    *,
+    ctx: Context,
+) -> str:
+    if not _ads_client.is_available():
+        return (
+            "Error: ADS_API_TOKEN is not set. Get a free token at "
+            "https://ui.adsabs.harvard.edu/#user/settings/token and set "
+            "the ADS_API_TOKEN environment variable."
+        )
+
+    try:
+        read_zot, write_zot = _helpers._get_write_client(ctx)
+    except ValueError as e:
+        return str(e)
+
+    try:
+        if if_exists not in _IF_EXISTS_VALUES:
+            return f"Error: if_exists must be one of {_IF_EXISTS_VALUES}."
+
+        raw_codes = _helpers._normalize_str_list_input(bibcode, "bibcode")
+        if not raw_codes:
+            return "Error: bibcode cannot be empty."
+
+        bibcodes: list[str] = []
+        invalid: list[str] = []
+        for raw in raw_codes:
+            norm = _ads_client.normalize_bibcode(raw)
+            if norm:
+                bibcodes.append(norm)
+            else:
+                invalid.append(raw)
+        if invalid:
+            ctx.warning(f"Skipping invalid bibcodes: {invalid}")
+
+        if not bibcodes:
+            return f"Error: no valid bibcodes in input. Invalid: {invalid}"
+
+        try:
+            coll_keys = _resolve_collections_arg(
+                read_zot, collections, ctx,
+                create_missing=create_missing_collections, write_zot=write_zot,
+            )
+        except ValueError as e:
+            return f"Error: {e}"
+
+        ctx.info(f"Fetching {len(bibcodes)} ADS record(s)")
+        results = []
+        for bc in bibcodes:
+            try:
+                doc = _ads_client.fetch_record(bc)
+            except Exception as e:
+                results.append({
+                    "ok": False, "key": None, "doi": None, "pdf_status": None,
+                    "error": f"ADS fetch failed: {e}", "title": bc,
+                })
+                continue
+            if not doc:
+                results.append({
+                    "ok": False, "key": None, "doi": None, "pdf_status": None,
+                    "error": "bibcode not found in ADS", "title": bc,
+                })
+                continue
+
+            try:
+                csl = _ads_client.doc_to_csl_json(doc)
+                item_data = _citation_import.csl_json_to_zotero(
+                    csl, write_zot.item_template
+                )
+            except Exception as e:
+                results.append({
+                    "ok": False, "key": None, "doi": None, "pdf_status": None,
+                    "error": f"conversion failed: {e}",
+                    "title": (doc.get("title") or [bc])[0] if doc.get("title") else bc,
+                })
+                continue
+
+            # Dedup: first by bibcode (extra field), then by DOI via the
+            # standard batch path. bibcode dedup is ADS-specific and must run
+            # before _maybe_reuse_existing (which only checks DOI).
+            if if_exists != "duplicate":
+                existing = _helpers.find_existing_items(read_zot, bibcode=bc, ctx=ctx)
+                if existing:
+                    item = existing[0]
+                    if if_exists == "skip":
+                        results.append({
+                            "ok": True, "key": item.get("key"),
+                            "doi": item.get("data", {}).get("DOI"),
+                            "pdf_status": None, "error": None,
+                            "title": item.get("data", {}).get("title") or bc,
+                            "collections_failed": [],
+                            "existed": "skipped — already in library (bibcode match)",
+                        })
+                        continue
+                    summary = _converge_existing_item(write_zot, item, coll_keys, tags, ctx)
+                    bits = []
+                    if summary["colls_added"]:
+                        bits.append(f"added to {summary['colls_added']}")
+                    if summary["colls_already"]:
+                        bits.append(f"already in {summary['colls_already']}")
+                    if summary["tags_added"]:
+                        bits.append(f"tags added {summary['tags_added']}")
+                    detail = "; ".join(bits) if bits else "already in requested state"
+                    results.append({
+                        "ok": True, "key": summary["key"],
+                        "doi": item.get("data", {}).get("DOI"),
+                        "pdf_status": None, "error": None,
+                        "title": summary["title"],
+                        "collections_failed": summary["colls_failed"],
+                        "existed": f"reused existing (bibcode) — {detail}",
+                    })
+                    continue
+
+            reused = _maybe_reuse_existing(
+                read_zot, write_zot, item_data, coll_keys, tags, if_exists, ctx
+            )
+            if reused is not None:
+                results.append(reused)
+                continue
+
+            _apply_caller_tags_and_collections(item_data, tags, coll_keys)
+            created = _create_and_attach(write_zot, item_data, attach_mode, ctx)
+
+            if created["ok"] and not created.get("pdf_status"):
+                ads_pdf = _try_ads_pdf(write_zot, created["key"], bc, ctx)
+                if ads_pdf:
+                    created["pdf_status"] = ads_pdf
+
+            results.append(created)
+
+        return _format_batch_result("# zotero_add_by_bibcode", results)
+
+    except Exception as e:
+        ctx.error(f"Error adding by bibcode: {e}")
+        return f"Error adding by bibcode: {e}"
 
 
 @mcp.tool(

@@ -118,6 +118,11 @@ from zotero_mcp.tools.write import (  # noqa: F401
     remove_item_relation,
     add_by_bibtex,
     add_by_csl_json,
+    add_by_bibcode,
+)
+from zotero_mcp.tools.ads import (  # noqa: F401
+    search_ads,
+    ads_citation_network,
 )
 from zotero_mcp.tools.read_pdf import (  # noqa: F401
     read_pdf_pages,

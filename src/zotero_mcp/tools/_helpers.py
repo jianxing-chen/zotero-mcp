@@ -501,17 +501,20 @@ def _create_collection_path(write_zot, paths, spec, ctx=None) -> str:
 
 
 def find_existing_items(zot, *, doi=None, arxiv_id=None, isbn=None, url=None,
-                        ctx=None) -> list[dict]:
+                        bibcode=None, ctx=None) -> list[dict]:
     """Find non-attachment items already in the library by a normalized id.
 
-    Exactly one of doi / arxiv_id / isbn / url should be given (already
-    normalized via the corresponding ``_normalize_*`` helper, except url).
-    A server-side quick search (``q=<id>, qmode='everything',
+    Exactly one of doi / arxiv_id / isbn / url / bibcode should be given
+    (already normalized via the corresponding ``_normalize_*`` helper, except
+    url). A server-side quick search (``q=<id>, qmode='everything',
     itemType='-attachment'``) narrows candidates cheaply; a client-side
     normalized comparison confirms real matches. Searching with the BARE
     identifier means the substring quick-search also catches values stored
     with prefixes ('https://doi.org/10...', 'arXiv:...'). The items endpoint
     excludes the Trash, so a trashed copy never blocks a re-add.
+
+    bibcode is matched against the ``extra`` field (where ``add_by_bibcode``
+    writes ``bibcode: <value>``), since Zotero has no native bibcode field.
 
     Returns full item dicts (with ``key``/``version``/``data``) so callers
     can update them without re-fetching. Returns [] on search failure —
@@ -527,6 +530,10 @@ def find_existing_items(zot, *, doi=None, arxiv_id=None, isbn=None, url=None,
             if _normalize_arxiv_id(data.get("url") or "") == arxiv_id:
                 return True
             return f"arxiv:{arxiv_id}".lower() in (data.get("extra") or "").lower()
+    elif bibcode:
+        query = bibcode
+        def _matches(data):
+            return f"bibcode: {bibcode}".lower() in (data.get("extra") or "").lower()
     elif isbn:
         query = isbn
         def _matches(data):
