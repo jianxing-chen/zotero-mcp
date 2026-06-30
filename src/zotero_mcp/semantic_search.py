@@ -336,9 +336,13 @@ class ApiReranker:
     sentence-transformers model in-process — the server (e.g. oMLX on Apple
     Silicon) owns the GPU/MLX resources.
 
-    Request (POST {base_url}/rerank):
-        {"model": ..., "query": ..., "documents": [...], "top_n": N}
-    Response:
+    Two request formats are supported via ``request_format``:
+      - "flat" (default, oMLX/Jina/Cohere-style):
+          {"model", "query", "documents": [str], "top_n", "return_documents": false}
+      - "nested" (zenmux/some gateways):
+          {"model", "input": {"query", "documents"}, "parameters": {"top_n", ...}}
+
+    Response (both formats):
         {"results": [{"index": int, "relevance_score": float}, ...]}
     (results are pre-sorted by descending relevance_score per the spec)
     """
@@ -348,6 +352,7 @@ class ApiReranker:
         model: str,
         base_url: str | None = None,
         api_key: str | None = None,
+        request_format: str = "flat",
         timeout: float = 30.0,
     ):
         self.model = model
@@ -355,6 +360,7 @@ class ApiReranker:
         # The rerank endpoint is {base_url}/rerank → "http://localhost:8000/v1/rerank".
         self.base_url = (base_url or "").rstrip("/")
         self.api_key = api_key
+        self.request_format = request_format.lower()
         self.timeout = timeout
 
     def _endpoint(self) -> str:
@@ -375,14 +381,30 @@ class ApiReranker:
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
-        payload = {
-            "model": self.model,
-            "query": query,
-            "documents": documents,
-            "top_n": top_k,
-            # Don't echo documents back — we only need index + score.
-            "return_documents": False,
-        }
+        if self.request_format == "nested":
+            # zenmux-style: query+documents nested under "input", options
+            # under "parameters".
+            payload = {
+                "model": self.model,
+                "input": {
+                    "query": query,
+                    "documents": documents,
+                },
+                "parameters": {
+                    "top_n": top_k,
+                    "return_documents": False,
+                },
+            }
+        else:
+            # flat (oMLX/Jina/Cohere-style): top-level query/documents/top_n.
+            payload = {
+                "model": self.model,
+                "query": query,
+                "documents": documents,
+                "top_n": top_k,
+                # Don't echo documents back — we only need index + score.
+                "return_documents": False,
+            }
 
         resp = requests.post(
             self._endpoint(), headers=headers, json=payload, timeout=self.timeout
@@ -508,6 +530,7 @@ class ZoteroSemanticSearch:
                     model=model,
                     base_url=base_url,
                     api_key=self._reranker_config.get("api_key"),
+                    request_format=self._reranker_config.get("request_format", "flat"),
                     timeout=float(self._reranker_config.get("timeout", 30.0)),
                 )
             else:

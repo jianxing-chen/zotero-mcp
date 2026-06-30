@@ -101,6 +101,39 @@ class TestApiRerankerRequests:
             scored = r.rerank_with_scores("q", ["a", "b", "c"], top_k=3)
         assert scored == [(1, 0.9), (2, 0.5), (0, 0.1)]
 
+    def test_nested_format_zenmux(self):
+        # zenmux-style: query+documents under "input", options under "parameters".
+        r = ApiReranker(
+            model="qwen/qwen3-rerank",
+            base_url="https://zenmux.ai/api/v1",
+            request_format="nested",
+        )
+        with patch("requests.post", return_value=self._mock_response()) as mock_post:
+            scored = r.rerank_with_scores("query", ["d0", "d1", "d2"], top_k=3)
+
+        assert scored == [(2, 0.95), (0, 0.72), (1, 0.31)]
+        body = mock_post.call_args.kwargs["json"]
+        # Nested structure: input.{query,documents}, parameters.top_n
+        assert "input" in body
+        assert body["input"]["query"] == "query"
+        assert body["input"]["documents"] == ["d0", "d1", "d2"]
+        assert body["parameters"]["top_n"] == 3
+        assert body["parameters"]["return_documents"] is False
+        # No top-level query/documents (that's the flat format).
+        assert "query" not in body
+        assert "documents" not in body
+
+    def test_flat_format_default(self):
+        # Default format is flat (oMLX/Jina-style): top-level query/documents.
+        r = ApiReranker(model="m", base_url="http://localhost:8000/v1")
+        with patch("requests.post", return_value=self._mock_response()) as mock_post:
+            r.rerank_with_scores("q", ["d"], top_k=1)
+        body = mock_post.call_args.kwargs["json"]
+        assert body["query"] == "q"
+        assert body["documents"] == ["d"]
+        assert body["top_n"] == 1
+        assert "input" not in body
+
 
 # --------------------------------------------------------------------------- #
 # ApiReranker error handling
