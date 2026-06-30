@@ -2,10 +2,7 @@
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
-from zotero_mcp import ads_client
-from zotero_mcp.ads_client import export, SUPPORTED_EXPORT_FORMATS
+from zotero_mcp.ads_client import SUPPORTED_EXPORT_FORMATS, export
 
 
 class TestExportFunction:

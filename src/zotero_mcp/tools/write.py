@@ -6,7 +6,7 @@ import re
 import tempfile
 import time as _time
 import xml.etree.ElementTree as ET
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 import requests
 from pydantic import Field
@@ -4093,8 +4093,8 @@ def _upgrade_single_preprint(
             # Replace any existing arXiv bibcode line, or append.
             new_extra = existing_extra
             # Remove old arXiv bibcode line if present.
-            lines = [l for l in new_extra.splitlines()
-                     if not l.strip().lower().startswith("bibcode:")]
+            lines = [ln for ln in new_extra.splitlines()
+                     if not ln.strip().lower().startswith("bibcode:")]
             lines.append(f"bibcode: {pub_bibcode}")
             field_updates["extra"] = "\n".join(lines).strip()
 

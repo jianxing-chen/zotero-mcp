@@ -1,22 +1,18 @@
 """Tests for metadata enrichment and preprint upgrade features."""
 
-import json
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from zotero_mcp import ads_client
 from zotero_mcp.citation_import import csl_json_to_zotero
 from zotero_mcp.tools.write import (
     _ads_doc_to_enrich_fields,
+    _enrich_single_item,
     _find_published_version,
-    _parse_bibcode_from_extra,
     _parse_arxiv_id_from_extra,
+    _parse_bibcode_from_extra,
     _title_similarity,
     _upgrade_single_preprint,
-    _enrich_single_item,
 )
-
 
 # --------------------------------------------------------------------------- #
 # ads_client.doc_to_csl_json — bibstem + pubdate extraction
