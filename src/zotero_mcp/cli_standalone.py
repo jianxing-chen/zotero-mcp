@@ -416,16 +416,20 @@ def cmd_db(args):
             print("Error: --openai-batch requires ZOTERO_EMBEDDING_MODEL=openai", file=sys.stderr)
             sys.exit(1)
         fulltext = getattr(args, "fulltext", False)
-        if fulltext:
+        reindex_keys: list[str] | None = None
+        if getattr(args, "reindex_keys", None):
+            reindex_keys = [k.strip() for k in args.reindex_keys.split(",") if k.strip()]
+        if fulltext or reindex_keys:
             from zotero_mcp.utils import is_local_mode
             if not is_local_mode():
-                print("Error: --fulltext requires local mode (ZOTERO_LOCAL=true).", file=sys.stderr)
+                print("Error: --fulltext/--reindex-keys requires local mode (ZOTERO_LOCAL=true).", file=sys.stderr)
                 sys.exit(1)
         stats = search.update_database(
             force_full_rebuild=args.force_rebuild,
             limit=args.limit,
             extract_fulltext=fulltext,
             use_openai_batch=getattr(args, "openai_batch", None),
+            reindex_keys=reindex_keys,
         )
         _print_update_stats(stats)
         if stats.get("error"):
@@ -793,6 +797,11 @@ def build_parser() -> argparse.ArgumentParser:
     dbu.add_argument("--force-rebuild", action="store_true")
     dbu.add_argument("--limit", type=int)
     dbu.add_argument("--fulltext", action="store_true")
+    dbu.add_argument(
+        "--reindex-keys",
+        dest="reindex_keys",
+        help="Comma-separated Zotero item keys to force re-embedding (reuses MinerU cache).",
+    )
     dbu.add_argument("--config-path")
     dbu.add_argument("--db-path")
     dbu_batch = dbu.add_mutually_exclusive_group()

@@ -23,7 +23,6 @@ pages.json, meta.json}``. Invalidated when the source PDF's mtime+size change.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -505,7 +504,6 @@ def _call_mineru_cloud(
     On vlm failure, retries once with pipeline. Returns
     (markdown, content_list, "mineru:cloud-vlm"|"mineru:cloud-pipeline") or None.
     """
-    import time
 
     for attempt_model in (model_version, "pipeline") if model_version != "pipeline" else ("pipeline",):
         result = _cloud_parse_single(pdf_path, start_page_0, end_page_0, token, attempt_model, timeout)
@@ -702,7 +700,6 @@ def _read_cache(attachment_key: str, config: dict[str, Any]) -> ParseResult | No
     """Load a cached parse result (assumes validity already checked)."""
     cache_dir = _cache_dir_for(attachment_key, config)
     try:
-        meta = json.loads((cache_dir / "meta.json").read_text(encoding="utf-8"))
         pages = json.loads((cache_dir / "pages.json").read_text(encoding="utf-8"))
         markdown = (cache_dir / "fulltext.md").read_text(encoding="utf-8")
     except Exception as e:
@@ -846,3 +843,36 @@ def markdown_to_plaintext(md: str) -> str:
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
+
+def read_cached_fulltext(
+    attachment_key: str, config: dict[str, Any] | None = None
+) -> str | None:
+    """Return cached MinerU fulltext for an attachment, or ``None``.
+
+    This is a *cache-only* read: it never triggers a parse. It is intended for
+    the semantic-search build path, which should silently reuse text already
+    produced by ``zotero_read_pdf_pages`` (a prior "精读" session) rather than
+    re-extracting the PDF with pdfminer.
+
+    Returns the MinerU markdown converted to plain text via
+    :func:`markdown_to_plaintext` (so LaTeX symbols survive as signal for
+    embedding). Returns ``None`` when the cache is absent, empty, or corrupt,
+    so the caller falls back to the normal pdfminer extraction chain.
+    """
+    if not attachment_key:
+        return None
+    cfg = config if config is not None else load_mineru_config()
+    try:
+        cache_dir = _cache_dir_for(attachment_key, cfg)
+        md_path = cache_dir / "fulltext.md"
+        if not md_path.exists():
+            return None
+        md = md_path.read_text(encoding="utf-8", errors="replace")
+    except Exception as e:
+        logger.debug(f"read_cached_fulltext({attachment_key}) read failed: {e}")
+        return None
+    if not md or not md.strip():
+        return None
+    plain = markdown_to_plaintext(md)
+    return plain or None

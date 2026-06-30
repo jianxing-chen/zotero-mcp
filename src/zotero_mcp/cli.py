@@ -311,6 +311,10 @@ def main():
                                  help="Limit number of items to process (for testing)")
     update_db_parser.add_argument("--fulltext", action="store_true",
                                  help="Extract fulltext content from local Zotero database (slower but more comprehensive)")
+    update_db_parser.add_argument("--reindex-keys", dest="reindex_keys",
+                                 help="Comma-separated Zotero item keys to force re-embedding "
+                                      "(e.g. AB123456,CD789012). Reuses MinerU '精读' cache "
+                                      "when available. Requires local mode (ZOTERO_LOCAL=true).")
     update_db_parser.add_argument("--config-path",
                                  help="Path to semantic search configuration file")
     update_db_parser.add_argument("--db-path",
@@ -516,6 +520,23 @@ def main():
                 sys.exit(1)
 
             print("Starting database update...")
+            reindex_keys: list[str] | None = None
+            if getattr(args, "reindex_keys", None):
+                reindex_keys = [
+                    k.strip() for k in args.reindex_keys.split(",") if k.strip()
+                ]
+                if reindex_keys:
+                    from zotero_mcp.utils import is_local_mode
+                    if not is_local_mode():
+                        print(
+                            "Error: --reindex-keys requires local mode (ZOTERO_LOCAL=true).",
+                            file=sys.stderr,
+                        )
+                        sys.exit(1)
+                    print(
+                        f"Reindexing {len(reindex_keys)} specific item(s): "
+                        f"{', '.join(reindex_keys)}"
+                    )
             if args.fulltext:
                 from zotero_mcp.utils import is_local_mode
                 if not is_local_mode():
@@ -532,6 +553,7 @@ def main():
                 limit=args.limit,
                 extract_fulltext=args.fulltext,
                 use_openai_batch=args.openai_batch,
+                reindex_keys=reindex_keys,
             )
 
             _print_update_stats(stats)

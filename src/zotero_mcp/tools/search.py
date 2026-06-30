@@ -937,6 +937,11 @@ def semantic_search(
         "are re-embedded, so repeated calls are cheap. "
         "force_rebuild=True re-embeds ALL items from scratch (slow; use "
         "when changing the embedding model or recovering from corruption). "
+        "reindex_keys: a list of specific Zotero item keys (e.g. "
+        "['AB123456','CD789012']) to force re-embedding of just those "
+        "items — used to pick up a MinerU '精读' (close-reading) cache that "
+        "was produced after the last update. The incremental watermark is "
+        "NOT advanced by a reindex_keys run. "
         "limit: optional cap on items processed (useful for smoke-testing). "
         "Progress is reported via the MCP context; on large libraries an "
         "incremental update is seconds, a full rebuild can take minutes. "
@@ -951,6 +956,7 @@ def semantic_search(
 def update_search_database(
     force_rebuild: bool = False,
     limit: int | None = None,
+    reindex_keys: list[str] | None = None,
     *,
     ctx: Context
 ) -> str:
@@ -960,6 +966,8 @@ def update_search_database(
     Args:
         force_rebuild: Whether to rebuild the entire database from scratch
         limit: Limit number of items to process (useful for testing)
+        reindex_keys: Optional list of Zotero item keys to force
+            re-embedding (reuses MinerU '精读' cache when available)
         ctx: MCP context
 
     Returns:
@@ -984,11 +992,14 @@ def update_search_database(
         # Create semantic search instance
         search = create_semantic_search(str(config_path))
 
-        # Use fulltext extraction when in local mode (has access to PDFs)
+        # Use fulltext extraction when in local mode (has access to PDFs),
+        # or always when reindex_keys is set (needs local PDFs/MinerU cache).
+        extract_fulltext = _utils.is_local_mode() or bool(reindex_keys)
         stats = search.update_database(
             force_full_rebuild=force_rebuild,
             limit=limit,
-            extract_fulltext=_utils.is_local_mode()
+            extract_fulltext=extract_fulltext,
+            reindex_keys=reindex_keys,
         )
 
         # Format results

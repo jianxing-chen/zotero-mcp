@@ -9,9 +9,6 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import patch
-
-import pytest
 
 from zotero_mcp import mineru_client as M
 
@@ -296,7 +293,6 @@ class TestApiBackend:
             content = zip_bytes
             text = ""
 
-        import zotero_mcp.mineru_client as mod
         fake_requests = type("R", (), {"post": staticmethod(lambda *a, **k: _FakeResp())})()
         monkeypatch.setitem(sys.modules, "requests", fake_requests)
         # The function imports requests lazily inside; patch the module attr too.
@@ -341,3 +337,55 @@ class TestMarkdownToPlaintext:
         text = M.markdown_to_plaintext(md)
         assert "<table>" not in text
         assert "A" in text and "B" in text
+
+
+# --------------------------------------------------------------------------- #
+# read_cached_fulltext (cache-only read for semantic-search build path)
+# --------------------------------------------------------------------------- #
+class TestReadCachedFulltext:
+    """Verify the cache-only entry point used by the semantic-search build
+    path to reuse MinerU "精读" output without triggering a new parse."""
+
+    def test_returns_none_when_no_cache(self, tmp_path, monkeypatch):
+        """No cache dir → None (caller falls back to pdfminer)."""
+        monkeypatch.setattr(M, "_resolve_cache_dir", lambda _cfg: tmp_path / "mineru")
+        assert M.read_cached_fulltext("NOPEKEY") is None
+
+    def test_returns_plaintext_when_cache_present(self, tmp_path, monkeypatch):
+        """Valid cache → markdown converted to plaintext (LaTeX symbols kept)."""
+        cache_root = tmp_path / "mineru"
+        (cache_root / "ATTKEY").mkdir(parents=True)
+        (cache_root / "ATTKEY" / "fulltext.md").write_text(
+            "# Title\n\nThe energy is $E = mc^2$ here.\n\n| col1 | col2 |\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(M, "_resolve_cache_dir", lambda _cfg: cache_root)
+        # No explicit config → load_mineru_config() is called; patch _resolve
+        # already done above so the default-config path resolves to our root.
+        monkeypatch.setattr(M, "load_mineru_config", lambda *a, **k: {})
+        text = M.read_cached_fulltext("ATTKEY")
+        assert text is not None
+        assert "E = mc^2" in text  # LaTeX symbols survive
+        assert "#" not in text      # heading markers stripped
+
+    def test_empty_cache_file_returns_none(self, tmp_path, monkeypatch):
+        """Empty fulltext.md → None."""
+        cache_root = tmp_path / "mineru"
+        (cache_root / "ATTKEY").mkdir(parents=True)
+        (cache_root / "ATTKEY" / "fulltext.md").write_text("", encoding="utf-8")
+        monkeypatch.setattr(M, "_resolve_cache_dir", lambda _cfg: cache_root)
+        monkeypatch.setattr(M, "load_mineru_config", lambda *a, **k: {})
+        assert M.read_cached_fulltext("ATTKEY") is None
+
+    def test_whitespace_only_cache_returns_none(self, tmp_path, monkeypatch):
+        """Whitespace-only fulltext.md → None after plaintext strip."""
+        cache_root = tmp_path / "mineru"
+        (cache_root / "ATTKEY").mkdir(parents=True)
+        (cache_root / "ATTKEY" / "fulltext.md").write_text("   \n\n  \n", encoding="utf-8")
+        monkeypatch.setattr(M, "_resolve_cache_dir", lambda _cfg: cache_root)
+        monkeypatch.setattr(M, "load_mineru_config", lambda *a, **k: {})
+        assert M.read_cached_fulltext("ATTKEY") is None
+
+    def test_empty_key_returns_none(self):
+        assert M.read_cached_fulltext("") is None
+        assert M.read_cached_fulltext(None) is None

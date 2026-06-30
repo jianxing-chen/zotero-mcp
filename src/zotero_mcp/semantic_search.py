@@ -770,6 +770,7 @@ class ZoteroSemanticSearch:
         chroma_client: ChromaClient | None = None,
         force_rebuild: bool = False,
         include_fulltext_via_api: bool = False,
+        reindex_keys: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """
         Get items from either local database or API.
@@ -790,6 +791,9 @@ class ZoteroSemanticSearch:
             chroma_client: ChromaDB client to check for existing documents (None to skip checks)
             force_rebuild: Whether to force extraction even if item exists
             include_fulltext_via_api: Fetch fulltext via the Zotero web API
+            reindex_keys: Optional list of Zotero item keys to force
+                re-extraction/re-embedding (bypasses the "already indexed"
+                skip). Only meaningful with extract_fulltext.
 
         Returns:
             List of items in API-compatible format
@@ -801,7 +805,8 @@ class ZoteroSemanticSearch:
                     "Set ZOTERO_LOCAL=true or run 'zotero-mcp setup' to enable local mode."
                 )
             return self._get_items_from_local_db(
-                limit, extract_fulltext=extract_fulltext, chroma_client=chroma_client, force_rebuild=force_rebuild
+                limit, extract_fulltext=extract_fulltext, chroma_client=chroma_client,
+                force_rebuild=force_rebuild, reindex_keys=reindex_keys,
             )
         else:
             return self._get_items_from_api(limit, include_fulltext=include_fulltext_via_api)
@@ -812,6 +817,7 @@ class ZoteroSemanticSearch:
         extract_fulltext: bool = False,
         chroma_client: ChromaClient | None = None,
         force_rebuild: bool = False,
+        reindex_keys: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """
         Get items from local Zotero database.
@@ -821,6 +827,10 @@ class ZoteroSemanticSearch:
             extract_fulltext: Whether to extract fulltext content
             chroma_client: ChromaDB client to check for existing documents (None to skip checks)
             force_rebuild: Whether to force extraction even if item exists
+            reindex_keys: Optional list of Zotero item keys to force
+                re-extraction. When set, only these items are returned and
+                the "already indexed" skip is bypassed (they are always
+                re-extracted and re-embedded).
 
         Returns:
             List of items in API-compatible format
@@ -918,6 +928,29 @@ class ZoteroSemanticSearch:
                     filtered_items.append(it)
 
                 local_items = filtered_items
+
+                # reindex_keys: narrow to just the requested items. Used to
+                # pick up MinerU "精读" caches produced after the last update
+                # — only those items are re-extracted and re-embedded.
+                if reindex_keys:
+                    _rk = {k.strip().upper() for k in reindex_keys if k and k.strip()}
+                    local_items = [it for it in local_items if getattr(it, "key", "").upper() in _rk]
+                    try:
+                        sys.stderr.write(
+                            f"Reindex mode: {len(local_items)}/{len(_rk)} requested items "
+                            f"found in local DB.\n"
+                        )
+                    except Exception:
+                        pass
+                    if not local_items:
+                        try:
+                            sys.stderr.write(
+                                "  None of the requested keys were found — nothing to do.\n"
+                            )
+                        except Exception:
+                            pass
+                        return []
+
                 total_to_extract = len(local_items)
                 if total_to_extract != candidate_count:
                     try:
@@ -1018,8 +1051,10 @@ class ZoteroSemanticSearch:
 
                         should_extract = True
 
-                        # CHECK IF ITEM ALREADY EXISTS (unless force_rebuild or no client)
-                        if chroma_client and not force_rebuild:
+                        # CHECK IF ITEM ALREADY EXISTS (unless force_rebuild /
+                        # reindex_keys / no client). reindex_keys forces
+                        # re-extraction so a fresh MinerU cache is picked up.
+                        if chroma_client and not force_rebuild and not reindex_keys:
                             existing_metadata = chroma_client.get_document_metadata(it.key)
                             if existing_metadata:
                                 chroma_has_fulltext = existing_metadata.get("has_fulltext", False)
@@ -1534,6 +1569,7 @@ class ZoteroSemanticSearch:
         extract_fulltext: bool = False,
         include_fulltext: bool | None = None,
         use_openai_batch: bool | None = None,
+        reindex_keys: list[str] | None = None,
     ) -> dict[str, Any]:
         """
         Update the semantic search database with Zotero items.
@@ -1550,6 +1586,13 @@ class ZoteroSemanticSearch:
                 `extract_fulltext` provides richer local extraction.
             use_openai_batch: Override for OpenAI Batch API indexing. None
                 uses `semantic_search.openai_batch.enabled`.
+            reindex_keys: Optional list of Zotero item keys to force
+                re-embedding, ignoring the incremental watermark and the
+                "already indexed" skip. Requires local mode
+                (extract_fulltext) — used to pick up MinerU "精读" caches
+                that were produced after the last update. The watermark is
+                NOT promoted on a reindex_keys run (it's a targeted
+                refresh, not a library-version advance).
 
         Returns:
             Update statistics
@@ -1606,9 +1649,17 @@ class ZoteroSemanticSearch:
             if include_fulltext is None:
                 include_fulltext = self._load_include_fulltext_setting()
 
-            # Web-API fulltext only applies when not using the local sqlite
-            # extractor (extract_fulltext=True takes precedence in local mode)
-            include_fulltext_via_api = include_fulltext and not extract_fulltext
+            # reindex_keys: targeted refresh of specific items (e.g. to pick up
+            # a MinerU "精读" cache produced after the last update). Forces the
+            # local-extraction path and bypasses the incremental watermark.
+            _is_reindex = bool(reindex_keys)
+            if _is_reindex:
+                extract_fulltext = True
+                include_fulltext_via_api = False
+            else:
+                # Web-API fulltext only applies when not using the local sqlite
+                # extractor (extract_fulltext=True takes precedence in local mode)
+                include_fulltext_via_api = include_fulltext and not extract_fulltext
             use_openai_batch = self._resolve_openai_batch_enabled(use_openai_batch)
 
             # In batch mode, defer destructive rebuilds until import so the
@@ -1623,7 +1674,11 @@ class ZoteroSemanticSearch:
             # fulltext only), not a test limit, and a known prior sync version.
             last_sync_version = self._load_last_sync_version() if not force_full_rebuild else 0
             use_incremental = (
-                not force_full_rebuild and not extract_fulltext and limit is None and last_sync_version > 0
+                not _is_reindex
+                and not force_full_rebuild
+                and not extract_fulltext
+                and limit is None
+                and last_sync_version > 0
             )
 
             target_sync_version: int | None = None
@@ -1695,11 +1750,17 @@ class ZoteroSemanticSearch:
                     chroma_client=self.chroma_client if not force_full_rebuild else None,
                     force_rebuild=force_full_rebuild,
                     include_fulltext_via_api=include_fulltext_via_api,
+                    reindex_keys=reindex_keys,
                 )
+                # A reindex_keys run is a targeted refresh, not a
+                # library-version advance — never promote the watermark so
+                # the next normal update still covers any real changes.
+                if _is_reindex:
+                    target_sync_version = None
                 # The local-extraction scan may lag behind the API version
                 # captured above (immutable sqlite reads skip WAL contents);
                 # only promote the watermark if the snapshot was complete.
-                if extract_fulltext and target_sync_version is not None:
+                elif extract_fulltext and target_sync_version is not None:
                     target_sync_version = self._verify_local_snapshot_version(
                         target_sync_version
                     )
