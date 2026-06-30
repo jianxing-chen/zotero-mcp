@@ -301,8 +301,11 @@ def _call_cli_with_fallback(
         return None
 
     backend = _normalize_backend(config.get("backend"))
-    if backend == "api":
-        # API handled elsewhere; if user misconfigured backend here, try hybrid.
+    if backend in ("api", "cloud"):
+        # API/cloud handled elsewhere; if we reach the local CLI from those
+        # backends (e.g. cloud failed and fell through), start the local
+        # degradation chain from the GPU backend so the -b flag gets a valid
+        # value (not "cloud"/"api"). Falls back to pipeline on GPU failure.
         backend = "hybrid-auto-engine"
 
     # Build a stable temp work dir so we can inspect output.
