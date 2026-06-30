@@ -332,11 +332,42 @@ class TestMarkdownToPlaintext:
         assert "x^2 + y^2" in text  # LaTeX symbols preserved
         assert "$$" not in text     # delimiters dropped
 
-    def test_flattens_html_table(self):
-        md = "<table><tr><td>A</td><td>B</td></tr></table>"
+    def test_table_converts_to_natural_language(self):
+        """HTML table → 'Field: value, Field: value' rows (not flat number stream)."""
+        md = (
+            "<table><tr><th>Name</th><th>Mass</th></tr>"
+            "<tr><td>J0023</td><td>0.3</td></tr></table>"
+        )
         text = M.markdown_to_plaintext(md)
         assert "<table>" not in text
-        assert "A" in text and "B" in text
+        assert "Name: J0023" in text
+        assert "Mass: 0.3" in text
+
+    def test_table_skips_empty_cells(self):
+        """Empty cells and ellipsis are skipped, not emitted as 'Field: ...'."""
+        md = (
+            "<table><tr><th>A</th><th>B</th></tr>"
+            "<tr><td>x</td><td>...</td></tr></table>"
+        )
+        text = M.markdown_to_plaintext(md)
+        assert "A: x" in text
+        assert "B:" not in text
+
+    def test_latex_mathrm_removed(self):
+        r"""$\mathrm{X}$ → X, not raw \mathrm fragments."""
+        text = M.markdown_to_plaintext(r"Flux $F_{\mathrm{X}}$ here")
+        assert "\\mathrm" not in text
+        assert "FX" in text or "F_X" in text
+
+    def test_latex_frac_to_slash(self):
+        r"""$\frac{a}{b}$ → a/b."""
+        text = M.markdown_to_plaintext(r"Ratio $\frac{a}{b}$ end")
+        assert "a/b" in text
+
+    def test_latex_pm_to_unicode(self):
+        r"""$\pm$ → ±."""
+        text = M.markdown_to_plaintext(r"Value $0.3 \pm 0.1$ end")
+        assert "±" in text
 
 
 # --------------------------------------------------------------------------- #

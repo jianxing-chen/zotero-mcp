@@ -814,34 +814,115 @@ def _invalidate_cache(attachment_key: str, config: dict[str, Any]) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Optional plaintext conversion (reserved for future semantic-search use)
+# Plaintext conversion for semantic-search embedding
 # --------------------------------------------------------------------------- #
-def markdown_to_plaintext(md: str) -> str:
-    """Strip Markdown structure to a plain text string for embedding.
+def _latex_to_readable(latex: str) -> str:
+    """Convert a LaTeX snippet to a compact, embedding-friendly string.
 
-    NOT used by the current read_pdf integration (which keeps Markdown for
-    LLM consumption), but provided so a future semantic-search path can reuse
-    MinerU output without re-parsing. Keeps LaTeX symbol characters (drop only
-    the ``$``/``$$`` delimiters), flattens tables to space-separated cells,
-    drops image refs.
+    Drops ``\\mathrm``/``\\text``/``\\frac``/``\\dot`` etc., keeping the
+    symbol characters so that ``$F_{\\mathrm{X}}$`` → ``F_X`` and
+    ``$\\dot{E}$`` → ``E``.  Strips ``{}`` grouping but preserves sub/superscript
+    content via ``_`` / ``^``.
+    """
+    import re
+
+    s = latex
+    # \mathrm{x} → x, \text{x} → x, \mathcal{x} → x, etc.
+    s = re.sub(r"\\(?:mathrm|mathit|mathbf|mathcal|text|operatorname)\s*\{([^}]*)\}", r"\1", s)
+    # \frac{a}{b} → a/b
+    s = re.sub(r"\\frac\s*\{([^}]*)\}\s*\{([^}]*)\}", r"\1/\2", s)
+    # \dot{x} → x, \ddot{x} → x, \hat{x} → x, \bar{x} → x, \tilde{x} → x
+    s = re.sub(r"\\(?:dot|ddot|hat|bar|tilde|vec|overline)\s*\{([^}]*)\}", r"\1", s)
+    # \pm → ±, \times → ×, \sim → ~, \le → <=, \ge → >=, \approx → ~
+    s = s.replace(r"\pm", "±").replace(r"\times", "×")
+    s = s.replace(r"\sim", "~").replace(r"\le", "<=").replace(r"\ge", ">=")
+    s = s.replace(r"\approx", "~").replace(r"\propto", "∝").replace(r"\infty", "∞")
+    # Drop remaining \command (e.g. \gamma → gamma, \sigma → sigma)
+    s = re.sub(r"\\([a-zA-Z]+)", r"\1", s)
+    # {subscript} after _ → _subscript  (keep _ for embedding readability)
+    s = re.sub(r"_\s*\{([^}]*)\}", r"_\1", s)
+    s = re.sub(r"\^\s*\{([^}]*)\}", r"^\1", s)
+    # Remove bare { } (grouping without _ or ^)
+    s = re.sub(r"(?<![_^])\{([^}]*)\}", r"\1", s)
+    s = s.replace("{", "").replace("}", "")
+    # Collapse spaces
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _table_to_natural_language(table_html: str) -> str:
+    """Convert an HTML table to natural-language rows for embedding.
+
+    ``<table><tr><th>Name</th><th>Mass</th></tr><tr><td>J0023</td><td>0.3</td></tr></table>``
+    → ``Name: J0023, Mass: 0.3``  (one line per data row).
+
+    This preserves field-value pairing so the embedding model sees structured
+    information instead of a flat number stream.
+    """
+    import re
+
+    rows = re.findall(r"<tr[^>]*>(.*?)</tr>", table_html, re.DOTALL)
+    if not rows:
+        return table_html  # fallback
+
+    # First row = header (th or td).
+    def _cells(row_html: str) -> list[str]:
+        return [c.strip() for c in re.findall(r"<t[hd][^>]*>(.*?)</t[hd]>", row_html, re.DOTALL)]
+
+    headers = _cells(rows[0])
+    lines: list[str] = []
+    for row_html in rows[1:]:
+        cells = _cells(row_html)
+        if not cells:
+            continue
+        # Pair each cell with its header.
+        parts = []
+        for i, cell in enumerate(cells):
+            header = headers[i] if i < len(headers) else f"col{i}"
+            # Skip empty cells and ellipsis.
+            if cell in ("", "...", "…"):
+                continue
+            parts.append(f"{header}: {cell}")
+        if parts:
+            lines.append(", ".join(parts))
+    return "\n".join(lines)
+
+
+def markdown_to_plaintext(md: str) -> str:
+    """Convert MinerU Markdown to a plain text string optimized for embedding.
+
+    Unlike a naive ``strip-tags`` approach, this preserves *structured signal*:
+
+    - **Tables** → natural-language rows (``Field: value, Field: value``) so the
+      embedding model sees field-value pairing instead of a flat number stream.
+    - **LaTeX** → readable symbols (``$F_{\\mathrm{X}}$`` → ``F_X``) instead of
+      raw ``\\mathrm`` fragments that act as noise for embeddings.
+    - **Headings/emphasis/image refs** → stripped (no semantic value for
+      embedding).
+
+    Used by :func:`read_cached_fulltext` (semantic-search build path). The
+    ``zotero_read_pdf_pages`` tool keeps the original Markdown for LLM
+    consumption where HTML tables and LaTeX are directly understandable.
     """
     import re
 
     text = md
     # Drop image refs ![alt](path)
     text = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", text)
+    # Convert HTML tables to natural-language rows BEFORE stripping tags.
+    def _replace_table(m: re.Match) -> str:
+        return "\n" + _table_to_natural_language(m.group(0)) + "\n"
+
+    text = re.sub(r"<table[^>]*>.*?</table>", _replace_table, text, flags=re.DOTALL)
+    # Drop any remaining stray HTML tags
+    text = re.sub(r"<[^>]+>", "", text)
     # Drop heading markers
     text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
     # Drop emphasis/strong markers
     text = re.sub(r"\*{1,3}|_{1,3}", "", text)
-    # Drop $$...$$ delimiters but keep contents (LaTeX symbols are signal)
-    text = re.sub(r"\$\$", "", text)
-    # Drop $...$ inline delimiters (heuristic — bare $ are rare in prose)
-    text = re.sub(r"(?<!\\)\$", "", text)
-    # Flatten HTML tables: <tr>/<td>...</td></tr> → space-joined cells
-    text = re.sub(r"<table[^>]*>|</table>|<tr[^>]*>|</tr>|<t[hd][^>]*>|</t[hd]>", " ", text)
-    # Drop any remaining stray HTML tags
-    text = re.sub(r"<[^>]+>", "", text)
+    # Convert LaTeX: $...$ and $$...$$ → readable symbols
+    text = re.sub(r"\$\$([^$]*)\$\$", lambda m: _latex_to_readable(m.group(1)), text)
+    text = re.sub(r"\$([^$]*)\$", lambda m: _latex_to_readable(m.group(1)), text)
     # Collapse whitespace
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
