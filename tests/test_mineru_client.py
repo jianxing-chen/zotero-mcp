@@ -94,9 +94,10 @@ class TestCliFallback:
             self._make_completed(md_content="# Page\n\n$$x^2$$ content"),
         )
 
-        parsed = M.read_cached_or_parse("ATTKEY", pdf, config)
+        parsed = M.read_cached_or_parse("ATTKEY", pdf, config, force_rebuild=True)
         assert parsed is not None
-        assert parsed.source == "mineru:hybrid"
+        # "hybrid" is normalized to "hybrid-auto-engine" (MinerU 3.x canonical name)
+        assert parsed.source == "mineru:hybrid-auto-engine"
         assert "x^2" in parsed.markdown
 
     def test_hybrid_failure_falls_back_to_pipeline(self, tmp_path, monkeypatch):
@@ -125,7 +126,7 @@ class TestCliFallback:
 
         monkeypatch.setattr(M.subprocess, "run", _run)
 
-        parsed = M.read_cached_or_parse("ATTKEY", pdf, config)
+        parsed = M.read_cached_or_parse("ATTKEY", pdf, config, force_rebuild=True)
         assert parsed is not None
         assert parsed.source == "mineru:pipeline"
         assert "pipeline output" in parsed.markdown
@@ -141,7 +142,7 @@ class TestCliFallback:
             lambda cmd, **k: subprocess.CompletedProcess(cmd, returncode=1, stderr="dead"),
         )
 
-        assert M.read_cached_or_parse("ATTKEY", pdf, config) is None
+        assert M.read_cached_or_parse("ATTKEY", pdf, config, force_rebuild=True) is None
 
     def test_timeout_returns_none(self, tmp_path, monkeypatch):
         pdf = tmp_path / "paper.pdf"
@@ -153,14 +154,14 @@ class TestCliFallback:
             raise subprocess.TimeoutExpired(cmd, 30)
 
         monkeypatch.setattr(M.subprocess, "run", _raise_timeout)
-        assert M.read_cached_or_parse("ATTKEY", pdf, config) is None
+        assert M.read_cached_or_parse("ATTKEY", pdf, config, force_rebuild=True) is None
 
     def test_no_executable_returns_none(self, tmp_path, monkeypatch):
         pdf = tmp_path / "paper.pdf"
         pdf.write_bytes(b"%PDF-1.4 fake")
         config = {"enabled": True, "backend": "hybrid"}
         monkeypatch.setattr(M.shutil, "which", lambda _n: None)
-        assert M.read_cached_or_parse("ATTKEY", pdf, config) is None
+        assert M.read_cached_or_parse("ATTKEY", pdf, config, force_rebuild=True) is None
 
 
 # --------------------------------------------------------------------------- #
@@ -301,7 +302,7 @@ class TestApiBackend:
         # The function imports requests lazily inside; patch the module attr too.
         monkeypatch.setattr(M, "_call_mineru_api", M._call_mineru_api)
 
-        parsed = M.read_cached_or_parse("ATTKEY", pdf, config)
+        parsed = M.read_cached_or_parse("ATTKEY", pdf, config, force_rebuild=True)
         assert parsed is not None
         assert parsed.source == "mineru:api"
         assert "mc^2" in parsed.markdown
@@ -319,7 +320,7 @@ class TestApiBackend:
         fake_requests = type("R", (), {"post": staticmethod(lambda *a, **k: _FakeResp())})()
         monkeypatch.setitem(sys.modules, "requests", fake_requests)
 
-        assert M.read_cached_or_parse("ATTKEY", pdf, config) is None
+        assert M.read_cached_or_parse("ATTKEY", pdf, config, force_rebuild=True) is None
 
 
 # --------------------------------------------------------------------------- #

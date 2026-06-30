@@ -256,6 +256,30 @@ def _read_content_list(out_dir: Path, stem: str) -> list[dict] | None:
     return None
 
 
+def _normalize_backend(raw: str | None) -> str:
+    """Normalize a configured backend name to a MinerU-accepted value.
+
+    MinerU's backend names changed across versions: early releases used
+    ``hybrid``/``vlm``, while 3.x uses ``hybrid-auto-engine``/``vlm-auto-engine``
+    (plus ``*-http-client`` variants). Accept both the short and long forms
+    so configs stay portable. ``pipeline`` is stable across versions.
+    """
+    b = (raw or "hybrid-auto-engine").lower().strip()
+    # Map short forms → 3.x canonical names.
+    if b in ("hybrid", "hybrid-engine"):
+        return "hybrid-auto-engine"
+    if b in ("vlm", "vlm-engine"):
+        return "vlm-auto-engine"
+    # Pass through pipeline / *-auto-engine / *-http-client / api as-is.
+    return b
+
+
+def _is_gpu_backend(backend: str) -> bool:
+    """True for backends that need GPU/MLX and may OOM (worth a pipeline retry)."""
+    return backend in ("hybrid-auto-engine", "hybrid", "hybrid-engine",
+                       "vlm-auto-engine", "vlm", "vlm-engine")
+
+
 def _call_cli_with_fallback(
     pdf_path: Path,
     start_page_0: int,
@@ -263,7 +287,7 @@ def _call_cli_with_fallback(
     config: dict[str, Any],
     timeout: int,
 ) -> tuple[str, list[dict] | None, str] | None:
-    """Try the configured local backend, falling hybrid→pipeline.
+    """Try the configured local backend, falling GPU→pipeline on failure.
 
     Returns (markdown, content_list, source_label) or None.
     """
@@ -271,10 +295,10 @@ def _call_cli_with_fallback(
     if not executable:
         return None
 
-    backend = (config.get("backend") or "hybrid").lower()
+    backend = _normalize_backend(config.get("backend"))
     if backend == "api":
         # API handled elsewhere; if user misconfigured backend here, try hybrid.
-        backend = "hybrid"
+        backend = "hybrid-auto-engine"
 
     # Build a stable temp work dir so we can inspect output.
     with tempfile.TemporaryDirectory(prefix="zotero_mineru_") as out_dir:
@@ -283,9 +307,9 @@ def _call_cli_with_fallback(
         if result is not None:
             md, content_list = result
             return md, content_list, f"mineru:{backend}"
-        # hybrid failed (likely OOM) → retry with pipeline once.
-        if backend == "hybrid":
-            logger.info("MinerU hybrid failed; retrying with pipeline backend.")
+        # GPU backend failed (likely OOM / unsupported) → retry with pipeline.
+        if _is_gpu_backend(backend):
+            logger.info(f"MinerU {backend} failed; retrying with pipeline backend.")
             # Fresh out dir to avoid reading stale hybrid output.
             with tempfile.TemporaryDirectory(prefix="zotero_mineru_") as out2:
                 result2 = _call_mineru_cli(
@@ -433,7 +457,15 @@ def _cache_meta_path(attachment_key: str, config: dict[str, Any]) -> Path:
 
 
 def _cache_is_valid(attachment_key: str, pdf_path: Path, config: dict[str, Any]) -> bool:
-    """True if a cached parse exists and the source PDF hasn't changed."""
+    """True if a cached parse exists and the source PDF hasn't changed.
+
+    Invalidation is by ``pdf_size`` only — NOT ``mtime``. The same attachment
+    may be served from different paths (local storage vs a temp download dir
+    via the WebDAV/cloud fallback in ``_get_pdf_path``), and each copy gets a
+    different mtime even though the content is identical. Size is stable across
+    copies and reliably changes when Zotero replaces the attachment (a new
+    attachment would also get a new key, so the cache dir would differ anyway).
+    """
     meta_path = _cache_meta_path(attachment_key, config)
     if not meta_path.exists():
         return False
@@ -445,10 +477,7 @@ def _cache_is_valid(attachment_key: str, pdf_path: Path, config: dict[str, Any])
         stat = pdf_path.stat()
     except OSError:
         return False
-    return (
-        meta.get("pdf_mtime") == stat.st_mtime
-        and meta.get("pdf_size") == stat.st_size
-    )
+    return meta.get("pdf_size") == stat.st_size
 
 
 def _write_cache(
@@ -558,7 +587,7 @@ def _dispatch_parse(
     A purely-local config skips the API hop entirely. Returns
     (markdown, content_list, source_label) or None.
     """
-    backend = (config.get("backend") or "hybrid").lower()
+    backend = _normalize_backend(config.get("backend"))
     timeout = _resolve_timeout(config)
 
     if backend == "api":
