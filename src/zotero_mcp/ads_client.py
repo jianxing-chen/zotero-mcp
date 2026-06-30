@@ -284,15 +284,35 @@ def doc_to_csl_json(doc: dict) -> dict:
         csl["author"] = [_split_author_name(a) for a in authors if a]
 
     year = doc.get("year")
-    if year:
+    pubdate = doc.get("pubdate")  # "YYYY-MM-DD" or "YYYY-MM-00"
+    # Prefer pubdate (full precision) over year; fall back to year.
+    date_str = ""
+    if pubdate:
+        # ADS uses "YYYY-MM-00" when day is unknown; normalize to "YYYY-MM".
+        date_str = str(pubdate).strip()
+        # Strip a trailing "-00" day component → "YYYY-MM".
+        if date_str.endswith("-00"):
+            date_str = date_str[:-3]
+    elif year:
+        date_str = str(year).strip()
+    if date_str:
         try:
-            csl["issued"] = {"date-parts": [[int(year)]]}
+            # Parse into date-parts for CSL. Accept "YYYY" or "YYYY-MM".
+            parts = [int(p) for p in date_str.split("-") if p]
+            csl["issued"] = {"date-parts": [parts]}
         except (TypeError, ValueError):
             pass
 
     pub = doc.get("pub")
     if pub:
         csl["container-title"] = pub
+
+    # ADS journal abbreviation (e.g. "ApJ", "MNRAS", "A&A").  CSL's
+    # container-title-short is the standard place for this; the Zotero
+    # import path maps it to the journalAbbreviation field.
+    bibstem = doc.get("bibstem")
+    if bibstem:
+        csl["container-title-short"] = str(bibstem).strip()
 
     for src, dst in (("volume", "volume"), ("issue", "issue"), ("page", "page")):
         val = doc.get(src)

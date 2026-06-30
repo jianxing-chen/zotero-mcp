@@ -1661,6 +1661,7 @@ _UPDATE_ITEM_API_TO_PARAM = {
     "date": "date",
     "accessDate": "access_date",
     "publicationTitle": "publication_title",
+    "journalAbbreviation": "journal_abbreviation",
     "abstractNote": "abstract",
     "DOI": "doi",
     "url": "url",
@@ -1696,9 +1697,9 @@ _UPDATE_ITEM_API_TO_PARAM = {
         "zotero_manage_collections instead. "
         "item_key: 8-character Zotero item key of the item to update. "
         "Editable fields include: title, creators, date, publisher, place, "
-        "publication_title, volume, issue, pages, DOI, ISBN, ISSN, url, "
-        "language, abstract, short_title, edition, book_title, extra, "
-        "citation_key, item_type. "
+        "publication_title, journal_abbreviation, volume, issue, pages, "
+        "DOI, ISBN, ISSN, url, language, abstract, short_title, edition, "
+        "book_title, extra, citation_key, item_type. "
         "To migrate an item across types (e.g., journalArticle → book), pass item_type "
         "with a valid Zotero item-type vocabulary value; overlapping fields are preserved "
         "and type-specific fields that do not map to the target type are dropped. "
@@ -1717,6 +1718,10 @@ def update_item(
     date: str | None = None,
     access_date: str | None = None,
     publication_title: str | None = None,
+    journal_abbreviation: Annotated[
+        str | None,
+        Field(description="Journal abbreviation / short title, e.g., 'ApJ', 'MNRAS', 'A&A'. Maps to Zotero's journalAbbreviation field."),
+    ] = None,
     abstract: str | None = None,
     tags: list[str] | str | None = None,
     add_tags: list[str] | str | None = None,
@@ -1839,6 +1844,8 @@ def update_item(
             field_updates["accessDate"] = access_date
         if publication_title is not None:
             field_updates["publicationTitle"] = publication_title
+        if journal_abbreviation is not None:
+            field_updates["journalAbbreviation"] = journal_abbreviation
         if abstract is not None:
             field_updates["abstractNote"] = abstract
         if doi is not None:
@@ -3533,3 +3540,635 @@ def add_by_csl_json(
     except Exception as e:
         ctx.error(f"Error adding by CSL JSON: {e}")
         return f"Error adding by CSL JSON: {e}"
+
+
+# --------------------------------------------------------------------------- #
+# Metadata enrichment (back-fill missing date / journalAbbreviation from ADS)
+# --------------------------------------------------------------------------- #
+
+# Fields that enrich_item_metadata knows how to fill from an ADS record.
+_ENRICHABLE_FIELDS = {"date", "journal_abbreviation"}
+
+
+def _parse_bibcode_from_extra(extra: str | None) -> str | None:
+    """Extract a ``bibcode: <value>`` line from a Zotero item's extra field."""
+    if not extra:
+        return None
+    for line in extra.splitlines():
+        line = line.strip()
+        if line.lower().startswith("bibcode:"):
+            bc = line.split(":", 1)[1].strip()
+            if bc:
+                return bc
+    return None
+
+
+def _ads_doc_to_enrich_fields(doc: dict, wanted: set[str]) -> dict[str, str]:
+    """Extract only the *wanted* fields from an ADS doc, keyed by Zotero param name.
+
+    Returns a dict like {"date": "2023-05", "journal_abbreviation": "ApJ"}.
+    Only present, non-empty values are included.
+    """
+    result: dict[str, str] = {}
+    if "date" in wanted:
+        # Prefer pubdate (full precision) over bare year.
+        pubdate = doc.get("pubdate")
+        date_str = ""
+        if pubdate:
+            date_str = str(pubdate).strip()
+            if date_str.endswith("-00"):
+                date_str = date_str[:-3]
+        elif doc.get("year"):
+            date_str = str(doc["year"]).strip()
+        if date_str:
+            result["date"] = date_str
+    if "journal_abbreviation" in wanted:
+        bibstem = doc.get("bibstem")
+        if bibstem:
+            result["journal_abbreviation"] = str(bibstem).strip()
+    return result
+
+
+def _enrich_single_item(
+    write_zot,
+    item_key: str,
+    wanted: set[str],
+    force: bool,
+) -> dict:
+    """Core enrichment logic for one item, reusable by single + batch tools.
+
+    Returns a result dict:
+        {"key", "title", "status", "filled", "skipped", "error"}
+    ``status`` is one of "enriched", "skipped_existing", "no_identifier",
+    "not_found", "error".
+    """
+    result: dict[str, Any] = {"key": item_key, "status": "", "filled": [], "skipped": [], "error": ""}
+    try:
+        item = write_zot.item(item_key)
+    except Exception as e:
+        result["status"] = "error"
+        result["error"] = f"fetch failed: {e}"
+        return result
+    if not item:
+        result["status"] = "error"
+        result["error"] = "item not found"
+        return result
+
+    data = item.get("data", {})
+    result["title"] = (data.get("title") or "")[:60]
+
+    # 1. Determine which wanted fields are actually missing.
+    to_fill = set()
+    for f in wanted:
+        if f == "date":
+            current = (data.get("date") or "").strip()
+        elif f == "journal_abbreviation":
+            current = (data.get("journalAbbreviation") or "").strip()
+        else:
+            continue
+        if force or not current:
+            to_fill.add(f)
+
+    if not to_fill:
+        result["status"] = "skipped_existing"
+        return result
+
+    # 2. Resolve identifier: bibcode from extra, then DOI.
+    bibcode = _parse_bibcode_from_extra(data.get("extra"))
+    doi = (data.get("DOI") or "").strip()
+
+    doc = None
+    if bibcode:
+        try:
+            doc = _ads_client.fetch_record(bibcode)
+        except Exception:
+            doc = None
+    if doc is None and doi:
+        try:
+            docs = _ads_client.search(f"doi:{doi}", fl=_ads_client._FULL_FIELDS, rows=1)
+            if docs:
+                doc = docs[0]
+        except Exception:
+            pass
+
+    if doc is None:
+        result["status"] = "not_found"
+        result["error"] = "no ADS record found (tried bibcode + DOI)"
+        return result
+
+    # 3. Extract the wanted fields from the ADS doc.
+    fill_values = _ads_doc_to_enrich_fields(doc, to_fill)
+    if not fill_values:
+        result["status"] = "not_found"
+        result["error"] = "ADS record has no values for the requested fields"
+        return result
+
+    # 4. PATCH the item — only the fields we actually got values for.
+    field_updates: dict[str, Any] = {}
+    if "date" in fill_values and "date" in to_fill:
+        field_updates["date"] = fill_values["date"]
+    if "journal_abbreviation" in fill_values and "journal_abbreviation" in to_fill:
+        field_updates["journalAbbreviation"] = fill_values["journal_abbreviation"]
+
+    # Build the patched item: copy current data, apply only our updates.
+    patched = dict(data)
+    for k, v in field_updates.items():
+        patched[k] = v
+
+    try:
+        write_zot.update_item(patched)
+    except Exception as e:
+        result["status"] = "error"
+        result["error"] = f"write failed: {e}"
+        return result
+
+    result["status"] = "enriched"
+    result["filled"] = list(field_updates.keys())
+    result["skipped"] = [f for f in to_fill if f not in fill_values]
+    return result
+
+
+@mcp.tool(
+    name="zotero_enrich_item_metadata",
+    description=(
+        "Back-fill MISSING metadata on an existing Zotero item by looking it "
+        "up in NASA ADS. Uses the item's bibcode (from the extra field) or "
+        "DOI to find the ADS record, then fills the requested fields. "
+        "By default fills 'date' and 'journal_abbreviation' (journal Abbr "
+        "like ApJ/MNRAS). Only fills fields that are currently empty — "
+        "existing values are preserved unless force=True. "
+        "Requires an ADS API token. "
+        "item_key: 8-char Zotero item key. "
+        "fields: list of field names to fill, default ['date', "
+        "'journal_abbreviation']. "
+        "force: if True, overwrite even non-empty fields. "
+        "Example: zotero_enrich_item_metadata(item_key='ABCD1234') "
+        "→ fills date + journal abbreviation from ADS."
+    )
+)
+@with_zotero_api_lock
+def enrich_item_metadata(
+    item_key: str,
+    fields: list[str] | None = None,
+    force: bool = False,
+    *,
+    ctx: Context
+) -> str:
+    """Enrich a single item's missing metadata from ADS."""
+    try:
+        _read_zot, write_zot = _helpers._get_write_client(ctx)
+    except ValueError as e:
+        return str(e)
+
+    if not _ads_client.is_available():
+        return "Error: ADS API token is not configured. Run 'zotero-mcp setup' to add it."
+
+    wanted = set(fields) if fields else _ENRICHABLE_FIELDS
+    invalid = wanted - _ENRICHABLE_FIELDS
+    if invalid:
+        return f"Error: unsupported fields {invalid}. Supported: {_ENRICHABLE_FIELDS}"
+
+    ctx.info(f"Enriching item {item_key} from ADS (fields: {wanted})...")
+    result = _enrich_single_item(write_zot, item_key, wanted, force)
+
+    lines = [f"# Enrichment Result for {item_key}", ""]
+    title = result.get("title", "")
+    if title:
+        lines.append(f"**Title:** {title}")
+    lines.append(f"**Status:** {result['status']}")
+
+    if result["filled"]:
+        lines.append(f"**Filled:** {', '.join(result['filled'])}")
+    if result["skipped"]:
+        lines.append(f"**Skipped (no ADS value):** {', '.join(result['skipped'])}")
+    if result["error"]:
+        lines.append(f"**Error:** {result['error']}")
+    return "\n".join(lines)
+
+
+@mcp.tool(
+    name="zotero_enrich_batch",
+    description=(
+        "Batch-enrich MISSING metadata on all Zotero items that lack 'date' "
+        "or 'journal_abbreviation'. Scans the library, finds items missing "
+        "the requested fields, looks each up in ADS (by bibcode or DOI), "
+        "and PATCHes the values back. Only fills empty fields — existing "
+        "values are preserved unless force=True. "
+        "Use after importing many papers without full metadata, or to "
+        "back-fill journal abbreviations on an existing library. "
+        "fields: list of field names, default ['date', 'journal_abbreviation']. "
+        "limit: cap on items processed (for testing). "
+        "force: if True, overwrite even non-empty fields. "
+        "Progress is reported via the MCP context. "
+        "Example: zotero_enrich_batch(limit=10) → enrich first 10 items "
+        "missing date or journal abbreviation."
+    )
+)
+@with_zotero_api_lock
+def enrich_batch(
+    fields: list[str] | None = None,
+    limit: int | None = None,
+    force: bool = False,
+    *,
+    ctx: Context
+) -> str:
+    """Batch-enrich missing metadata on all eligible items from ADS."""
+    try:
+        read_zot, write_zot = _helpers._get_write_client(ctx)
+    except ValueError as e:
+        return str(e)
+
+    if not _ads_client.is_available():
+        return "Error: ADS API token is not configured. Run 'zotero-mcp setup' to add it."
+
+    wanted = set(fields) if fields else _ENRICHABLE_FIELDS
+    invalid = wanted - _ENRICHABLE_FIELDS
+    if invalid:
+        return f"Error: unsupported fields {invalid}. Supported: {_ENRICHABLE_FIELDS}"
+
+    ctx.info("Scanning library for items missing requested fields...")
+
+    # Fetch all top-level items (exclude attachments/notes/annotations).
+    batch_size = 100
+    start = 0
+    candidates: list[dict] = []
+    while True:
+        try:
+            items = read_zot.items(start=start, limit=batch_size)
+        except Exception as e:
+            return f"Error fetching items: {e}"
+        if not items:
+            break
+        for it in items:
+            data = it.get("data", {})
+            if data.get("itemType") in ("attachment", "note", "annotation"):
+                continue
+            # Check if any wanted field is missing (when not force).
+            if not force:
+                needs = False
+                for f in wanted:
+                    if f == "date" and not (data.get("date") or "").strip():
+                        needs = True
+                        break
+                    if f == "journal_abbreviation" and not (data.get("journalAbbreviation") or "").strip():
+                        needs = True
+                        break
+                if not needs:
+                    continue
+            candidates.append(it)
+        start += batch_size
+        if len(items) < batch_size:
+            break
+        if limit and len(candidates) >= limit:
+            candidates = candidates[:limit]
+            break
+
+    total = len(candidates) if not limit else min(len(candidates), limit)
+    ctx.info(f"Found {total} items to enrich. Processing...")
+
+    results: list[dict] = []
+    stats = {"enriched": 0, "skipped_existing": 0, "not_found": 0, "error": 0}
+    for idx, it in enumerate(candidates[:total], 1):
+        key = it.get("key", "")
+        if not key:
+            continue
+        if idx % 25 == 0 or idx == total:
+            ctx.info(f"  Enriching {idx}/{total}...")
+        r = _enrich_single_item(write_zot, key, wanted, force)
+        results.append(r)
+        stats[r["status"]] = stats.get(r["status"], 0) + 1
+        # Be gentle with ADS rate limits (~8 req/s; stay well under).
+        _time.sleep(0.2)
+
+    lines = [
+        "# Batch Enrichment Results",
+        "",
+        f"**Total processed:** {total}",
+        f"**Enriched:** {stats.get('enriched', 0)}",
+        f"**Skipped (already complete):** {stats.get('skipped_existing', 0)}",
+        f"**Not found in ADS:** {stats.get('not_found', 0)}",
+        f"**Errors:** {stats.get('error', 0)}",
+        "",
+    ]
+    # Show first few enriched + errors for visibility.
+    enriched = [r for r in results if r["status"] == "enriched"]
+    if enriched:
+        lines.append("## Enriched (first 10)")
+        for r in enriched[:10]:
+            title = r.get("title", "")
+            filled = ", ".join(r.get("filled", []))
+            lines.append(f"- `{r['key']}` {title} — filled: {filled}")
+        if len(enriched) > 10:
+            lines.append(f"... and {len(enriched) - 10} more")
+        lines.append("")
+    errors = [r for r in results if r["status"] == "error"]
+    if errors:
+        lines.append("## Errors (first 10)")
+        for r in errors[:10]:
+            lines.append(f"- `{r['key']}` — {r.get('error', '?')}")
+        if len(errors) > 10:
+            lines.append(f"... and {len(errors) - 10} more")
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
+# Preprint upgrade (arXiv preprint → published journalArticle)
+# --------------------------------------------------------------------------- #
+
+def _find_published_version(doc: dict) -> dict | None:
+    """Given an ADS eprint (arXiv) doc, find the published article version.
+
+    ADS links eprint and published records via the DOI field: the published
+    version has a publisher DOI (e.g. 10.1088/...) and doctype='article',
+    while the eprint has an arXiv DOI (10.48550/arXiv.XXXX) and
+    doctype='eprint'.  We search ADS by the eprint's identifier to find a
+    matching article record.
+
+    Returns the published ADS doc, or None if not found / already published.
+    """
+    # If the doc itself is already an article (not eprint), no upgrade needed.
+    if doc.get("doctype") not in ("eprint", None):
+        return None
+
+    # Strategy: search ADS for the title — the published version usually
+    # appears alongside the eprint.  Filter for doctype=article with a pub.
+    title = doc.get("title")
+    if isinstance(title, list):
+        title = title[0] if title else ""
+    if not title or not isinstance(title, str):
+        return None
+
+    # Use first 6 title words as a precise-enough query.
+    words = [w for w in title.split() if len(w) > 1][:8]
+    if len(words) < 3:
+        return None
+    q = "title:\"{}\" doctype:article property:refereed".format(" ".join(words))
+    try:
+        docs = _ads_client.search(q, fl=_ads_client._FULL_FIELDS, rows=5)
+    except Exception:
+        return None
+
+    for d in docs:
+        if d.get("doctype") == "article" and d.get("pub"):
+            # Sanity: the title should be a close match.
+            dtitle = d.get("title")
+            if isinstance(dtitle, list):
+                dtitle = dtitle[0] if dtitle else ""
+            if dtitle and _title_similarity(title, dtitle) > 0.7:
+                return d
+    return None
+
+
+def _title_similarity(a: str, b: str) -> float:
+    """Token-overlap similarity in [0, 1] for short titles."""
+    ta = set(w.lower().strip(".,;:()[]") for w in a.split())
+    tb = set(w.lower().strip(".,;:()[]") for w in b.split())
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / len(ta | tb)
+
+
+def _upgrade_single_preprint(
+    write_zot,
+    item_key: str,
+) -> dict:
+    """Upgrade one preprint item to journalArticle if a published version exists.
+
+    Returns a result dict:
+        {"key", "title", "status", "details", "error"}
+    status is one of "upgraded", "not_published", "no_identifier",
+    "already_article", "error".
+    """
+    result: dict[str, Any] = {"key": item_key, "status": "", "details": "", "error": ""}
+    try:
+        item = write_zot.item(item_key)
+    except Exception as e:
+        result["status"] = "error"
+        result["error"] = f"fetch failed: {e}"
+        return result
+    if not item:
+        result["status"] = "error"
+        result["error"] = "item not found"
+        return result
+
+    data = item.get("data", {})
+    result["title"] = (data.get("title") or "")[:60]
+
+    if data.get("itemType") != "preprint":
+        result["status"] = "already_article"
+        return result
+
+    # Resolve identifier: bibcode from extra, or DOI.
+    bibcode = _parse_bibcode_from_extra(data.get("extra"))
+    doi = (data.get("DOI") or "").strip()
+
+    # Fetch the eprint record from ADS to get a clean title for the search.
+    eprint_doc = None
+    if bibcode:
+        try:
+            eprint_doc = _ads_client.fetch_record(bibcode)
+        except Exception:
+            pass
+    if eprint_doc is None and doi:
+        try:
+            docs = _ads_client.search(f"doi:{doi}", fl=_ads_client._FULL_FIELDS, rows=1)
+            if docs:
+                eprint_doc = docs[0]
+        except Exception:
+            pass
+
+    if eprint_doc is None:
+        result["status"] = "no_identifier"
+        result["error"] = "could not find ADS record (no bibcode or DOI)"
+        return result
+
+    # If the ADS record itself is already an article (published), use it
+    # directly. Otherwise search for the published version.
+    if eprint_doc.get("doctype") == "article" and eprint_doc.get("pub"):
+        pub_doc = eprint_doc
+    else:
+        pub_doc = _find_published_version(eprint_doc)
+
+    if pub_doc is None:
+        result["status"] = "not_published"
+        result["details"] = "no published version found in ADS"
+        return result
+
+    # Build the field updates from the published record.
+    field_updates: dict[str, Any] = {"itemType": "journalArticle"}
+
+    pubdate = pub_doc.get("pubdate")
+    if pubdate:
+        ds = str(pubdate).strip()
+        if ds.endswith("-00"):
+            ds = ds[:-3]
+        field_updates["date"] = ds
+    elif pub_doc.get("year"):
+        field_updates["date"] = str(pub_doc["year"])
+
+    pub = pub_doc.get("pub")
+    if pub:
+        field_updates["publicationTitle"] = str(pub)
+
+    bibstem = pub_doc.get("bibstem")
+    if bibstem:
+        field_updates["journalAbbreviation"] = str(bibstem).strip()
+
+    for src, dst in (("volume", "volume"), ("issue", "issue"), ("page", "pages")):
+        val = pub_doc.get(src)
+        if val:
+            field_updates[dst] = str(val)
+
+    # Use the published DOI (publisher DOI), not the arXiv DOI.
+    pub_doi = pub_doc.get("doi")
+    if isinstance(pub_doi, list) and pub_doi:
+        pub_doi = pub_doi[0]
+    if pub_doi and not str(pub_doi).startswith("10.48550/"):
+        field_updates["DOI"] = str(pub_doi)
+
+    # Append the published bibcode to extra (preserve existing extra content).
+    pub_bibcode = pub_doc.get("bibcode")
+    if pub_bibcode:
+        existing_extra = data.get("extra") or ""
+        # Don't duplicate if already present.
+        if f"bibcode: {pub_bibcode}" not in existing_extra.lower():
+            # Replace any existing arXiv bibcode line, or append.
+            new_extra = existing_extra
+            # Remove old arXiv bibcode line if present.
+            lines = [l for l in new_extra.splitlines()
+                     if not l.strip().lower().startswith("bibcode:")]
+            lines.append(f"bibcode: {pub_bibcode}")
+            field_updates["extra"] = "\n".join(lines).strip()
+
+    # Apply via update_item logic: reshape to journalArticle template, then
+    # set each field.  We do this inline to avoid a second API round-trip
+    # through the tool function.
+    try:
+        new_template = write_zot.item_template("journalArticle")
+        preserved = {"key", "version", "tags", "collections", "relations",
+                     "creators", "dateAdded", "dateModified"}
+        reshaped = dict(new_template)
+        for k, v in data.items():
+            if k in preserved or k in new_template:
+                reshaped[k] = v
+        reshaped["itemType"] = "journalArticle"
+        for k, v in field_updates.items():
+            if k != "itemType":
+                reshaped[k] = v
+        write_zot.update_item(reshaped)
+    except Exception as e:
+        result["status"] = "error"
+        result["error"] = f"write failed: {e}"
+        return result
+
+    filled = [k for k in field_updates if k != "itemType"]
+    result["status"] = "upgraded"
+    result["details"] = f"preprint→journalArticle, filled: {', '.join(filled)}"
+    return result
+
+
+@mcp.tool(
+    name="zotero_upgrade_preprints",
+    description=(
+        "Find arXiv preprint items in the Zotero library that have since "
+        "been formally published, and upgrade them to journalArticle type "
+        "with full published metadata (journal name, abbreviation, volume, "
+        "issue, pages, DOI, date). Uses NASA ADS to detect the published "
+        "version: searches by the preprint's title for a refereed article "
+        "record, then patches the Zotero item's type and bibliographic "
+        "fields. Items with no published version are left untouched. "
+        "limit: cap on items processed (for testing). "
+        "Requires an ADS API token. "
+        "Example: zotero_upgrade_preprints(limit=5) → upgrade first 5 "
+        "preprints that have a published version."
+    )
+)
+@with_zotero_api_lock
+def upgrade_preprints(
+    limit: int | None = None,
+    *,
+    ctx: Context
+) -> str:
+    """Batch-upgrade arXiv preprints to published journalArticles via ADS."""
+    try:
+        read_zot, write_zot = _helpers._get_write_client(ctx)
+    except ValueError as e:
+        return str(e)
+
+    if not _ads_client.is_available():
+        return "Error: ADS API token is not configured. Run 'zotero-mcp setup' to add it."
+
+    ctx.info("Scanning library for preprint items...")
+
+    # Fetch all preprint items.
+    batch_size = 100
+    start = 0
+    preprints: list[dict] = []
+    while True:
+        try:
+            items = read_zot.items(start=start, limit=batch_size)
+        except Exception as e:
+            return f"Error fetching items: {e}"
+        if not items:
+            break
+        for it in items:
+            if it.get("data", {}).get("itemType") == "preprint":
+                preprints.append(it)
+        start += batch_size
+        if len(items) < batch_size:
+            break
+        if limit and len(preprints) >= limit:
+            preprints = preprints[:limit]
+            break
+
+    total = len(preprints) if not limit else min(len(preprints), limit)
+    ctx.info(f"Found {total} preprint items. Checking ADS for published versions...")
+
+    results: list[dict] = []
+    stats = {"upgraded": 0, "not_published": 0, "no_identifier": 0,
+             "already_article": 0, "error": 0}
+    for idx, it in enumerate(preprints[:total], 1):
+        key = it.get("key", "")
+        if not key:
+            continue
+        if idx % 10 == 0 or idx == total:
+            ctx.info(f"  Checking {idx}/{total}...")
+        r = _upgrade_single_preprint(write_zot, key)
+        results.append(r)
+        stats[r["status"]] = stats.get(r["status"], 0) + 1
+        # ADS rate limit: ~8 req/s. Each preprint may issue 1-2 queries.
+        _time.sleep(0.3)
+
+    lines = [
+        "# Preprint Upgrade Results",
+        "",
+        f"**Total preprints checked:** {total}",
+        f"**Upgraded to journalArticle:** {stats.get('upgraded', 0)}",
+        f"**Not yet published:** {stats.get('not_published', 0)}",
+        f"**No ADS identifier:** {stats.get('no_identifier', 0)}",
+        f"**Errors:** {stats.get('error', 0)}",
+        "",
+    ]
+    upgraded = [r for r in results if r["status"] == "upgraded"]
+    if upgraded:
+        lines.append("## Upgraded (first 15)")
+        for r in upgraded[:15]:
+            title = r.get("title", "")
+            details = r.get("details", "")
+            lines.append(f"- `{r['key']}` {title} — {details}")
+        if len(upgraded) > 15:
+            lines.append(f"... and {len(upgraded) - 15} more")
+        lines.append("")
+    not_pub = [r for r in results if r["status"] == "not_published"]
+    if not_pub:
+        lines.append(f"## Not yet published: {len(not_pub)} (left as preprint)")
+    errors = [r for r in results if r["status"] == "error"]
+    if errors:
+        lines.append("## Errors (first 10)")
+        for r in errors[:10]:
+            lines.append(f"- `{r['key']}` — {r.get('error', '?')}")
+        if len(errors) > 10:
+            lines.append(f"... and {len(errors) - 10} more")
+    return "\n".join(lines)
+
+

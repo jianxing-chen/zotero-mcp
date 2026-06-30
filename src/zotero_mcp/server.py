@@ -119,6 +119,9 @@ from zotero_mcp.tools.write import (  # noqa: F401
     add_by_bibtex,
     add_by_csl_json,
     add_by_bibcode,
+    enrich_item_metadata,
+    enrich_batch,
+    upgrade_preprints,
 )
 from zotero_mcp.tools.ads import (  # noqa: F401
     search_ads,

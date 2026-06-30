@@ -553,6 +553,14 @@ def csl_json_to_zotero(
     if container_field and container_value:
         template[container_field] = container_value
 
+    # Journal abbreviation (short container title).  Maps to
+    # journalAbbreviation for journalArticle (and magazineArticle/
+    # newspaperArticle which also carry the field).  For other types
+    # (book, thesis, etc.) the field is not in the template and is
+    # silently skipped by _set_if_in_template.
+    short_container = (csl.get("container-title-short") or "").strip()
+    _set_if_in_template(template, "journalAbbreviation", short_container)
+
     # Series
     _set_if_in_template(template, "series", (csl.get("collection-title") or "").strip())
     _set_if_in_template(template, "seriesNumber", str(csl.get("collection-number") or "").strip())
@@ -617,7 +625,8 @@ def csl_json_to_zotero(
     handled = {
         "type", "id", "title", "title-short",
         "author", "editor", "translator",
-        "issued", "container-title", "collection-title", "collection-number",
+        "issued", "container-title", "container-title-short",
+        "collection-title", "collection-number",
         "volume", "issue", "page", "publisher", "publisher-place",
         "edition", "ISBN", "ISSN", "DOI", "URL", "language",
         "abstract", "number-of-pages", "number",
