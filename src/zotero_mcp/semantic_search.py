@@ -328,6 +328,85 @@ class CrossEncoderReranker:
         return [(i, float(scores[i])) for i in ranked[:top_k]]
 
 
+class ApiReranker:
+    """HTTP-based re-ranker for OpenAI-compatible /v1/rerank endpoints.
+
+    Supports local inference servers (oMLX, vLLM, Infinity, Jina-style) that
+    expose a ``/v1/rerank`` endpoint. This avoids loading a heavy
+    sentence-transformers model in-process — the server (e.g. oMLX on Apple
+    Silicon) owns the GPU/MLX resources.
+
+    Request (POST {base_url}/rerank):
+        {"model": ..., "query": ..., "documents": [...], "top_n": N}
+    Response:
+        {"results": [{"index": int, "relevance_score": float}, ...]}
+    (results are pre-sorted by descending relevance_score per the spec)
+    """
+
+    def __init__(
+        self,
+        model: str,
+        base_url: str | None = None,
+        api_key: str | None = None,
+        timeout: float = 30.0,
+    ):
+        self.model = model
+        # base_url is the OpenAI-style root, e.g. "http://localhost:8000/v1".
+        # The rerank endpoint is {base_url}/rerank → "http://localhost:8000/v1/rerank".
+        self.base_url = (base_url or "").rstrip("/")
+        self.api_key = api_key
+        self.timeout = timeout
+
+    def _endpoint(self) -> str:
+        if not self.base_url:
+            raise ValueError("Reranker base_url is not configured")
+        # base_url already ends with /v1 (or equivalent); append /rerank.
+        return f"{self.base_url}/rerank"
+
+    def rerank_with_scores(self, query: str, documents: list[str], top_k: int) -> list[tuple[int, float]]:
+        """Re-rank documents via the API, returning ``(index, score)`` pairs.
+
+        Returns at most ``top_k`` pairs, sorted by descending relevance.
+        Raises on transport errors; callers should catch and fall back.
+        """
+        import requests
+
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        payload = {
+            "model": self.model,
+            "query": query,
+            "documents": documents,
+            "top_n": top_k,
+            # Don't echo documents back — we only need index + score.
+            "return_documents": False,
+        }
+
+        resp = requests.post(
+            self._endpoint(), headers=headers, json=payload, timeout=self.timeout
+        )
+        if resp.status_code != 200:
+            raise RuntimeError(
+                f"Rerank API returned HTTP {resp.status_code}: {resp.text[:200]}"
+            )
+        data = resp.json()
+        results = data.get("results") or []
+        # The endpoint returns results pre-sorted by descending relevance_score,
+        # but sort defensively in case a non-conformant server is used.
+        scored = [
+            (int(r.get("index", 0)), float(r.get("relevance_score", 0.0)))
+            for r in results
+        ]
+        scored.sort(key=lambda p: p[1], reverse=True)
+        return scored[:top_k]
+
+    def rerank(self, query: str, documents: list[str], top_k: int) -> list[int]:
+        """Re-rank documents, returning indices of top_k in relevance order."""
+        return [idx for idx, _ in self.rerank_with_scores(query, documents, top_k)]
+
+
 class ZoteroSemanticSearch:
     """Semantic search interface for Zotero libraries using ChromaDB."""
 
@@ -392,6 +471,7 @@ class ZoteroSemanticSearch:
         """Load reranker configuration from file or use defaults."""
         config: dict[str, Any] = {
             "enabled": False,
+            "type": "local",  # "local" (sentence-transformers) | "api" (HTTP /v1/rerank)
             "model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
             "candidate_multiplier": 3,
         }
@@ -404,13 +484,34 @@ class ZoteroSemanticSearch:
                 logger.warning(f"Error loading reranker config: {e}")
         return config
 
-    def _get_reranker(self) -> CrossEncoderReranker | None:
-        """Get the reranker instance, lazily initializing if enabled."""
+    def _get_reranker(self) -> CrossEncoderReranker | ApiReranker | None:
+        """Get the reranker instance, lazily initializing if enabled.
+
+        Dispatches on ``type``: ``api`` builds an :class:`ApiReranker` pointing
+        at an OpenAI-compatible ``/v1/rerank`` endpoint (oMLX, vLLM, ...);
+        ``local`` (default) loads a sentence-transformers CrossEncoder.
+        """
         if not self._reranker_config.get("enabled", False):
             return None
         if self._reranker is None:
+            rtype = (self._reranker_config.get("type") or "local").lower()
             model = self._reranker_config.get("model", "cross-encoder/ms-marco-MiniLM-L-6-v2")
-            self._reranker = CrossEncoderReranker(model_name=model)
+            if rtype == "api":
+                base_url = self._reranker_config.get("base_url")
+                if not base_url:
+                    logger.warning(
+                        "Reranker type=api but no base_url configured; "
+                        "disabling reranker."
+                    )
+                    return None
+                self._reranker = ApiReranker(
+                    model=model,
+                    base_url=base_url,
+                    api_key=self._reranker_config.get("api_key"),
+                    timeout=float(self._reranker_config.get("timeout", 30.0)),
+                )
+            else:
+                self._reranker = CrossEncoderReranker(model_name=model)
         return self._reranker
 
     def _load_update_config(self) -> dict[str, Any]:
@@ -2063,10 +2164,17 @@ class ZoteroSemanticSearch:
             if reranker and results.get("documents") and results["documents"][0]:
                 documents = results["documents"][0]
                 top_k = len(documents) if self._chunking_enabled else limit
-                ranked_indices = reranker.rerank(query, documents, top_k=top_k)
-                for key in ["ids", "distances", "documents", "metadatas"]:
-                    if results.get(key) and results[key][0]:
-                        results[key][0] = [results[key][0][i] for i in ranked_indices]
+                try:
+                    ranked_indices = reranker.rerank(query, documents, top_k=top_k)
+                    for key in ["ids", "distances", "documents", "metadatas"]:
+                        if results.get(key) and results[key][0]:
+                            results[key][0] = [results[key][0][i] for i in ranked_indices]
+                except Exception as rerank_err:
+                    # Reranker failure (e.g. oMLX endpoint down, network error)
+                    # must not abort the whole search — fall back to vector order.
+                    logger.warning(
+                        f"Reranker failed, falling back to vector order: {rerank_err}"
+                    )
 
             # Enrich results with full Zotero item data, grouping passages back
             # to their parent items and capping at `limit` distinct papers.
