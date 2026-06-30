@@ -810,7 +810,10 @@ def _download_and_attach_pdf(write_zot, item_key, pdf_url, doi, ctx):
             return None
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            filename = f"{doi.replace('/', '_')}.pdf"
+            # doi may be None when the caller has no DOI (e.g. ADS PDF fallback);
+            # fall back to a generic name to avoid AttributeError.
+            safe_doi = doi if doi else "article"
+            filename = f"{safe_doi.replace('/', '_')}.pdf"
             filepath = os.path.join(tmpdir, filename)
             with open(filepath, "wb") as f:
                 for chunk in pdf_resp.iter_content(chunk_size=8192):

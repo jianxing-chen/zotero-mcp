@@ -3417,7 +3417,13 @@ def add_by_bibcode(
             _apply_caller_tags_and_collections(item_data, tags, coll_keys)
             created = _create_and_attach(write_zot, item_data, attach_mode, ctx)
 
-            if created["ok"] and not created.get("pdf_status"):
+            # If OA cascade didn't actually attach a PDF, try ADS link_gateway
+            # (arXiv EPRINT_PDF is often OA even when the publisher PDF is
+            # paywalled). _try_attach_oa_pdf returns a non-None status string
+            # even on failure (e.g. "no OA PDF could be downloaded"), so check
+            # whether a PDF was actually attached rather than just non-None.
+            pdf_attached = bool(created.get("pdf_status")) and "attached" in (created.get("pdf_status") or "").lower()
+            if created["ok"] and not pdf_attached:
                 ads_pdf = _try_ads_pdf(write_zot, created["key"], bc, ctx)
                 if ads_pdf:
                     created["pdf_status"] = ads_pdf
