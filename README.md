@@ -337,6 +337,210 @@ Go to Settings → MCP Servers → Edit MCP Configuration:
 }
 ```
 
+### For ZCode, Claude Code, or any MCP client (complete setup)
+
+This section walks through a **complete production setup** that combines local Zotero access, web-API write mode, NASA ADS, semantic search (embedding + reranker), and MinerU structured PDF reading — all in one configuration.
+
+#### Step 1: Install and run setup wizard
+
+```bash
+# Clone and install (editable, so code changes take effect immediately)
+git clone https://github.com/your-fork/zotero-mcp.git
+cd zotero-mcp
+uv pip install -e ".[all]"   # or: pip install -e ".[all]"
+
+# Run the interactive setup wizard (configures Zotero, semantic search, MinerU, ADS)
+zotero-mcp setup
+```
+
+The wizard writes `~/.config/zotero-mcp/config.json` (permissions 600). You can also edit it manually — see the complete example below.
+
+#### Step 2: Configure your MCP client
+
+Add `zotero-mcp` as a stdio MCP server. The `command` should be the absolute path to the `zotero-mcp` executable (run `which zotero-mcp` to find it — GUI apps don't always inherit your shell `PATH`).
+
+```json
+{
+  "zotero": {
+    "type": "stdio",
+    "command": "/absolute/path/to/zotero-mcp",
+    "args": ["serve", "--transport", "stdio"],
+    "env": {
+      "ZOTERO_LOCAL": "true",
+      "ZOTERO_API_KEY": "your-zotero-api-key",
+      "ZOTERO_LIBRARY_ID": "your-numeric-user-id",
+      "ZOTERO_LIBRARY_TYPE": "user",
+      "ADS_API_TOKEN": "your-ads-api-token",
+      "ZOTERO_MCP_LOG_LEVEL": "WARNING"
+    }
+  }
+}
+```
+
+| Env var | Required? | Purpose |
+|---|---|---|
+| `ZOTERO_LOCAL` | ✅ | `true` = read via fast local API (Zotero desktop must be running) |
+| `ZOTERO_API_KEY` | for writes | Local API is read-only; web API handles writes (import/edit/delete) |
+| `ZOTERO_LIBRARY_ID` | for writes | Your numeric userID (zotero.org/settings/security) |
+| `ZOTERO_LIBRARY_TYPE` | optional | `user` (default) or `group` |
+| `ADS_API_TOKEN` | for ADS | Free token from <https://ui.adsabs.harvard.edu/#user/settings/token> |
+| `ZOTERO_MCP_LOG_LEVEL` | optional | `WARNING` (default), `INFO`, or `DEBUG` |
+
+> **One install, many clients**: because `zotero-mcp` is installed once (editable mode), the same `command` path works for ZCode, Claude Code, Claude Desktop, Cherry Studio, etc. Each client forks its own `zotero-mcp` process, but all run the same code. Changing `src/*.py` and restarting the client is enough — no reinstall needed.
+
+#### Step 3: Configure semantic search (embedding + reranker)
+
+Edit `~/.config/zotero-mcp/config.json` and set the `semantic_search` block. You can use a **local model server** (oMLX, Ollama) or a **cloud API** (zenmux, OpenAI, Google):
+
+```jsonc
+{
+  "semantic_search": {
+    "embedding_model": "openai",
+    "embedding_config": {
+      "model_name": "openai/text-embedding-3-large",
+      "api_key": "your-api-key",
+      "base_url": "https://zenmux.ai/api/v1",
+      "request_batch_size": 64,
+      "rate_limit_rps": 10
+    },
+    "chunking": {
+      "enabled": true,
+      "chunk_size": 1500,
+      "overlap": 200,
+      "max_chunks_per_item": 20
+    },
+    "reranker": {
+      "enabled": true,
+      "type": "api",
+      "model": "qwen/qwen3-rerank",
+      "api_key": "your-api-key",
+      "base_url": "https://zenmux.ai/api/v1",
+      "request_format": "nested",
+      "candidate_multiplier": 3
+    },
+    "update_config": {
+      "auto_update": false,
+      "update_frequency": "manual"
+    }
+  }
+}
+```
+
+**Embedding provider options** (set `embedding_model` + `embedding_config`):
+
+| Provider | `embedding_model` | `base_url` | Notes |
+|---|---|---|---|
+| zenmux (cloud) | `"openai"` | `https://zenmux.ai/api/v1` | OpenAI-compatible; ~$3 to index 1000+ papers |
+| OpenAI (cloud) | `"openai"` | (omit, uses default) | `text-embedding-3-small` default |
+| oMLX (local, Apple Silicon) | `"openai"` | `http://localhost:8000/v1` | Free but slow with 8B models |
+| Gemini (cloud) | `"gemini"` | — | Uses `GEMINI_API_KEY` |
+| HuggingFace (local) | `"qwen"` or any HF model name | — | Runs in-process via sentence-transformers |
+| Ollama (local) | `"ollama"` | `http://localhost:11434` | `OLLAMA_BASE_URL` |
+| ChromaDB default | `"default"` | — | `all-MiniLM-L6-v2`, zero config, 256-token cap |
+
+**Reranker options** (set `reranker.type`):
+
+| Type | How it works | Config |
+|---|---|---|
+| `"api"` (cloud/local HTTP) | Calls a `/v1/rerank` endpoint (zenmux, oMLX, Jina) | `base_url` + `api_key` + `request_format` |
+| `"local"` (default) | Loads a HuggingFace CrossEncoder in-process | `model`: e.g. `cross-encoder/ms-marco-MiniLM-L-6-v2` |
+
+> **Request format**: `"flat"` (default, oMLX/Jina/Cohere-style: top-level `query`/`documents`) or `"nested"` (zenmux-style: `input.{query,documents}` + `parameters`). If unsure, try `"flat"` first; a 400 error asking for `input.query` means you need `"nested"`.
+
+> **Reranker failure is non-fatal**: if the reranker endpoint is down, search automatically falls back to vector-order results (with a warning log). Semantic search never breaks because of the reranker.
+
+#### Step 4: Configure MinerU structured PDF reading (optional)
+
+MinerU gives `zotero_read_pdf_pages` accurate formulas (LaTeX) and tables (HTML) instead of PyMuPDF's garbled text-layer output. Three backends, with automatic fallback:
+
+```jsonc
+{
+  "mineru": {
+    "enabled": true,
+    "backend": "cloud",
+    "cloud_token": "your-mineru-net-token",
+    "cloud_model": "vlm",
+    "executable": "/path/to/mineru",
+    "timeout": 600
+  }
+}
+```
+
+| Backend | Speed | Accuracy | Requires |
+|---|---|---|---|
+| `"cloud"` (recommended) | ~15s/paper | highest (vlm 95+) | `cloud_token` from <https://mineru.net/apiManage/docs> |
+| `"hybrid"` / `"hybrid-auto-engine"` | ~3min (local GPU) | high (85+) | local `mineru` CLI (MinerU 3.x) |
+| `"pipeline"` | slower (CPU) | high (85+) | local `mineru` CLI |
+
+**Fallback chain** (all automatic): `cloud-vlm → cloud-pipeline → local hybrid → local pipeline → PyMuPDF`. If you don't configure MinerU at all, `zotero_read_pdf_pages` uses PyMuPDF (fast, but formulas/tables may be garbled on LaTeX papers).
+
+> **Caching**: MinerU results are cached at `~/.cache/zotero-mcp/mineru/<attachment_key>/` (only `fulltext.md` + `pages.json` + `meta.json`, ~50KB per paper). First read of a paper triggers a full parse; subsequent reads of any page hit the cache in <0.1s. Cache invalidates on PDF size change.
+
+#### Step 5: Build the semantic search index
+
+After configuring embedding, build the vector index (required before semantic search works):
+
+```bash
+# Full build (indexes all papers — takes minutes to hours depending on provider)
+zotero-mcp update-db
+
+# Check status
+zotero-mcp status
+
+# Force rebuild (switching embedding model requires this)
+zotero-mcp update-db --force-rebuild
+```
+
+**Storage**: the ChromaDB vector index lives at `~/.config/zotero-mcp/chroma_db/` (~2-3GB for 1000+ papers with 3072-dim embeddings). Full-text extraction uses Zotero's own `.zotero-ft-cache` when available (no re-extraction needed).
+
+#### Step 6: Use it in your MCP client
+
+Start Zotero desktop (for local API), then launch your MCP client. Try these:
+
+- *"Search my library for papers on globular clusters"* → `zotero_search_items` / `zotero_semantic_search`
+- *"Read page 4 of [paper] and explain the formula"* → `zotero_read_pdf_pages` (MinerU returns correct LaTeX)
+- *"Search ADS for dark energy surveys, then import the top 3"* → `zotero_search_ads` + `zotero_add_by_bibcode`
+- *"What papers does this cite that I don't have?"* → `zotero_ads_citation_network`
+- *"Move all papers tagged 'survey' into the 'surveys' collection"* → `zotero_batch_update_tags` + `zotero_manage_collections`
+
+#### Complete `config.json` example
+
+```jsonc
+{
+  "semantic_search": {
+    "embedding_model": "openai",
+    "embedding_config": {
+      "model_name": "openai/text-embedding-3-large",
+      "api_key": "your-zenmux-or-openai-key",
+      "base_url": "https://zenmux.ai/api/v1",
+      "request_batch_size": 64,
+      "rate_limit_rps": 10
+    },
+    "include_fulltext": true,
+    "zotero_db_path": "/Users/you/Documents/Zotero/zotero.sqlite",
+    "chunking": { "enabled": true, "chunk_size": 1500, "overlap": 200, "max_chunks_per_item": 20 },
+    "reranker": {
+      "enabled": true, "type": "api", "model": "qwen/qwen3-rerank",
+      "api_key": "your-key", "base_url": "https://zenmux.ai/api/v1",
+      "request_format": "nested", "candidate_multiplier": 3
+    },
+    "update_config": { "auto_update": false, "update_frequency": "manual" }
+  },
+  "mineru": {
+    "enabled": true, "backend": "cloud", "cloud_token": "your-mineru-token",
+    "cloud_model": "vlm", "executable": "/usr/local/bin/mineru", "timeout": 600
+  },
+  "client_env": {
+    "ZOTERO_LOCAL": "true",
+    "ZOTERO_API_KEY": "your-zotero-key",
+    "ZOTERO_LIBRARY_ID": "1234567",
+    "ADS_API_TOKEN": "your-ads-token"
+  }
+}
+```
+
+> **Security**: `config.json` holds API keys and is covered by `.gitignore` (any path). It is never committed. The file is created with `chmod 600`. If a key is accidentally exposed, regenerate it at the provider's dashboard.
+
 ## 🔧 Advanced Configuration
 
 ### WebDAV Attachment Storage

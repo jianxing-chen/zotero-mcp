@@ -302,6 +302,210 @@ identifier="2003ApJ...589L..21B" direction="both"
    - "提取我那篇神经网络论文的所有 PDF 批注"
    - "找和深度学习在计算机视觉中应用概念相似的论文"（语义搜索）
 
+### ZCode / Claude Code / 任意 MCP 客户端的完整配置
+
+本节介绍一套**完整生产配置**，整合本地 Zotero 访问、Web API 写入、NASA ADS、语义搜索（embedding + reranker）、MinerU 结构化 PDF 精读——全部在一个配置里。
+
+#### 步骤 1：安装并运行配置向导
+
+```bash
+# 克隆并安装（editable 模式，改代码立即生效，无需重装）
+git clone https://github.com/your-fork/zotero-mcp.git
+cd zotero-mcp
+uv pip install -e ".[all]"   # 或: pip install -e ".[all]"
+
+# 运行交互式配置向导（配置 Zotero、语义搜索、MinerU、ADS）
+zotero-mcp setup
+```
+
+向导会写入 `~/.config/zotero-mcp/config.json`（权限 600）。也可以手动编辑——完整示例见下方。
+
+#### 步骤 2：配置 MCP 客户端
+
+将 `zotero-mcp` 作为 stdio MCP 服务器添加。`command` 用 `zotero-mcp` 的绝对路径（运行 `which zotero-mcp` 获取——GUI 应用不一定继承 shell 的 PATH）。
+
+```json
+{
+  "zotero": {
+    "type": "stdio",
+    "command": "/absolute/path/to/zotero-mcp",
+    "args": ["serve", "--transport", "stdio"],
+    "env": {
+      "ZOTERO_LOCAL": "true",
+      "ZOTERO_API_KEY": "你的-zotero-api-key",
+      "ZOTERO_LIBRARY_ID": "你的数字-user-id",
+      "ZOTERO_LIBRARY_TYPE": "user",
+      "ADS_API_TOKEN": "你的-ads-api-token",
+      "ZOTERO_MCP_LOG_LEVEL": "WARNING"
+    }
+  }
+}
+```
+
+| 环境变量 | 是否必需 | 用途 |
+|---|---|---|
+| `ZOTERO_LOCAL` | ✅ | `true` = 通过本地 API 快速读取（需 Zotero 桌面端运行） |
+| `ZOTERO_API_KEY` | 写入需要 | 本地 API 只读；Web API 处理写入（导入/编辑/删除） |
+| `ZOTERO_LIBRARY_ID` | 写入需要 | 你的数字 userID（zotero.org/settings/security） |
+| `ZOTERO_LIBRARY_TYPE` | 可选 | `user`（默认）或 `group` |
+| `ADS_API_TOKEN` | ADS 需要 | 免费申请：<https://ui.adsabs.harvard.edu/#user/settings/token> |
+| `ZOTERO_MCP_LOG_LEVEL` | 可选 | `WARNING`（默认）、`INFO` 或 `DEBUG` |
+
+> **一次安装，多客户端共用**：`zotero-mcp` 是 editable 安装，同一个 `command` 路径可同时给 ZCode、Claude Code、Claude Desktop、Cherry Studio 等使用。每个客户端各自 fork 一个 `zotero-mcp` 进程，但跑的是同一份代码。改 `src/*.py` 后重启客户端即可生效，无需重装。
+
+#### 步骤 3：配置语义搜索（embedding + reranker）
+
+编辑 `~/.config/zotero-mcp/config.json` 的 `semantic_search` 块。可用**本地模型服务**（oMLX、Ollama）或**云端 API**（zenmux、OpenAI、Google）：
+
+```jsonc
+{
+  "semantic_search": {
+    "embedding_model": "openai",
+    "embedding_config": {
+      "model_name": "openai/text-embedding-3-large",
+      "api_key": "你的-api-key",
+      "base_url": "https://zenmux.ai/api/v1",
+      "request_batch_size": 64,
+      "rate_limit_rps": 10
+    },
+    "chunking": {
+      "enabled": true,
+      "chunk_size": 1500,
+      "overlap": 200,
+      "max_chunks_per_item": 20
+    },
+    "reranker": {
+      "enabled": true,
+      "type": "api",
+      "model": "qwen/qwen3-rerank",
+      "api_key": "你的-api-key",
+      "base_url": "https://zenmux.ai/api/v1",
+      "request_format": "nested",
+      "candidate_multiplier": 3
+    },
+    "update_config": {
+      "auto_update": false,
+      "update_frequency": "manual"
+    }
+  }
+}
+```
+
+**Embedding 提供商选项**（设置 `embedding_model` + `embedding_config`）：
+
+| 提供商 | `embedding_model` | `base_url` | 说明 |
+|---|---|---|---|
+| zenmux（云端） | `"openai"` | `https://zenmux.ai/api/v1` | OpenAI 兼容；索引 1000+ 篇约 $3 |
+| OpenAI（云端） | `"openai"` | （省略，用默认） | 默认 `text-embedding-3-small` |
+| oMLX（本地，Apple Silicon） | `"openai"` | `http://localhost:8000/v1` | 免费但 8B 模型较慢 |
+| Gemini（云端） | `"gemini"` | — | 用 `GEMINI_API_KEY` |
+| HuggingFace（本地） | `"qwen"` 或任意 HF 模型名 | — | 进程内运行，sentence-transformers |
+| Ollama（本地） | `"ollama"` | `http://localhost:11434` | `OLLAMA_BASE_URL` |
+| ChromaDB 默认 | `"default"` | — | `all-MiniLM-L6-v2`，零配置，256 token 上限 |
+
+**Reranker 选项**（设置 `reranker.type`）：
+
+| 类型 | 工作方式 | 配置 |
+|---|---|---|
+| `"api"`（云端/本地 HTTP） | 调用 `/v1/rerank` 端点（zenmux、oMLX、Jina） | `base_url` + `api_key` + `request_format` |
+| `"local"`（默认） | 进程内加载 HuggingFace CrossEncoder | `model`：如 `cross-encoder/ms-marco-MiniLM-L-6-v2` |
+
+> **请求格式**：`"flat"`（默认，oMLX/Jina/Cohere 风格：顶层 `query`/`documents`）或 `"nested"`（zenmux 风格：`input.{query,documents}` + `parameters`）。不确定就先试 `"flat"`；如果报 400 要求 `input.query`，就改 `"nested"`。
+
+> **Reranker 失败不影响搜索**：reranker 端点挂了时，搜索自动回退到向量排序（日志有 warning），语义搜索绝不会因 reranker 而中断。
+
+#### 步骤 4：配置 MinerU 结构化 PDF 精读（可选）
+
+MinerU 让 `zotero_read_pdf_pages` 输出正确的公式（LaTeX）和表格（HTML），而非 PyMuPDF 的乱码文本层。三种后端，自动降级：
+
+```jsonc
+{
+  "mineru": {
+    "enabled": true,
+    "backend": "cloud",
+    "cloud_token": "你的-mineru-net-token",
+    "cloud_model": "vlm",
+    "executable": "/path/to/mineru",
+    "timeout": 600
+  }
+}
+```
+
+| 后端 | 速度 | 精度 | 需要 |
+|---|---|---|---|
+| `"cloud"`（推荐） | ~15秒/篇 | 最高（vlm 95+） | `cloud_token`，来自 <https://mineru.net/apiManage/docs> |
+| `"hybrid"` / `"hybrid-auto-engine"` | ~3分钟（本地 GPU） | 高（85+） | 本地 `mineru` CLI（MinerU 3.x） |
+| `"pipeline"` | 较慢（CPU） | 高（85+） | 本地 `mineru` CLI |
+
+**降级链**（全自动）：`cloud-vlm → cloud-pipeline → 本地 hybrid → 本地 pipeline → PyMuPDF`。完全不配 MinerU 时，`zotero_read_pdf_pages` 用 PyMuPDF（快，但 LaTeX 论文的公式/表格可能错乱）。
+
+> **缓存**：MinerU 结果缓存在 `~/.cache/zotero-mcp/mineru/<附件key>/`（只存 `fulltext.md` + `pages.json` + `meta.json`，每篇约 50KB）。首次读一篇触发全篇解析；后续读任意页命中缓存 <0.1 秒。PDF 大小变化时缓存失效。
+
+#### 步骤 5：构建语义搜索索引
+
+配置好 embedding 后，构建向量索引（语义搜索可用前必需）：
+
+```bash
+# 全量构建（索引所有论文——耗时取决于提供商，几分钟到几小时）
+zotero-mcp update-db
+
+# 查看状态
+zotero-mcp status
+
+# 强制重建（切换 embedding 模型时需要）
+zotero-mcp update-db --force-rebuild
+```
+
+**存储**：ChromaDB 向量库在 `~/.config/zotero-mcp/chroma_db/`（1000+ 篇 + 3072 维 embedding 约 2-3GB）。全文提取优先用 Zotero 自己的 `.zotero-ft-cache`（无需重新提取 PDF）。
+
+#### 步骤 6：在 MCP 客户端中使用
+
+启动 Zotero 桌面端（本地 API），然后启动你的 MCP 客户端。试试这些：
+
+- *"搜一下我库里关于球状星团的论文"* → `zotero_search_items` / `zotero_semantic_search`
+- *"读一下这篇论文第4页，解释公式"* → `zotero_read_pdf_pages`（MinerU 返回正确 LaTeX）
+- *"从 ADS 搜暗能量巡天，然后导入前3篇"* → `zotero_search_ads` + `zotero_add_by_bibcode`
+- *"这篇论文引用了哪些我库里还没有的？"* → `zotero_ads_citation_network`
+- *"把库里带 'survey' 标签的论文都归到 'surveys' 文件夹"* → `zotero_batch_update_tags` + `zotero_manage_collections`
+
+#### 完整 `config.json` 示例
+
+```jsonc
+{
+  "semantic_search": {
+    "embedding_model": "openai",
+    "embedding_config": {
+      "model_name": "openai/text-embedding-3-large",
+      "api_key": "你的-zenmux-或-openai-key",
+      "base_url": "https://zenmux.ai/api/v1",
+      "request_batch_size": 64,
+      "rate_limit_rps": 10
+    },
+    "include_fulltext": true,
+    "zotero_db_path": "/Users/你/Documents/Zotero/zotero.sqlite",
+    "chunking": { "enabled": true, "chunk_size": 1500, "overlap": 200, "max_chunks_per_item": 20 },
+    "reranker": {
+      "enabled": true, "type": "api", "model": "qwen/qwen3-rerank",
+      "api_key": "你的-key", "base_url": "https://zenmux.ai/api/v1",
+      "request_format": "nested", "candidate_multiplier": 3
+    },
+    "update_config": { "auto_update": false, "update_frequency": "manual" }
+  },
+  "mineru": {
+    "enabled": true, "backend": "cloud", "cloud_token": "你的-mineru-token",
+    "cloud_model": "vlm", "executable": "/usr/local/bin/mineru", "timeout": 600
+  },
+  "client_env": {
+    "ZOTERO_LOCAL": "true",
+    "ZOTERO_API_KEY": "你的-zotero-key",
+    "ZOTERO_LIBRARY_ID": "1234567",
+    "ADS_API_TOKEN": "你的-ads-token"
+  }
+}
+```
+
+> **安全**：`config.json` 含 API key，被 `.gitignore` 覆盖（任意路径），永远不会被提交。文件创建时 `chmod 600`。如不慎泄露，在提供商控制台重新生成即可。
+
 ## 🔧 高级配置
 
 ### WebDAV 附件存储
