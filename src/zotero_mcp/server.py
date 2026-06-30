@@ -126,6 +126,7 @@ from zotero_mcp.tools.write import (  # noqa: F401
 from zotero_mcp.tools.ads import (  # noqa: F401
     search_ads,
     ads_citation_network,
+    export_ads,
 )
 from zotero_mcp.tools.read_pdf import (  # noqa: F401
     read_pdf_pages,

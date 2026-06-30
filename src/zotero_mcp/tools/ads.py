@@ -303,3 +303,123 @@ def ads_citation_network(
     except Exception as e:
         ctx.error(f"Error fetching ADS citation network: {e}")
         return f"Error fetching ADS citation network: {e}"
+
+
+@mcp.tool(
+    name="zotero_export_ads",
+    description=(
+        "Export one or more papers from NASA ADS in a citation format ready "
+        "to paste into LaTeX or a .bib file. Uses the ADS /export API, which "
+        "returns the official, publisher-accurate citation text — more "
+        "precise than local BibTeX generation. "
+        "Accepts either ADS bibcodes (e.g. '2024ApJ...968L..12A') or Zotero "
+        "item keys (8-char, bibcode resolved from the item's extra field). "
+        "Pass a single value or a comma-separated/JSON list for batch export. "
+        "format: 'bibtex' (default, for .bib files), 'aastex' (AASTeX "
+        "\\bibitem), 'mnras' (MNRAS style), 'ris', 'endnote', or 'ads'. "
+        "sort: optional, e.g. 'date desc' or 'first_author asc'. "
+        "Requires an ADS API token. "
+        "Example: zotero_export_ads(bibcodes='2024ApJ...968L..12A', "
+        "format='bibtex') → returns @article{...} BibTeX entry."
+    )
+)
+@with_zotero_api_lock
+def export_ads(
+    bibcodes: str | list[str],
+    format: Literal[
+        "bibtex", "bibtexabs", "aastex", "mnras", "icarus", "soph",
+        "ris", "endnote", "ads", "procite", "refworks", "votable",
+    ] = "bibtex",
+    sort: str | None = None,
+    *,
+    ctx: Context
+) -> str:
+    """Export papers from ADS in a citation format (BibTeX, AASTeX, etc.)."""
+    try:
+        if not ads_client.is_available():
+            return (
+                "Error: ADS API token is not configured. "
+                "Run 'zotero-mcp setup' to add it, or set ADS_API_TOKEN."
+            )
+
+        # Normalize input to a list of strings.
+        raw_list = _helpers._normalize_str_list_input(bibcodes, "bibcodes")
+        if not raw_list:
+            return "Error: at least one bibcode or Zotero item key is required."
+
+        # Resolve each: could be a bibcode or a Zotero item key.
+        # Lazily create the Zotero client only if we encounter an item key
+        # (8-char [A-Z0-9]); pure-bibcode inputs don't need Zotero access.
+        read_zot = None
+        resolved: list[str] = []
+        unresolved: list[str] = []
+        for ident in raw_list:
+            ident = ident.strip()
+            if not ident:
+                continue
+            # Try direct bibcode first — avoids touching Zotero for the
+            # common case where the user passes raw bibcodes.
+            direct_bc = ads_client.normalize_bibcode(ident)
+            if direct_bc:
+                resolved.append(direct_bc)
+                continue
+            # Looks like a Zotero item key — resolve bibcode from extra.
+            if _ITEM_KEY_RE.match(ident):
+                if read_zot is None:
+                    try:
+                        read_zot = _client.get_zotero_client()
+                    except Exception:
+                        read_zot = None
+                if read_zot is not None:
+                    bc = _resolve_bibcode(ident, read_zot)
+                    if bc:
+                        resolved.append(bc)
+                        continue
+            unresolved.append(ident)
+
+        if not resolved:
+            return (
+                f"Error: could not resolve any valid bibcodes from {raw_list}. "
+                "Pass ADS bibcodes (e.g. '2024ApJ...968L..12A') or Zotero item "
+                "keys whose extra field contains 'bibcode: ...'."
+            )
+
+        ctx.info(f"Exporting {len(resolved)} bibcode(s) as {format} from ADS...")
+
+        result = ads_client.export(resolved, fmt=format, sort=sort)
+        if not result:
+            return (
+                f"Error: ADS export returned no data for {len(resolved)} "
+                f"bibcode(s) in '{format}' format. Check that the bibcodes "
+                "are valid and the format is supported."
+            )
+
+        # Build a clear, copy-pasteable response.
+        lines = [
+            f"# ADS Export — {format.upper()}",
+            "",
+            f"**{len(resolved)} paper(s)** exported from ADS:",
+        ]
+        for bc in resolved:
+            lines.append(f"- `{bc}`")
+        if unresolved:
+            lines.append("")
+            lines.append(f"**Unresolved ({len(unresolved)}):** {', '.join(unresolved)}")
+        lines.append("")
+        lines.append(f"```{_codeblock_lang(format)}")
+        lines.append(result.rstrip())
+        lines.append("```")
+        return "\n".join(lines)
+
+    except Exception as e:
+        ctx.error(f"Error exporting from ADS: {e}")
+        return f"Error exporting from ADS: {e}"
+
+
+def _codeblock_lang(fmt: str) -> str:
+    """Pick a syntax-highlight language for the code fence."""
+    if fmt.startswith("bibtex"):
+        return "bibtex"
+    if fmt in ("aastex", "mnras", "icarus", "soph", "ads"):
+        return "latex"
+    return ""

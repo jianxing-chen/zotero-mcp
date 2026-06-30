@@ -230,6 +230,48 @@ def get_pdf_url(bibcode: str, prefer: str = "eprint") -> str | None:
 
 
 # --------------------------------------------------------------------------- #
+# Export (citation formats: BibTeX, AASTeX, etc.)
+# --------------------------------------------------------------------------- #
+# Formats accepted by the ADS /export/<format> endpoint.
+SUPPORTED_EXPORT_FORMATS = (
+    "bibtex", "bibtexabs", "aastex", "mnras", "icarus", "soph",
+    "ris", "endnote", "ads", "procite", "refworks", "votable",
+)
+
+
+def export(
+    bibcodes: list[str],
+    fmt: str = "bibtex",
+    sort: str | None = None,
+) -> str | None:
+    """Export one or more bibcodes to a citation format via the ADS export API.
+
+    Calls ``POST /v1/export/<fmt>`` with a ``{"bibcode": [...]}`` body and
+    returns the formatted citation text (the ``export`` field of the
+    response). Returns ``None`` on any failure, following the module's
+    graceful-degradation convention.
+
+    Args:
+        bibcodes: List of 19-char ADS bibcodes to export.
+        fmt: Export format — one of :data:`SUPPORTED_EXPORT_FORMATS`.
+        sort: Optional sort spec, e.g. ``"date desc"`` or
+            ``"first_author asc"``.
+
+    Returns:
+        The formatted citation text, or ``None``.
+    """
+    if not bibcodes:
+        return None
+    body: dict[str, Any] = {"bibcode": list(bibcodes)}
+    if sort:
+        body["sort"] = sort
+    data = _ads_request(f"/export/{fmt}", method="POST", body=body)
+    if not data:
+        return None
+    return data.get("export")
+
+
+# --------------------------------------------------------------------------- #
 # ADS record → CSL-JSON conversion
 # --------------------------------------------------------------------------- #
 # ADS doctype → CSL type. Unknown types default to article-journal.
