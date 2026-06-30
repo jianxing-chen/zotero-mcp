@@ -3563,6 +3563,27 @@ def _parse_bibcode_from_extra(extra: str | None) -> str | None:
     return None
 
 
+def _parse_arxiv_id_from_extra(extra: str | None) -> str | None:
+    """Extract an arXiv ID from a Zotero item's extra field.
+
+    Zotero preprints often store the arXiv ID as a line like
+    ``arXiv:2401.12345 [astro-ph]`` (without a DOI field).  Returns the
+    bare ID (``2401.12345``) or None.
+    """
+    if not extra:
+        return None
+    # Search for "arXiv:XXXX.XXXXX" anywhere in extra, possibly with
+    # leading decoration (emoji, etc.) or trailing classification.
+    m = re.search(r"arXiv:(\d{4}\.\d{4,5})", extra)
+    if m:
+        return m.group(1)
+    # Old-style arXiv IDs: astro-ph/0501001
+    m = re.search(r"arXiv:([a-z\-]+/\d{7})", extra)
+    if m:
+        return m.group(1)
+    return None
+
+
 def _ads_doc_to_enrich_fields(doc: dict, wanted: set[str]) -> dict[str, str]:
     """Extract only the *wanted* fields from an ADS doc, keyed by Zotero param name.
 
@@ -3634,7 +3655,6 @@ def _enrich_single_item(
             if item_type not in _JOURNAL_ABBR_TYPES:
                 continue  # field not valid for this item type
             current = (data.get("journalAbbreviation") or "").strip()
-            current = (data.get("journalAbbreviation") or "").strip()
         else:
             continue
         if force or not current:
@@ -3644,9 +3664,10 @@ def _enrich_single_item(
         result["status"] = "skipped_existing"
         return result
 
-    # 2. Resolve identifier: bibcode from extra, then DOI.
+    # 2. Resolve identifier: bibcode from extra, DOI, or arXiv ID from extra.
     bibcode = _parse_bibcode_from_extra(data.get("extra"))
     doi = (data.get("DOI") or "").strip()
+    arxiv_id = _parse_arxiv_id_from_extra(data.get("extra"))
 
     doc = None
     if bibcode:
@@ -3661,10 +3682,17 @@ def _enrich_single_item(
                 doc = docs[0]
         except Exception:
             pass
+    if doc is None and arxiv_id:
+        try:
+            docs = _ads_client.search(f"arxiv:{arxiv_id}", fl=_ads_client._FULL_FIELDS, rows=1)
+            if docs:
+                doc = docs[0]
+        except Exception:
+            pass
 
     if doc is None:
         result["status"] = "not_found"
-        result["error"] = "no ADS record found (tried bibcode + DOI)"
+        result["error"] = "no ADS record found (tried bibcode + DOI + arXiv ID)"
         return result
 
     # 3. Extract the wanted fields from the ADS doc.
@@ -3973,9 +4001,13 @@ def _upgrade_single_preprint(
         result["status"] = "already_article"
         return result
 
-    # Resolve identifier: bibcode from extra, or DOI.
+    # Resolve identifier: bibcode from extra, arXiv ID from extra, or DOI.
     bibcode = _parse_bibcode_from_extra(data.get("extra"))
+    arxiv_id = _parse_arxiv_id_from_extra(data.get("extra"))
     doi = (data.get("DOI") or "").strip()
+    # arXiv DOIs (10.48550/arXiv.XXXX) are also a valid search key.
+    if not arxiv_id and doi and "10.48550/arxiv" in doi.lower():
+        arxiv_id = doi.split("/arxiv.", 1)[-1] if "/arxiv." in doi.lower() else None
 
     # Fetch the eprint record from ADS to get a clean title for the search.
     eprint_doc = None
@@ -3991,10 +4023,17 @@ def _upgrade_single_preprint(
                 eprint_doc = docs[0]
         except Exception:
             pass
+    if eprint_doc is None and arxiv_id:
+        try:
+            docs = _ads_client.search(f"arxiv:{arxiv_id}", fl=_ads_client._FULL_FIELDS, rows=1)
+            if docs:
+                eprint_doc = docs[0]
+        except Exception:
+            pass
 
     if eprint_doc is None:
         result["status"] = "no_identifier"
-        result["error"] = "could not find ADS record (no bibcode or DOI)"
+        result["error"] = "could not find ADS record (no bibcode, DOI, or arXiv ID)"
         return result
 
     # If the ADS record itself is already an article (published), use it

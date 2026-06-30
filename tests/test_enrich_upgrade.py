@@ -11,6 +11,7 @@ from zotero_mcp.tools.write import (
     _ads_doc_to_enrich_fields,
     _find_published_version,
     _parse_bibcode_from_extra,
+    _parse_arxiv_id_from_extra,
     _title_similarity,
     _upgrade_single_preprint,
     _enrich_single_item,
@@ -140,6 +141,28 @@ class TestParseBibcodeFromExtra:
     def test_returns_none_for_empty(self):
         assert _parse_bibcode_from_extra(None) is None
         assert _parse_bibcode_from_extra("") is None
+
+
+class TestParseArxivIdFromExtra:
+    def test_extracts_new_style_arxiv_id(self):
+        extra = "arXiv:2401.12345 [astro-ph]"
+        assert _parse_arxiv_id_from_extra(extra) == "2401.12345"
+
+    def test_extracts_with_emoji_prefix(self):
+        extra = "⭐⭐arXiv:1605.01665 [astro-ph, physics:nucl-th]"
+        assert _parse_arxiv_id_from_extra(extra) == "1605.01665"
+
+    def test_extracts_old_style_arxiv_id(self):
+        extra = "arXiv:astro-ph/0501001"
+        assert _parse_arxiv_id_from_extra(extra) == "astro-ph/0501001"
+
+    def test_returns_none_when_no_arxiv(self):
+        assert _parse_arxiv_id_from_extra("bibcode: 2024ApJ...961L..10X") is None
+
+    def test_returns_none_for_empty(self):
+        assert _parse_arxiv_id_from_extra(None) is None
+        assert _parse_arxiv_id_from_extra("") is None
+        assert _parse_arxiv_id_from_extra("🌟") is None
 
 
 class TestTitleSimilarity:
