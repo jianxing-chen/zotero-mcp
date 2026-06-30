@@ -126,11 +126,13 @@ def _resolve_timeout(config: dict[str, Any]) -> int:
 def is_mineru_available(config: dict[str, Any]) -> bool:
     """Quick check: can we actually run MinerU with the current config?
 
-    - ``api`` backend: requires a non-empty ``api_url`` (liveness probed lazily
-      on first parse, not here — probing on every tool call is wasteful).
+    - ``cloud`` backend: requires a cloud_token (liveness probed lazily).
+    - ``api`` backend: requires a non-empty ``api_url``.
     - ``hybrid``/``pipeline``: requires the mineru executable to resolve.
     """
-    backend = (config.get("backend") or "hybrid").lower()
+    backend = _normalize_backend(config.get("backend"))
+    if backend == "cloud":
+        return bool(config.get("cloud_token") or os.getenv("MINERU_API_TOKEN"))
     if backend == "api":
         return bool(config.get("api_url"))
     return _resolve_executable(config) is not None
@@ -257,15 +259,19 @@ def _read_content_list(out_dir: Path, stem: str) -> list[dict] | None:
 
 
 def _normalize_backend(raw: str | None) -> str:
-    """Normalize a configured backend name to a MinerU-accepted value.
+    """Normalize a configured backend name to a canonical value.
 
-    MinerU's backend names changed across versions: early releases used
-    ``hybrid``/``vlm``, while 3.x uses ``hybrid-auto-engine``/``vlm-auto-engine``
-    (plus ``*-http-client`` variants). Accept both the short and long forms
-    so configs stay portable. ``pipeline`` is stable across versions.
+    Backend families:
+      - ``cloud`` / ``online``: MinerU cloud API (mineru.net, token-authed)
+      - ``hybrid`` / ``hybrid-engine``: local hybrid-auto-engine (MinerU 3.x)
+      - ``vlm`` / ``vlm-engine``: local vlm-auto-engine
+      - ``pipeline``: local CPU pipeline (stable across versions)
+      - ``api``: local mineru-api server (legacy /file_parse)
     """
     b = (raw or "hybrid-auto-engine").lower().strip()
-    # Map short forms → 3.x canonical names.
+    # Map short forms → canonical names.
+    if b in ("cloud", "online"):
+        return "cloud"
     if b in ("hybrid", "hybrid-engine"):
         return "hybrid-auto-engine"
     if b in ("vlm", "vlm-engine"):
@@ -404,6 +410,190 @@ def _call_mineru_api(
             except Exception:
                 continue
     logger.warning("MinerU API produced no readable .md")
+    return None
+
+
+# --------------------------------------------------------------------------- #
+# Cloud API (mineru.net online) — token-authed async upload + poll
+# --------------------------------------------------------------------------- #
+_MINERU_CLOUD_BASE = "https://mineru.net/api/v4"
+_CLOUD_POLL_INTERVAL = 3.0  # seconds between status checks
+
+
+def _cloud_request(method: str, path: str, token: str, **kwargs) -> dict | None:
+    """Authenticated request to the MinerU cloud API. Returns parsed JSON or None."""
+    import requests
+
+    headers = kwargs.pop("headers", {})
+    headers["Authorization"] = f"Bearer {token}"
+    try:
+        resp = requests.request(
+            method, f"{_MINERU_CLOUD_BASE}{path}", headers=headers, timeout=30, **kwargs
+        )
+    except Exception as e:
+        logger.warning(f"MinerU cloud {method} {path} failed: {e}")
+        return None
+    if resp.status_code != 200:
+        logger.warning(f"MinerU cloud {method} {path}: HTTP {resp.status_code}: {resp.text[:200]}")
+        return None
+    try:
+        return resp.json()
+    except Exception:
+        return None
+
+
+def _cloud_download_zip(zip_url: str) -> bytes | None:
+    """Download the result zip from a CDN URL. Returns bytes or None."""
+    import requests
+
+    try:
+        resp = requests.get(zip_url, timeout=120)
+    except Exception as e:
+        logger.warning(f"MinerU cloud zip download failed: {e}")
+        return None
+    if resp.status_code != 200:
+        return None
+    return resp.content
+
+
+def _cloud_extract_result(zip_bytes: bytes, source: str) -> tuple[str, list[dict] | None, str] | None:
+    """Extract markdown + content_list from a cloud result zip."""
+    with tempfile.TemporaryDirectory(prefix="zotero_mineru_cloud_") as out_dir:
+        out = Path(out_dir)
+        try:
+            _safe_extract_zip(zip_bytes, out)
+        except Exception as e:
+            logger.warning(f"MinerU cloud zip extraction failed: {e}")
+            return None
+        # Cloud zip layout: full.md (main markdown) + *_content_list.json
+        md_files = list(out.rglob("*.md"))
+        md_files.sort(key=lambda p: -p.stat().st_size)
+        for md in md_files:
+            try:
+                text = md.read_text(encoding="utf-8", errors="replace")
+                if text.strip():
+                    # content_list: try matching stem, then any content_list file
+                    content_list = _read_content_list(out, md.stem)
+                    if content_list is None:
+                        cl_files = list(out.rglob("*content_list*.json"))
+                        for cl in cl_files:
+                            try:
+                                data = json.loads(cl.read_text(encoding="utf-8"))
+                                if isinstance(data, list):
+                                    content_list = data
+                                    break
+                            except Exception:
+                                continue
+                    return text, content_list, source
+            except Exception:
+                continue
+    logger.warning("MinerU cloud zip contained no readable .md")
+    return None
+
+
+def _call_mineru_cloud(
+    pdf_path: Path,
+    start_page_0: int,
+    end_page_0: int,
+    token: str,
+    model_version: str = "vlm",
+    timeout: int = 600,
+) -> tuple[str, list[dict] | None, str] | None:
+    """Parse a PDF via the MinerU cloud API (mineru.net).
+
+    Async flow: apply for upload URL → PUT file → poll batch → download zip.
+    On vlm failure, retries once with pipeline. Returns
+    (markdown, content_list, "mineru:cloud-vlm"|"mineru:cloud-pipeline") or None.
+    """
+    import time
+
+    for attempt_model in (model_version, "pipeline") if model_version != "pipeline" else ("pipeline",):
+        result = _cloud_parse_single(pdf_path, start_page_0, end_page_0, token, attempt_model, timeout)
+        if result is not None:
+            return result
+        if attempt_model != "pipeline":
+            logger.info("MinerU cloud vlm failed; retrying with pipeline model.")
+    return None
+
+
+def _cloud_parse_single(
+    pdf_path: Path,
+    start_page_0: int,
+    end_page_0: int,
+    token: str,
+    model_version: str,
+    timeout: int,
+) -> tuple[str, list[dict] | None, str] | None:
+    """Single cloud parse attempt with a given model version."""
+    import time
+
+    source = f"mineru:cloud-{model_version}"
+
+    # 1. Apply for upload URL.
+    file_entry: dict[str, Any] = {"name": pdf_path.name}
+    # Cloud uses 1-indexed page_ranges string like "2,4-6"; we have 0-indexed.
+    if start_page_0 >= 0 and end_page_0 >= 0:
+        # Convert 0-based to 1-based for the API.
+        page_ranges = f"{start_page_0 + 1}-{end_page_0 + 1}"
+        file_entry["page_ranges"] = page_ranges
+    body = {"files": [file_entry], "model_version": model_version}
+
+    resp = _cloud_request("POST", "/file-urls/batch", token, json=body)
+    if not resp or resp.get("code") != 0:
+        logger.warning(f"MinerU cloud apply-upload failed: {resp}")
+        return None
+    data = resp.get("data") or {}
+    batch_id = data.get("batch_id")
+    file_urls = data.get("file_urls") or []
+    if not batch_id or not file_urls:
+        logger.warning("MinerU cloud: missing batch_id or file_urls")
+        return None
+
+    # 2. PUT upload the PDF (no Content-Type header per docs).
+    upload_url = file_urls[0]
+    try:
+        import requests
+
+        with open(pdf_path, "rb") as fh:
+            put_resp = requests.put(upload_url, data=fh, timeout=120)
+    except Exception as e:
+        logger.warning(f"MinerU cloud file upload failed: {e}")
+        return None
+    if put_resp.status_code not in (200, 201):
+        logger.warning(f"MinerU cloud upload HTTP {put_resp.status_code}")
+        return None
+
+    # 3. Poll for completion.
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        poll = _cloud_request("GET", f"/extract-results/batch/{batch_id}", token)
+        if not poll or poll.get("code") != 0:
+            time.sleep(_CLOUD_POLL_INTERVAL)
+            continue
+        results = (poll.get("data") or {}).get("extract_result") or []
+        if not results:
+            time.sleep(_CLOUD_POLL_INTERVAL)
+            continue
+        item = results[0]
+        state = item.get("state")
+        if state == "done":
+            zip_url = item.get("full_zip_url")
+            if not zip_url:
+                logger.warning("MinerU cloud: done but no full_zip_url")
+                return None
+            # 4. Download + extract.
+            zip_bytes = _cloud_download_zip(zip_url)
+            if zip_bytes is None:
+                return None
+            return _cloud_extract_result(zip_bytes, source)
+        if state == "failed":
+            err = item.get("err_msg", "unknown")
+            logger.warning(f"MinerU cloud parse failed ({model_version}): {err}")
+            return None
+        # running / pending / converting — keep polling.
+        time.sleep(_CLOUD_POLL_INTERVAL)
+
+    logger.warning(f"MinerU cloud poll timed out after {timeout}s ({model_version})")
     return None
 
 
@@ -580,16 +770,30 @@ def _dispatch_parse(
     end_page_0: int,
     config: dict[str, Any],
 ) -> tuple[str, list[dict] | None, str] | None:
-    """Route to api or local-CLI backend per config.
+    """Route to cloud / api / local-CLI backend per config.
 
-    Degradation chain: ``api`` failure falls back to the local CLI (hybrid,
-    which itself falls back to pipeline inside ``_call_cli_with_fallback``).
-    A purely-local config skips the API hop entirely. Returns
-    (markdown, content_list, source_label) or None.
+    Degradation chain (most-preferred first):
+      1. ``cloud`` — MinerU online API (mineru.net, vlm→pipeline), if token set
+      2. ``api`` — local mineru-api server (/file_parse), if api_url set
+      3. local CLI — hybrid-auto-engine → pipeline (inside _call_cli_with_fallback)
+
+    Returns (markdown, content_list, source_label) or None.
     """
     backend = _normalize_backend(config.get("backend"))
     timeout = _resolve_timeout(config)
 
+    # 1. Cloud backend (highest priority when token is configured).
+    cloud_token = config.get("cloud_token") or os.getenv("MINERU_API_TOKEN")
+    if cloud_token and backend == "cloud":
+        cloud_model = config.get("cloud_model", "vlm")
+        result = _call_mineru_cloud(
+            pdf_path, start_page_0, end_page_0, cloud_token, cloud_model, timeout
+        )
+        if result is not None:
+            return result
+        logger.info("MinerU cloud failed; falling back to local CLI.")
+
+    # 2. Local mineru-api backend (legacy /file_parse).
     if backend == "api":
         api_url = config.get("api_url")
         if api_url:
