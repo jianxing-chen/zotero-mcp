@@ -312,7 +312,12 @@ def doc_to_csl_json(doc: dict) -> dict:
     # import path maps it to the journalAbbreviation field.
     bibstem = doc.get("bibstem")
     if bibstem:
-        csl["container-title-short"] = str(bibstem).strip()
+        # ADS sometimes returns bibstem as a list (e.g. ["ApJL", "ApJL.1002"]);
+        # the first element is the canonical short form.
+        if isinstance(bibstem, list):
+            bibstem = bibstem[0] if bibstem else None
+        if bibstem:
+            csl["container-title-short"] = str(bibstem).strip()
 
     for src, dst in (("volume", "volume"), ("issue", "issue"), ("page", "page")):
         val = doc.get(src)

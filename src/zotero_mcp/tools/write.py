@@ -3584,6 +3584,8 @@ def _ads_doc_to_enrich_fields(doc: dict, wanted: set[str]) -> dict[str, str]:
             result["date"] = date_str
     if "journal_abbreviation" in wanted:
         bibstem = doc.get("bibstem")
+        if isinstance(bibstem, list):
+            bibstem = bibstem[0] if bibstem else None
         if bibstem:
             result["journal_abbreviation"] = str(bibstem).strip()
     return result
@@ -4024,11 +4026,15 @@ def _upgrade_single_preprint(
         field_updates["publicationTitle"] = str(pub)
 
     bibstem = pub_doc.get("bibstem")
+    if isinstance(bibstem, list):
+        bibstem = bibstem[0] if bibstem else None
     if bibstem:
         field_updates["journalAbbreviation"] = str(bibstem).strip()
 
     for src, dst in (("volume", "volume"), ("issue", "issue"), ("page", "pages")):
         val = pub_doc.get(src)
+        if isinstance(val, list):
+            val = val[0] if val else None
         if val:
             field_updates[dst] = str(val)
 
