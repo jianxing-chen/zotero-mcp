@@ -3616,6 +3616,12 @@ def _enrich_single_item(
 
     data = item.get("data", {})
     result["title"] = (data.get("title") or "")[:60]
+    item_type = data.get("itemType", "")
+
+    # journalAbbreviation is only valid for journal/magazine/newspaper
+    # articles.  Skip it for preprints, books, theses, etc. — the Zotero
+    # API returns HTTP 400 "not a valid field for type" otherwise.
+    _JOURNAL_ABBR_TYPES = {"journalArticle", "magazineArticle", "newspaperArticle"}
 
     # 1. Determine which wanted fields are actually missing.
     to_fill = set()
@@ -3623,6 +3629,9 @@ def _enrich_single_item(
         if f == "date":
             current = (data.get("date") or "").strip()
         elif f == "journal_abbreviation":
+            if item_type not in _JOURNAL_ABBR_TYPES:
+                continue  # field not valid for this item type
+            current = (data.get("journalAbbreviation") or "").strip()
             current = (data.get("journalAbbreviation") or "").strip()
         else:
             continue
@@ -3805,12 +3814,16 @@ def enrich_batch(
                 continue
             # Check if any wanted field is missing (when not force).
             if not force:
+                it_type = data.get("itemType", "")
+                _JA_TYPES = {"journalArticle", "magazineArticle", "newspaperArticle"}
                 needs = False
                 for f in wanted:
                     if f == "date" and not (data.get("date") or "").strip():
                         needs = True
                         break
-                    if f == "journal_abbreviation" and not (data.get("journalAbbreviation") or "").strip():
+                    if (f == "journal_abbreviation"
+                            and it_type in _JA_TYPES
+                            and not (data.get("journalAbbreviation") or "").strip()):
                         needs = True
                         break
                 if not needs:
