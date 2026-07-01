@@ -3601,6 +3601,27 @@ def _parse_arxiv_id_from_extra(extra: str | None) -> str | None:
     return None
 
 
+def _jabbr_from_bibcode(bibcode: str) -> str | None:
+    """Extract the journal abbreviation from a bibcode.
+
+    A bibcode has the format ``YYYYJJJJJVVVVMPPPPA`` (19 chars). The journal
+    field starts at position 4 and runs until the volume (first digit). The
+    ``L`` in e.g. ``2000ApJ...545L..47G`` is part of the page number (L47),
+    not the journal name — so the abbreviation is ``ApJ``, not ``ApJL``.
+
+    Returns the abbreviation (trailing dots stripped), or None if the bibcode
+    is too short or malformed.
+    """
+    if not bibcode or len(bibcode) < 9:
+        return None
+    # Journal field starts at position 4; extract letters/dots/& until the
+    # first digit (which marks the start of the volume).
+    m = re.match(r"([A-Za-z&.]+?)(\d)", bibcode[4:])
+    if m:
+        return m.group(1).rstrip(".") or None
+    return None
+
+
 def _ads_doc_to_enrich_fields(doc: dict, wanted: set[str]) -> dict[str, str]:
     """Extract only the *wanted* fields from an ADS doc, keyed by Zotero param name.
 
@@ -3621,11 +3642,22 @@ def _ads_doc_to_enrich_fields(doc: dict, wanted: set[str]) -> dict[str, str]:
         if date_str:
             result["date"] = date_str
     if "journal_abbreviation" in wanted:
-        bibstem = doc.get("bibstem")
-        if isinstance(bibstem, list):
-            bibstem = bibstem[0] if bibstem else None
-        if bibstem:
-            result["journal_abbreviation"] = str(bibstem).strip()
+        # Prefer the journal abbreviation encoded in the bibcode itself
+        # (e.g. "2000ApJ...545L..47G" → "ApJ"). The bibcode's journal field
+        # is authoritative — ADS's `bibstem` returns "ApJL" for ApJ Letters
+        # (L-page papers), but the bibcode encodes the journal as "ApJ" and
+        # the "L" is part of the page number, not the journal name.
+        bibcode = (doc.get("bibcode") or "").strip()
+        jabbr = _jabbr_from_bibcode(bibcode) if bibcode else None
+        if not jabbr:
+            # Fall back to bibstem (less reliable: ApJL/ApJL..545 for L-pages).
+            bibstem = doc.get("bibstem")
+            if isinstance(bibstem, list):
+                bibstem = bibstem[0] if bibstem else None
+            if bibstem:
+                jabbr = str(bibstem).strip()
+        if jabbr:
+            result["journal_abbreviation"] = jabbr
     return result
 
 

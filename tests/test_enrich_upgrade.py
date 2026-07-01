@@ -201,6 +201,34 @@ class TestAdsDocToEnrichFields:
         result = _ads_doc_to_enrich_fields(doc, {"date", "journal_abbreviation"})
         assert result["date"] == "2022"
 
+    def test_jabbr_from_bibcode_not_bibstem(self):
+        """Journal abbreviation extracted from bibcode, not bibstem.
+
+        bibstem returns 'ApJL' for L-page papers, but the bibcode encodes
+        the journal as 'ApJ' — the 'L' is part of the page number (L47).
+        """
+        doc = {"bibcode": "2000ApJ...545L..47G", "bibstem": ["ApJL", "ApJL..545"]}
+        result = _ads_doc_to_enrich_fields(doc, {"journal_abbreviation"})
+        assert result["journal_abbreviation"] == "ApJ"
+
+    def test_jabbr_normal_page_bibcode(self):
+        """Non-L-page bibcode: bibcode extraction matches bibstem."""
+        doc = {"bibcode": "2013ApJ...778..104R", "bibstem": ["ApJ", "ApJ...778"]}
+        result = _ads_doc_to_enrich_fields(doc, {"journal_abbreviation"})
+        assert result["journal_abbreviation"] == "ApJ"
+
+    def test_jabbr_falls_back_to_bibstem_without_bibcode(self):
+        """No bibcode → fall back to bibstem."""
+        doc = {"bibstem": ["MNRAS", "MNRAS.491"]}
+        result = _ads_doc_to_enrich_fields(doc, {"journal_abbreviation"})
+        assert result["journal_abbreviation"] == "MNRAS"
+
+    def test_jabbr_handles_ampersand(self):
+        """A&A (Astronomy & Astrophysics) bibcode."""
+        doc = {"bibcode": "2014A&A...571A..56G", "bibstem": ["A&A", "A&A...571"]}
+        result = _ads_doc_to_enrich_fields(doc, {"journal_abbreviation"})
+        assert result["journal_abbreviation"] == "A&A"
+
 
 # --------------------------------------------------------------------------- #
 # _enrich_single_item
