@@ -474,46 +474,20 @@ class LocalZoteroReader:
         # rather than a stub or thumbnail.
         return max(candidates, key=lambda p: p.stat().st_size)
 
-    def _read_mineru_cache(self, attachment_key: str) -> str | None:
-        """Return cached MinerU fulltext for an attachment, or ``None``.
-
-        This is a *cache-only* read (no parse triggered). When a "精读"
-        session has already produced a MinerU parse of the PDF, the semantic
-        index reuses it instead of re-extracting with pdfminer — MinerU
-        preserves LaTeX symbols and table structure that pdfminer destroys.
-
-        Import is deferred to avoid pulling torch / mineru CLI deps into the
-        semantic-search build path when MinerU is not configured.
-        """
-        try:
-            from .mineru_client import read_cached_fulltext
-        except Exception:
-            return None
-        return read_cached_fulltext(attachment_key)
-
     def _extract_fulltext_for_item(self, item_id: int) -> tuple[str, str] | None:
         """Attempt to extract fulltext and source from the item's best attachment.
 
         Preference order:
-        1. MinerU cache (markdown from a prior ``zotero_read_pdf_pages`` "精读"
-           session, converted to plaintext — preserves LaTeX symbols and
-           tables) — source ``"mineru-cache"``.
-        2. ``.zotero-ft-cache`` (Zotero's own already-indexed text — survives
+        1. ``.zotero-ft-cache`` (Zotero's own already-indexed text — survives
            filename drift, no subprocess needed) — source ``"zotero-cache"``.
-        3. PDF extraction — source ``"pdf"``.
-        4. HTML extraction — source ``"html"``.
-        5. Textual attachments (.txt, .vtt, .srt, etc.) — source ``"file"``.
+        2. PDF extraction — source ``"pdf"``.
+        3. HTML extraction — source ``"html"``.
+        4. Textual attachments (.txt, .vtt, .srt, etc.) — source ``"file"``.
 
         If the sqlite-recorded filename doesn't resolve on disk, scan the
         attachment's storage folder for a content-type-matching file before
         giving up (#291, #265).
         """
-        # 0. MinerU cache — reuse a prior "精读" parse if available.
-        for key, _path, _ctype in self._iter_parent_attachments(item_id):
-            cached = self._read_mineru_cache(key)
-            if cached:
-                return (cached, "mineru-cache")
-
         # 1. Zotero's own full-text cache — use it whenever present.
         for key, _path, _ctype in self._iter_parent_attachments(item_id):
             cached = self._read_zotero_ft_cache(key)

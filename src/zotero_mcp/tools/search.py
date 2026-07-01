@@ -939,9 +939,8 @@ def semantic_search(
         "when changing the embedding model or recovering from corruption). "
         "reindex_keys: a list of specific Zotero item keys (e.g. "
         "['AB123456','CD789012']) to force re-embedding of just those "
-        "items — used to pick up a MinerU '精读' (close-reading) cache that "
-        "was produced after the last update. The incremental watermark is "
-        "NOT advanced by a reindex_keys run. "
+        "items from their latest local full-text source. The incremental "
+        "watermark is NOT advanced by a reindex_keys run. "
         "limit: optional cap on items processed (useful for smoke-testing). "
         "Progress is reported via the MCP context; on large libraries an "
         "incremental update is seconds, a full rebuild can take minutes. "
@@ -967,7 +966,7 @@ def update_search_database(
         force_rebuild: Whether to rebuild the entire database from scratch
         limit: Limit number of items to process (useful for testing)
         reindex_keys: Optional list of Zotero item keys to force
-            re-embedding (reuses MinerU '精读' cache when available)
+            re-embedding from their latest local full-text source
         ctx: MCP context
 
     Returns:
@@ -993,7 +992,7 @@ def update_search_database(
         search = create_semantic_search(str(config_path))
 
         # Use fulltext extraction when in local mode (has access to PDFs),
-        # or always when reindex_keys is set (needs local PDFs/MinerU cache).
+        # or always when reindex_keys is set (needs local PDFs/ft-cache).
         extract_fulltext = _utils.is_local_mode() or bool(reindex_keys)
         stats = search.update_database(
             force_full_rebuild=force_rebuild,

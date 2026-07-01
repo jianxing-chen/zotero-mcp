@@ -929,9 +929,8 @@ class ZoteroSemanticSearch:
 
                 local_items = filtered_items
 
-                # reindex_keys: narrow to just the requested items. Used to
-                # pick up MinerU "精读" caches produced after the last update
-                # — only those items are re-extracted and re-embedded.
+                # reindex_keys: narrow to just the requested items — only
+                # those items are re-extracted and re-embedded.
                 if reindex_keys:
                     _rk = {k.strip().upper() for k in reindex_keys if k and k.strip()}
                     local_items = [it for it in local_items if getattr(it, "key", "").upper() in _rk]
@@ -1053,7 +1052,7 @@ class ZoteroSemanticSearch:
 
                         # CHECK IF ITEM ALREADY EXISTS (unless force_rebuild /
                         # reindex_keys / no client). reindex_keys forces
-                        # re-extraction so a fresh MinerU cache is picked up.
+                        # re-extraction from the latest local full-text source.
                         if chroma_client and not force_rebuild and not reindex_keys:
                             existing_metadata = chroma_client.get_document_metadata(it.key)
                             if existing_metadata:
@@ -1589,8 +1588,8 @@ class ZoteroSemanticSearch:
             reindex_keys: Optional list of Zotero item keys to force
                 re-embedding, ignoring the incremental watermark and the
                 "already indexed" skip. Requires local mode
-                (extract_fulltext) — used to pick up MinerU "精读" caches
-                that were produced after the last update. The watermark is
+                (extract_fulltext) — used to refresh specific items from
+                their latest local full-text source. The watermark is
                 NOT promoted on a reindex_keys run (it's a targeted
                 refresh, not a library-version advance).
 
@@ -1649,9 +1648,9 @@ class ZoteroSemanticSearch:
             if include_fulltext is None:
                 include_fulltext = self._load_include_fulltext_setting()
 
-            # reindex_keys: targeted refresh of specific items (e.g. to pick up
-            # a MinerU "精读" cache produced after the last update). Forces the
-            # local-extraction path and bypasses the incremental watermark.
+            # reindex_keys: targeted refresh of specific items from their
+            # latest local full-text source. Forces the local-extraction
+            # path and bypasses the incremental watermark.
             _is_reindex = bool(reindex_keys)
             if _is_reindex:
                 extract_fulltext = True
