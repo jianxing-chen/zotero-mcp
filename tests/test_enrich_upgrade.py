@@ -6,6 +6,7 @@ from zotero_mcp import ads_client
 from zotero_mcp.citation_import import csl_json_to_zotero
 from zotero_mcp.tools.write import (
     _ads_doc_to_enrich_fields,
+    _clean_title_for_ads,
     _enrich_single_item,
     _find_published_version,
     _parse_arxiv_id_from_extra,
@@ -206,7 +207,8 @@ class TestAdsDocToEnrichFields:
 # --------------------------------------------------------------------------- #
 
 class TestEnrichSingleItem:
-    def test_skips_when_fields_already_present(self):
+    def test_skips_when_fields_already_present_and_bibcode_exists(self):
+        """All wanted fields present AND bibcode already in Extra → skip."""
         write_zot = MagicMock()
         write_zot.item.return_value = {
             "key": "ABC12345",
@@ -217,7 +219,7 @@ class TestEnrichSingleItem:
                 "date": "2023",
                 "journalAbbreviation": "ApJ",
                 "DOI": "10.1088/0004-637X/762/1/36",
-                "extra": "",
+                "extra": "bibcode: 2023ApJ...945L..15A",
             },
         }
         result = _enrich_single_item(write_zot, "ABC12345", {"date", "journal_abbreviation"}, force=False)
@@ -242,6 +244,7 @@ class TestEnrichSingleItem:
             mock_ads._FULL_FIELDS = ads_client._FULL_FIELDS
             mock_ads.fetch_record.return_value = None
             mock_ads.search.return_value = [{
+                "bibcode": "2013ApJ...762...36X",
                 "pubdate": "2013-01-10",
                 "bibstem": "ApJ",
                 "year": "2013",
@@ -251,12 +254,14 @@ class TestEnrichSingleItem:
                                          {"date", "journal_abbreviation"}, force=False)
         assert result["status"] == "enriched"
         assert "date" in result["filled"]
-        assert "journalAbbreviation" in result["filled"]
+        assert "journal_abbreviation" in result["filled"]
+        assert "bibcode" in result["filled"]
         write_zot.update_item.assert_called_once()
         # Check the patched data has the right fields.
         patched = write_zot.update_item.call_args[0][0]
         assert patched["date"] == "2013-01-10"
         assert patched["journalAbbreviation"] == "ApJ"
+        assert "bibcode: 2013ApJ...762...36X" in patched["extra"]
 
     def test_no_identifier_returns_not_found(self):
         write_zot = MagicMock()
@@ -274,6 +279,195 @@ class TestEnrichSingleItem:
         }
         result = _enrich_single_item(write_zot, "XYZ12345", {"date", "journal_abbreviation"}, force=False)
         assert result["status"] == "not_found"
+
+    # --- Gap 1: bibcode auto-write to Extra ---
+
+    def test_bibcode_written_to_empty_extra(self):
+        """ADS doc has a bibcode; item Extra is empty → bibcode appended."""
+        write_zot = MagicMock()
+        write_zot.item.return_value = {
+            "key": "GAP10001",
+            "data": {
+                "key": "GAP10001", "itemType": "journalArticle",
+                "title": "Test", "date": "2023", "journalAbbreviation": "ApJ",
+                "DOI": "10.1088/x", "extra": "",
+            },
+        }
+        with patch("zotero_mcp.tools.write._ads_client") as mock_ads:
+            mock_ads._FULL_FIELDS = ads_client._FULL_FIELDS
+            mock_ads.fetch_record.return_value = None
+            mock_ads.search.return_value = [{"bibcode": "2023ApJ...945L..15A"}]
+            result = _enrich_single_item(write_zot, "GAP10001",
+                                         {"date", "journal_abbreviation"}, force=False)
+        assert result["status"] == "enriched"
+        assert "bibcode" in result["filled"]
+        patched = write_zot.update_item.call_args[0][0]
+        assert "bibcode: 2023ApJ...945L..15A" in patched["extra"]
+
+    def test_bibcode_not_duplicated_when_already_present(self):
+        """Extra already has a bibcode line → not written again."""
+        write_zot = MagicMock()
+        write_zot.item.return_value = {
+            "key": "GAP10002",
+            "data": {
+                "key": "GAP10002", "itemType": "journalArticle",
+                "title": "Test", "date": "", "journalAbbreviation": "",
+                "DOI": "10.1088/x", "extra": "bibcode: 2023ApJ...945L..15A",
+            },
+        }
+        with patch("zotero_mcp.tools.write._ads_client") as mock_ads:
+            mock_ads._FULL_FIELDS = ads_client._FULL_FIELDS
+            mock_ads.fetch_record.return_value = {
+                "bibcode": "2023ApJ...945L..15A", "pubdate": "2023-01",
+                "bibstem": "ApJ", "year": "2023",
+            }
+            result = _enrich_single_item(write_zot, "GAP10002",
+                                         {"date", "journal_abbreviation"}, force=False)
+        # bibcode was already present → only date/journalAbbr filled
+        assert "bibcode" not in result["filled"]
+        patched = write_zot.update_item.call_args[0][0]
+        # Extra unchanged (no duplicate bibcode line)
+        assert patched["extra"] == "bibcode: 2023ApJ...945L..15A"
+
+    def test_bibcode_appended_preserving_existing_extra(self):
+        """Extra has other content (e.g. arXiv) → bibcode appended, not clobbered."""
+        write_zot = MagicMock()
+        write_zot.item.return_value = {
+            "key": "GAP10003",
+            "data": {
+                "key": "GAP10003", "itemType": "journalArticle",
+                "title": "Test", "date": "2023", "journalAbbreviation": "ApJ",
+                "DOI": "10.1088/x", "extra": "arXiv:2401.12345 [astro-ph]",
+            },
+        }
+        with patch("zotero_mcp.tools.write._ads_client") as mock_ads:
+            mock_ads._FULL_FIELDS = ads_client._FULL_FIELDS
+            mock_ads.fetch_record.return_value = None
+            mock_ads.search.return_value = [{"bibcode": "2024ApJ...961L..10X"}]
+            result = _enrich_single_item(write_zot, "GAP10003",
+                                         {"date", "journal_abbreviation"}, force=False)
+        assert "bibcode" in result["filled"]
+        patched = write_zot.update_item.call_args[0][0]
+        assert "arXiv:2401.12345" in patched["extra"]
+        assert "bibcode: 2024ApJ...961L..10X" in patched["extra"]
+
+    # --- Gap 2: title fallback ---
+
+    def test_title_fallback_finds_record_with_greek_and_latex(self):
+        """No bibcode/DOI/arXiv → title search finds ADS record.
+        Title contains Greek letters (σ) and LaTeX ($\\lambda$)."""
+        write_zot = MagicMock()
+        write_zot.item.return_value = {
+            "key": "GAP20001",
+            "data": {
+                "key": "GAP20001", "itemType": "journalArticle",
+                "title": "Spectral analysis of \u03c3 Ori and $\\lambda$ Orionis",
+                "date": "", "journalAbbreviation": "",
+                "DOI": "", "extra": "",
+            },
+        }
+        with patch("zotero_mcp.tools.write._ads_client") as mock_ads:
+            mock_ads._FULL_FIELDS = ads_client._FULL_FIELDS
+            mock_ads.fetch_record.return_value = None
+            # The title search should be called with cleaned words.
+            mock_ads.search.return_value = [{
+                "bibcode": "2018A&A...618A..50S",
+                "title": ["Spectral analysis of sigma Ori and lambda Orionis"],
+                "pubdate": "2018-11", "bibstem": "A&A", "year": "2018",
+            }]
+            result = _enrich_single_item(write_zot, "GAP20001",
+                                         {"date", "journal_abbreviation"}, force=False)
+        assert result["status"] == "enriched"
+        # Verify the ADS search was called with a title: query
+        search_call = mock_ads.search.call_args
+        assert search_call is not None
+        query = search_call[0][0] if search_call[0] else search_call[1].get("query", "")
+        assert 'title:"' in query
+
+    def test_title_too_short_skips_title_search(self):
+        """Title with < 3 words → _find_by_title returns None → not_found."""
+        write_zot = MagicMock()
+        write_zot.item.return_value = {
+            "key": "GAP20002",
+            "data": {
+                "key": "GAP20002", "itemType": "journalArticle",
+                "title": "Dark Matter",
+                "date": "", "journalAbbreviation": "",
+                "DOI": "", "extra": "",
+            },
+        }
+        with patch("zotero_mcp.tools.write._ads_client") as mock_ads:
+            mock_ads._FULL_FIELDS = ads_client._FULL_FIELDS
+            result = _enrich_single_item(write_zot, "GAP20002",
+                                         {"date", "journal_abbreviation"}, force=False)
+        # "Dark Matter" → 2 words → _find_by_title returns None before calling ADS
+        assert result["status"] == "not_found"
+        # ADS search was NOT called for title (no identifier path either)
+        mock_ads.search.assert_not_called()
+
+    def test_title_with_english_greek_spelling(self):
+        """Title with English-spelled Greek (omega Cen) → normal search."""
+        write_zot = MagicMock()
+        write_zot.item.return_value = {
+            "key": "GAP20003",
+            "data": {
+                "key": "GAP20003", "itemType": "journalArticle",
+                "title": "Variable stars in omega Cen survey observations",
+                "date": "", "journalAbbreviation": "",
+                "DOI": "", "extra": "",
+            },
+        }
+        with patch("zotero_mcp.tools.write._ads_client") as mock_ads:
+            mock_ads._FULL_FIELDS = ads_client._FULL_FIELDS
+            mock_ads.search.return_value = [{
+                "bibcode": "2020ApJ...890...50N",
+                "title": ["Variable stars in omega Cen survey observations"],
+                "pubdate": "2020-02", "bibstem": "ApJ", "year": "2020",
+            }]
+            result = _enrich_single_item(write_zot, "GAP20003",
+                                         {"date", "journal_abbreviation"}, force=False)
+        assert result["status"] == "enriched"
+        assert "date" in result["filled"]
+        assert "bibcode" in result["filled"]
+
+
+# --------------------------------------------------------------------------- #
+# _clean_title_for_ads — Greek letters + LaTeX normalization
+# --------------------------------------------------------------------------- #
+
+class TestCleanTitleForAds:
+    def test_greek_unicode_transliterated(self):
+        r"""σ → s, α → a, ω → o (via unidecode)."""
+        cleaned = _clean_title_for_ads("Spectral analysis of \u03c3 Ori")
+        assert "s Ori" in cleaned
+        assert "\u03c3" not in cleaned
+
+    def test_latex_commands_unbackslashed(self):
+        r"""\gamma → gamma, \lambda → lambda."""
+        cleaned = _clean_title_for_ads(r"Flux in $\gamma$-ray and $\lambda$ Ori")
+        assert "gamma" in cleaned
+        assert "lambda" in cleaned
+        assert "$" not in cleaned
+        assert "\\" not in cleaned
+
+    def test_mixed_greek_and_latex(self):
+        r"""Title with both Unicode Greek and LaTeX symbols."""
+        title = r"Mass loss in $\alpha$ and \u03c9 Cen systems"
+        cleaned = _clean_title_for_ads(title)
+        assert "alpha" in cleaned
+        assert "o Cen" in cleaned or "omega" in cleaned or "o" in cleaned
+        assert "$" not in cleaned
+
+    def test_english_greek_spelling_unchanged(self):
+        """'omega Cen' (already English) → passes through unchanged."""
+        cleaned = _clean_title_for_ads("Variable stars in omega Cen survey")
+        assert "omega Cen" in cleaned
+
+    def test_punctuation_and_whitespace_collapsed(self):
+        cleaned = _clean_title_for_ads("Title:  With  (extra)  [punctuation]!!")
+        assert "  " not in cleaned
+        assert ":" not in cleaned
+        assert "!" not in cleaned
 
 
 # --------------------------------------------------------------------------- #

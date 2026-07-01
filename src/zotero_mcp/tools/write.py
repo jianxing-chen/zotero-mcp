@@ -3553,7 +3553,18 @@ def add_by_csl_json(
 # --------------------------------------------------------------------------- #
 
 # Fields that enrich_item_metadata knows how to fill from an ADS record.
-_ENRICHABLE_FIELDS = {"date", "journal_abbreviation"}
+# "bibcode" is auto-written to the Extra field whenever an ADS doc is found
+# (see _enrich_single_item), so callers can pass it explicitly but it's also
+# a default side-effect of any enrichment.
+_ENRICHABLE_FIELDS = {"date", "journal_abbreviation", "bibcode"}
+
+
+def _append_extra_line(extra: str | None, line: str) -> str:
+    """Append a line to the Extra field without clobbering existing content."""
+    existing = (extra or "").rstrip()
+    if existing:
+        return existing + "\n" + line
+    return line
 
 
 def _parse_bibcode_from_extra(extra: str | None) -> str | None:
@@ -3618,6 +3629,68 @@ def _ads_doc_to_enrich_fields(doc: dict, wanted: set[str]) -> dict[str, str]:
     return result
 
 
+def _clean_title_for_ads(title: str) -> str:
+    """Normalize a paper title for ADS ``title:"..."`` search.
+
+    Handles Greek letters (Unicode and LaTeX), math delimiters, and other
+    special characters that would confuse the ADS query parser or break the
+    phrase match:
+
+    1. LaTeX command backslashes: ``\\gamma`` → ``gamma``, ``\\alpha`` → ``alpha``
+       — unifies LaTeX symbol names with their English spellings already
+       present in some titles (e.g. ``omega Cen``).
+    2. Math ``$`` delimiters: stripped.
+    3. Residual braces / backslashes: ``{`` ``}`` ``\\`` → space.
+    4. Unicode transliteration (via ``unidecode``): ``ω``→``o``, ``α``→``a``,
+       ``σ``→``s``, ``é``→``e``, etc. Handles Greek letters written in Unicode
+       that may be mixed with English spellings in the same title.
+    5. Punctuation stripped, whitespace collapsed.
+    """
+    s = title
+    # 1. \command → command (LaTeX symbol names become English words)
+    s = re.sub(r"\\([a-zA-Z]+)", r"\1", s)
+    # 2. Drop $ delimiters
+    s = s.replace("$", "")
+    # 3. Remove residual LaTeX braces / backslashes
+    s = re.sub(r"[{}\\]", " ", s)
+    # 4. Unicode → ASCII (Greek, diacritics, CJK, etc.)
+    s = _utils._normalize_for_search(s)
+    # 5. Strip punctuation (keep word chars, spaces, hyphens), collapse spaces
+    s = re.sub(r"[^\w\s-]", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _find_by_title(title: str) -> dict | None:
+    """Find an ADS record by searching the (cleaned) title.
+
+    Last-resort fallback for items without bibcode/DOI/arXiv. Uses the first
+    8 words of the cleaned title in a ``title:"..."`` phrase query, then
+    sanity-checks results with token-overlap similarity (threshold 0.5 —
+    lower than the 0.7 used by ``_find_published_version`` because enrichment
+    only fills date/journalAbbr/bibcode and never modifies the title, so a
+    false positive has limited blast radius).
+    """
+    cleaned = _clean_title_for_ads(title)
+    if not cleaned:
+        return None
+    words = [w for w in cleaned.split() if len(w) > 1][:8]
+    if len(words) < 3:
+        return None
+    q = 'title:"{}"'.format(" ".join(words))
+    try:
+        docs = _ads_client.search(q, fl=_ads_client._FULL_FIELDS, rows=5)
+    except Exception:
+        return None
+    for d in docs:
+        dtitle = d.get("title")
+        if isinstance(dtitle, list):
+            dtitle = dtitle[0] if dtitle else ""
+        if dtitle and _title_similarity(title, dtitle) > 0.5:
+            return d
+    return None
+
+
 def _enrich_single_item(
     write_zot,
     item_key: str,
@@ -3666,19 +3739,23 @@ def _enrich_single_item(
         if force or not current:
             to_fill.add(f)
 
-    if not to_fill:
+    # bibcode auto-write: always write bibcode to Extra if missing, regardless
+    # of the `wanted` set — it links the item to ADS for future citation export.
+    existing_bibcode = _parse_bibcode_from_extra(data.get("extra"))
+    needs_bibcode = not existing_bibcode
+
+    if not to_fill and not needs_bibcode:
         result["status"] = "skipped_existing"
         return result
 
     # 2. Resolve identifier: bibcode from extra, DOI, or arXiv ID from extra.
-    bibcode = _parse_bibcode_from_extra(data.get("extra"))
     doi = (data.get("DOI") or "").strip()
     arxiv_id = _parse_arxiv_id_from_extra(data.get("extra"))
 
     doc = None
-    if bibcode:
+    if existing_bibcode:
         try:
-            doc = _ads_client.fetch_record(bibcode)
+            doc = _ads_client.fetch_record(existing_bibcode)
         except Exception:
             doc = None
     if doc is None and doi:
@@ -3695,25 +3772,38 @@ def _enrich_single_item(
                 doc = docs[0]
         except Exception:
             pass
+    # 4th fallback: title search (handles Greek letters & LaTeX in titles).
+    if doc is None:
+        title = (data.get("title") or "").strip()
+        if title:
+            try:
+                doc = _find_by_title(title)
+            except Exception:
+                doc = None
 
     if doc is None:
         result["status"] = "not_found"
-        result["error"] = "no ADS record found (tried bibcode + DOI + arXiv ID)"
+        result["error"] = "no ADS record found (tried bibcode + DOI + arXiv ID + title)"
         return result
 
     # 3. Extract the wanted fields from the ADS doc.
     fill_values = _ads_doc_to_enrich_fields(doc, to_fill)
-    if not fill_values:
-        result["status"] = "not_found"
-        result["error"] = "ADS record has no values for the requested fields"
-        return result
 
-    # 4. PATCH the item — only the fields we actually got values for.
+    # 4. PATCH the item — wanted fields + bibcode (auto side-effect).
     field_updates: dict[str, Any] = {}
     if "date" in fill_values and "date" in to_fill:
         field_updates["date"] = fill_values["date"]
     if "journal_abbreviation" in fill_values and "journal_abbreviation" in to_fill:
         field_updates["journalAbbreviation"] = fill_values["journal_abbreviation"]
+
+    # Write bibcode to Extra if the ADS doc has one and it's not already there.
+    ads_bibcode = (doc.get("bibcode") or "").strip()
+    if needs_bibcode and ads_bibcode:
+        field_updates["extra"] = _append_extra_line(data.get("extra"), f"bibcode: {ads_bibcode}")
+
+    if not field_updates:
+        result["status"] = "skipped_existing"
+        return result
 
     # Build the patched item: copy current data, apply only our updates.
     patched = dict(data)
@@ -3728,7 +3818,14 @@ def _enrich_single_item(
         return result
 
     result["status"] = "enriched"
-    result["filled"] = list(field_updates.keys())
+    filled_display = []
+    if "date" in field_updates:
+        filled_display.append("date")
+    if "journalAbbreviation" in field_updates:
+        filled_display.append("journal_abbreviation")
+    if "extra" in field_updates:
+        filled_display.append("bibcode")
+    result["filled"] = filled_display
     result["skipped"] = [f for f in to_fill if f not in fill_values]
     return result
 
@@ -3737,11 +3834,16 @@ def _enrich_single_item(
     name="zotero_enrich_item_metadata",
     description=(
         "Back-fill MISSING metadata on an existing Zotero item by looking it "
-        "up in NASA ADS. Uses the item's bibcode (from the extra field) or "
-        "DOI to find the ADS record, then fills the requested fields. "
+        "up in NASA ADS. Uses the item's bibcode (from the extra field), DOI, "
+        "or arXiv ID to find the ADS record, then fills the requested fields. "
+        "For items without any of those identifiers, falls back to title-based "
+        "ADS search (handles Greek letters and LaTeX symbols in titles). "
         "By default fills 'date' and 'journal_abbreviation' (journal Abbr "
         "like ApJ/MNRAS). Only fills fields that are currently empty — "
         "existing values are preserved unless force=True. "
+        "When an ADS record is found, the bibcode is also written to the "
+        "item's Extra field (if not already present), enabling direct "
+        "citation export via zotero_export_ads. "
         "Requires an ADS API token. "
         "item_key: 8-char Zotero item key. "
         "fields: list of field names to fill, default ['date', "
@@ -3796,9 +3898,13 @@ def enrich_item_metadata(
     description=(
         "Batch-enrich MISSING metadata on all Zotero items that lack 'date' "
         "or 'journal_abbreviation'. Scans the library, finds items missing "
-        "the requested fields, looks each up in ADS (by bibcode or DOI), "
+        "the requested fields, looks each up in ADS (by bibcode, DOI, or "
+        "arXiv ID; falls back to title search for items without identifiers), "
         "and PATCHes the values back. Only fills empty fields — existing "
         "values are preserved unless force=True. "
+        "When an ADS record is found, the bibcode is also written to the "
+        "item's Extra field (if not already present), enabling direct "
+        "citation export via zotero_export_ads. "
         "Use after importing many papers without full metadata, or to "
         "back-fill journal abbreviations on an existing library. "
         "fields: list of field names, default ['date', 'journal_abbreviation']. "
