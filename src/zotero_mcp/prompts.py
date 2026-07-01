@@ -134,3 +134,56 @@ def expand_from_paper(identifier: str) -> str:
             "builds on, and how later work extended or challenged it.",
         ]
     )
+
+
+@mcp.prompt(
+    name="zotero_read_paper",
+    description="Read a paper in full (all pages) and produce a structured "
+                "summary with page references. Drives page-by-page extraction so "
+                "nothing is missed — unlike a single read_pdf_pages call which "
+                "may stop after the first batch.",
+)
+def read_paper(item_key: str, focus: str = "") -> str:
+    """Read an entire paper and summarize it.
+
+    Args:
+        item_key: Zotero item key/ID of the paper.
+        focus: optional aspect to focus on (e.g. 'methods', 'results',
+            'the derivation in section 3'). Empty = full balanced summary.
+    """
+    focus_clause = f" Pay special attention to: {focus}." if focus else ""
+    return "\n".join(
+        [
+            f"Read and summarize the paper with Zotero item key `{item_key}` — "
+            f"the FULL paper, not just the first few pages.{focus_clause}",
+            "",
+            "Follow these steps:",
+            "",
+            f"1. `zotero_get_item_metadata(item_key='{item_key}')` — "
+            "get the title, authors, year, DOI for context.",
+            "",
+            f"2. `zotero_get_pdf_outline(item_key='{item_key}')` — "
+            "get the table of contents. If it returns 'no outline', proceed "
+            "anyway (many papers don't have one embedded).",
+            "",
+            f"3. Read the paper in full, in batches of up to 50 pages. "
+            f"Start with `zotero_read_pdf_pages(item_key='{item_key}', "
+            "start_page=1, end_page=50)`. The output header tells you the "
+            "total page count. Continue reading the remaining pages in "
+            "consecutive 50-page batches (e.g. 51-100, 101-150) until you "
+            "have covered every page. Do NOT stop after the first batch "
+            "unless the paper is ≤50 pages. MinerU caches the parsed PDF "
+            "after the first call, so later batches are fast.",
+            "",
+            "4. After reading all pages, produce a structured summary:",
+            "   - **Research question & motivation**",
+            "   - **Methodology** (model, data, experimental setup)",
+            "   - **Key results** (cite specific numbers, formulas, figures)",
+            "   - **Conclusions & limitations**",
+            "   Reference page numbers for important findings (e.g. 'p. 12').",
+            "",
+            "If the paper is very long (>200 pages, e.g. a thesis or book), "
+            "first use the outline to identify the most relevant chapters, "
+            "and read those in full rather than every page.",
+        ]
+    )

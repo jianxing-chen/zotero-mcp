@@ -222,6 +222,37 @@ class TestEdgeCases:
         assert "## Page 2" in result
         assert "last" in result
 
+    def test_continue_footer_when_pages_remain(self, monkeypatch, dummy_ctx, fake_zot):
+        """Reading pages 1-3 of a 10-page PDF should append a 'continue' footer."""
+        _patch_fitz(monkeypatch, [FakePage(f"p{i}") for i in range(10)], total=10)
+        monkeypatch.setattr(
+            "zotero_mcp.tools.read_pdf._get_pdf_path",
+            lambda _k, _c: ("/tmp/test.pdf", "Paper", "ATTKEY"),
+        )
+
+        result = server.read_pdf_pages(
+            item_key="ITEM01", start_page=1, end_page=3, ctx=dummy_ctx
+        )
+
+        assert "Read pages 1-3 of 10" in result
+        assert "Pages 4-10 not yet read" in result
+        assert "start_page=4" in result
+
+    def test_no_continue_footer_when_last_page_read(self, monkeypatch, dummy_ctx, fake_zot):
+        """Reading through the last page should NOT append a 'continue' footer."""
+        _patch_fitz(monkeypatch, [FakePage(f"p{i}") for i in range(5)], total=5)
+        monkeypatch.setattr(
+            "zotero_mcp.tools.read_pdf._get_pdf_path",
+            lambda _k, _c: ("/tmp/test.pdf", "Paper", "ATTKEY"),
+        )
+
+        result = server.read_pdf_pages(
+            item_key="ITEM01", start_page=1, end_page=5, ctx=dummy_ctx
+        )
+
+        assert "not yet read" not in result
+        assert "continue" not in result.lower()
+
     def test_empty_page_text(self, monkeypatch, dummy_ctx, fake_zot):
         _patch_fitz(monkeypatch, [FakePage(""), FakePage("has text"), FakePage("")])
         monkeypatch.setattr(

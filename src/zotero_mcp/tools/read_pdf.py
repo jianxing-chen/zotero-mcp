@@ -26,6 +26,26 @@ def _cleanup_path(file_path: str) -> None:
         pass
 
 
+def _continue_reading_footer(
+    item_key: str, actual_end: int, total_pages: int
+) -> str:
+    """A tail prompt nudging the agent to read remaining pages.
+
+    Returns an empty string when ``actual_end`` already covers the whole PDF,
+    so callers can unconditionally append it.
+    """
+    if actual_end >= total_pages:
+        return ""
+    nxt = actual_end + 1
+    end = min(actual_end + 50, total_pages)
+    return (
+        f"\n---\n**Read pages 1-{actual_end} of {total_pages}. "
+        f"Pages {nxt}-{total_pages} not yet read.** "
+        f"To continue: `zotero_read_pdf_pages(item_key='{item_key}', "
+        f"start_page={nxt}, end_page={end})`."
+    )
+
+
 def _get_pdf_path(item_key: str, ctx: Context) -> tuple[str, str, str | None] | None:
     """Download a PDF attachment and return (file_path, title, attachment_key).
 
@@ -100,7 +120,14 @@ def _get_pdf_path(item_key: str, ctx: Context) -> tuple[str, str, str | None] | 
     name="zotero_read_pdf_pages",
     description="Read specific page range(s) from a PDF attachment of a Zotero item. "
     "Use this when you know which pages to read — for example after getting the PDF "
-    "outline via zotero_get_pdf_outline. Pages are 1-indexed. "
+    "outline via zotero_get_pdf_outline. Pages are 1-indexed. Max 50 pages per call. "
+    "IMPORTANT for full reading: a single call returns at most 50 pages, but many "
+    "papers have 20-40+ pages. To read a paper IN FULL, call this tool repeatedly "
+    "with consecutive ranges (e.g. 1-50, 51-100) until the returned total page "
+    "count is covered — do NOT stop after the first call unless you have read the "
+    "last page. The output header shows 'Total pages in PDF: N'; if your current "
+    "end_page < N, pages remain unread. MinerU caches the whole PDF after the "
+    "first call, so later ranges return instantly. "
     "When MinerU is configured (see ``mineru`` block in config.json), the tool returns "
     "structured Markdown with formulas as LaTeX and tables as HTML — far more accurate "
     "than plain text extraction for papers. Otherwise falls back to PyMuPDF text layer. "
@@ -261,7 +288,7 @@ def _try_mineru(
             output.append("")
 
     return _helpers._prepend_size_warning(
-        "\n".join(output),
+        "\n".join(output) + _continue_reading_footer(item_key, actual_end, total_pages),
         "MinerU output preserves formula LaTeX and table HTML — richer than plain text.",
     )
 
@@ -280,7 +307,7 @@ def _extract_with_pymupdf(
             f"# PDF Pages {start_page}-{actual_end} of {title}",
             f"**Item Key:** {item_key}",
             f"**Total pages in PDF:** {total_pages}",
-            f"**Extraction:** PyMuPDF (fallback)",
+            "**Extraction:** PyMuPDF (fallback)",
             "",
         ]
         for page_num in range(zstart, zend + 1):
@@ -295,7 +322,7 @@ def _extract_with_pymupdf(
             output.append("")
 
         return _helpers._prepend_size_warning(
-            "\n".join(output),
+            "\n".join(output) + _continue_reading_footer(item_key, actual_end, total_pages),
             "Consider using zotero_semantic_search to find specific content instead of reading full pages.",
         )
     finally:
