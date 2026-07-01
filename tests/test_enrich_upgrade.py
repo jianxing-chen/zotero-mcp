@@ -437,13 +437,13 @@ class TestEnrichSingleItem:
 
 class TestCleanTitleForAds:
     def test_greek_unicode_transliterated(self):
-        r"""σ → s, α → a, ω → o (via unidecode)."""
+        r"""σ → s, α → a, ω → o (via unidecode), output is lowercase."""
         cleaned = _clean_title_for_ads("Spectral analysis of \u03c3 Ori")
-        assert "s Ori" in cleaned
+        assert "s ori" in cleaned
         assert "\u03c3" not in cleaned
 
     def test_latex_commands_unbackslashed(self):
-        r"""\gamma → gamma, \lambda → lambda."""
+        r"""\gamma → gamma, \lambda → lambda, all lowercase."""
         cleaned = _clean_title_for_ads(r"Flux in $\gamma$-ray and $\lambda$ Ori")
         assert "gamma" in cleaned
         assert "lambda" in cleaned
@@ -451,23 +451,29 @@ class TestCleanTitleForAds:
         assert "\\" not in cleaned
 
     def test_mixed_greek_and_latex(self):
-        r"""Title with both Unicode Greek and LaTeX symbols."""
-        title = r"Mass loss in $\alpha$ and \u03c9 Cen systems"
+        r"""Title with both LaTeX symbols and Unicode Greek."""
+        title = "Mass loss in $\\alpha$ and \u03c9 Cen systems"
         cleaned = _clean_title_for_ads(title)
         assert "alpha" in cleaned
-        assert "o Cen" in cleaned or "omega" in cleaned or "o" in cleaned
+        # \u03c9 (omega) → unidecode → "o"; Cen → lowercased → "cen"
+        assert "o cen" in cleaned or "omega" in cleaned
         assert "$" not in cleaned
 
     def test_english_greek_spelling_unchanged(self):
-        """'omega Cen' (already English) → passes through unchanged."""
+        """'omega Cen' (already English) → lowercased to 'omega cen'."""
         cleaned = _clean_title_for_ads("Variable stars in omega Cen survey")
-        assert "omega Cen" in cleaned
+        assert "omega cen" in cleaned
 
     def test_punctuation_and_whitespace_collapsed(self):
         cleaned = _clean_title_for_ads("Title:  With  (extra)  [punctuation]!!")
         assert "  " not in cleaned
         assert ":" not in cleaned
         assert "!" not in cleaned
+
+    def test_output_is_lowercase(self):
+        """ADS title:phrase search is case-sensitive — output must be lowercase."""
+        cleaned = _clean_title_for_ads("ON THE WHITE DWARF COOLING SEQUENCE")
+        assert cleaned == "on the white dwarf cooling sequence"
 
 
 # --------------------------------------------------------------------------- #

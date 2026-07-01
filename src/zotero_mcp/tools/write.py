@@ -3658,6 +3658,8 @@ def _clean_title_for_ads(title: str) -> str:
     # 5. Strip punctuation (keep word chars, spaces, hyphens), collapse spaces
     s = re.sub(r"[^\w\s-]", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
+    # 6. Lowercase — ADS title:"..." phrase search is case-sensitive.
+    s = s.lower()
     return s
 
 
@@ -3674,12 +3676,34 @@ def _find_by_title(title: str) -> dict | None:
     cleaned = _clean_title_for_ads(title)
     if not cleaned:
         return None
-    words = [w for w in cleaned.split() if len(w) > 1][:8]
-    if len(words) < 3:
+    all_words = [w for w in cleaned.split() if len(w) > 1]
+    if len(all_words) < 3:
         return None
-    q = 'title:"{}"'.format(" ".join(words))
+    # Build an AND query of short title:phrase clauses instead of one long
+    # phrase. ADS's title:"a b c d e f" requires an exact contiguous match,
+    # which fails when the stored title has slightly different word order or
+    # extra/missing stopwords. Splitting into 1-2 word phrases joined by AND
+    # is far more tolerant: title:"white dwarf" title:"cooling" title:"47 tucanae"
+    # Use up to 6 content words (skip common stopwords that add noise).
+    _STOP = {"the", "of", "and", "in", "on", "a", "an", "for", "to", "from",
+             "with", "by", "at", "is", "as", "or", "via"}
+    content = [w for w in all_words if w.lower() not in _STOP][:6]
+    if len(content) < 2:
+        # Not enough content words — fall back to all words as a single phrase.
+        content = all_words[:5]
+    clauses = []
+    # Pair words into 2-word phrases for better precision; odd last word alone.
+    i = 0
+    while i < len(content):
+        if i + 1 < len(content):
+            clauses.append(f'title:"{content[i]} {content[i + 1]}"')
+            i += 2
+        else:
+            clauses.append(f'title:"{content[i]}"')
+            i += 1
+    q = " ".join(clauses)
     try:
-        docs = _ads_client.search(q, fl=_ads_client._FULL_FIELDS, rows=5)
+        docs = _ads_client.search(q, fl=_ads_client._FULL_FIELDS, rows=10)
     except Exception:
         return None
     for d in docs:
