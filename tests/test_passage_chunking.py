@@ -206,6 +206,95 @@ def test_default_path_still_item_level(monkeypatch):
     assert s.chroma_client.upserted_ids == ["ITEM0001"]
 
 
+def test_per_item_max_chunks_override_exceeds_global_cap(monkeypatch):
+    """A per-item-key override lets one item produce more chunks than the
+    global max_chunks_per_item, without affecting other items."""
+    # Default cap is 10 (from _chunking_search). Override BOOK0001 to 50.
+    s = _chunking_search(
+        monkeypatch,
+        config={"max_chunks_override": {"BOOK0001": 50}},
+    )
+    # Long enough body to exceed 10 chunks at chunk_size=120 (≈30+ passages).
+    body = "Chapter content paragraph. " * 400
+    book_item = {
+        "key": "BOOK0001",
+        "data": {
+            "title": "Thick Book",
+            "itemType": "book",
+            "abstractNote": "An abstract.",
+            "creators": [],
+            "fulltext": body,
+        },
+    }
+    stats = s._process_item_batch([book_item], force_rebuild=True)
+    assert stats["processed"] == 1
+    # Override 50 > global 10, so we should get more than 10 chunks.
+    n = len(s.chroma_client.upserted_ids)
+    assert n > 10, f"override should allow >10 chunks, got {n}"
+    assert n <= 50, f"override should cap at 50, got {n}"
+    assert all(cid.startswith("BOOK0001#") for cid in s.chroma_client.upserted_ids)
+
+
+def test_per_item_override_is_case_insensitive(monkeypatch):
+    """Config keys can be any case; lookup upper-cases the item key."""
+    s = _chunking_search(
+        monkeypatch,
+        config={"max_chunks_override": {"book0001": 50}},
+    )
+    body = "Chapter content paragraph. " * 400
+    book_item = {
+        "key": "BOOK0001",  # upper case in the item
+        "data": {"itemType": "book", "title": "T", "fulltext": body, "creators": []},
+    }
+    s._process_item_batch([book_item], force_rebuild=True)
+    # Still gets >10 (override matched despite case difference).
+    assert len(s.chroma_client.upserted_ids) > 10
+
+
+def test_no_override_falls_back_to_global_cap(monkeypatch):
+    """Without an override for this key, the global max_chunks_per_item applies."""
+    s = _chunking_search(monkeypatch)  # no max_chunks_override set
+    body = "Chapter content paragraph. " * 400  # long enough to hit cap
+    book_item = {
+        "key": "BOOK9999",
+        "data": {
+            "title": "Another Book",
+            "itemType": "book",
+            "abstractNote": "An abstract.",
+            "creators": [],
+            "fulltext": body,
+        },
+    }
+    stats = s._process_item_batch([book_item], force_rebuild=True)
+    assert stats["processed"] == 1
+    # Global cap is 10 — should be capped even though the body is longer.
+    assert len(s.chroma_client.upserted_ids) == 10
+
+
+def test_override_does_not_affect_other_items(monkeypatch):
+    """Override for one key must not bleed into another item in the same batch."""
+    s = _chunking_search(
+        monkeypatch,
+        config={"max_chunks_override": {"BOOK0001": 50}},
+    )
+    body = "Chapter content paragraph. " * 400
+    items = [
+        {
+            "key": "BOOK0001",
+            "data": {"itemType": "book", "title": "A", "fulltext": body, "creators": []},
+        },
+        {
+            "key": "BOOK0002",  # no override — should hit global cap of 10
+            "data": {"itemType": "book", "title": "B", "fulltext": body, "creators": []},
+        },
+    ]
+    s._process_item_batch(items, force_rebuild=True)
+    book1 = [i for i in s.chroma_client.upserted_ids if i.startswith("BOOK0001#")]
+    book2 = [i for i in s.chroma_client.upserted_ids if i.startswith("BOOK0002#")]
+    assert len(book1) > 10    # overridden
+    assert len(book2) == 10   # global cap
+
+
 def test_chunking_config_loaded_from_file(monkeypatch, tmp_path):
     cfg = tmp_path / "config.json"
     cfg.write_text(json.dumps({"semantic_search": {"chunking": {"enabled": True, "chunk_size": 256}}}))

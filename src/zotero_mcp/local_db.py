@@ -106,7 +106,8 @@ class LocalZoteroReader:
 
         Args:
             db_path: Optional path to zotero.sqlite. If None, auto-detect.
-            pdf_max_pages: Maximum pages to extract from PDFs.
+            pdf_max_pages: Maximum pages to extract from PDFs. 0 means no
+                limit (extract all pages); None falls back to the default 10.
             pdf_timeout: Seconds to wait for PDF extraction before killing the process.
         """
         self.db_path = db_path or self._find_zotero_db()
@@ -275,8 +276,10 @@ class LocalZoteroReader:
         import subprocess
         import sys
 
-        # Page limit (preserve existing fallback chain)
-        if isinstance(self.pdf_max_pages, int) and self.pdf_max_pages > 0:
+        # Page limit (preserve existing fallback chain).
+        # 0 means "no limit" (extract all pages) — used by reindex_keys runs
+        # that re-slice a thick book and need the full text.
+        if isinstance(self.pdf_max_pages, int) and self.pdf_max_pages >= 0:
             maxpages = self.pdf_max_pages
         else:
             max_pages_env = os.getenv("ZOTERO_PDF_MAXPAGES")

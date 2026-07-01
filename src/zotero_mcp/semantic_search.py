@@ -475,6 +475,11 @@ class ZoteroSemanticSearch:
             "chunk_size": 1500,
             "overlap": 200,
             "max_chunks_per_item": 20,
+            # Per-item-key override: {item_key: max_chunks}. Lets a thick
+            # book get more chunks than the global default without rebuilding
+            # the whole library — use reindex_keys=["KEY"] to re-slice just
+            # that item. Keys are case-insensitive (upper-cased on lookup).
+            "max_chunks_override": {},
         }
         if self.config_path and os.path.exists(self.config_path):
             try:
@@ -856,6 +861,15 @@ class ZoteroSemanticSearch:
                             zotero_db_path = semantic_cfg.get("zotero_db_path")
             except Exception:
                 pass
+
+            # reindex_keys is typically used to re-slice a specific thick
+            # book with a larger chunk budget. Without a page cap, pdfminer
+            # would only deliver the first 10 pages — defeating the purpose
+            # of the override. So lift the cap for targeted reindex runs.
+            # (If the item has a .zotero-ft-cache, that is preferred and is
+            # already uncapped, so this only matters for the pdfminer path.)
+            if reindex_keys and pdf_max_pages is None:
+                pdf_max_pages = 0
 
             with (
                 suppress_stdout(),
@@ -1970,6 +1984,10 @@ class ZoteroSemanticSearch:
         chunk_size = int(self._chunking_config.get("chunk_size", 1500))
         overlap = int(self._chunking_config.get("overlap", 200))
         max_chunks = int(self._chunking_config.get("max_chunks_per_item", 20))
+        # Per-item-key override map (case-insensitive). Keys are upper-cased
+        # on lookup so config authors don't worry about Zotero key casing.
+        _override_raw = self._chunking_config.get("max_chunks_override", {}) or {}
+        _override = {str(k).upper(): int(v) for k, v in _override_raw.items()}
 
         documents: list[str] = []
         metadatas: list[dict[str, Any]] = []
@@ -2003,7 +2021,8 @@ class ZoteroSemanticSearch:
                     # Index one vector per overlapping passage so search can
                     # return a grounded quote and long PDFs stay searchable
                     # past the single-vector truncation limit.
-                    passages = split_into_passages(doc_text, chunk_size, overlap, max_chunks)
+                    item_max = _override.get(item_key.upper(), max_chunks)
+                    passages = split_into_passages(doc_text, chunk_size, overlap, item_max)
                     if not passages:
                         stats["skipped"] += 1
                         continue
