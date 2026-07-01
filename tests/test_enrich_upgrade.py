@@ -256,12 +256,14 @@ class TestEnrichSingleItem:
         assert "date" in result["filled"]
         assert "journal_abbreviation" in result["filled"]
         assert "bibcode" in result["filled"]
+        assert "url" in result["filled"]
         write_zot.update_item.assert_called_once()
         # Check the patched data has the right fields.
         patched = write_zot.update_item.call_args[0][0]
         assert patched["date"] == "2013-01-10"
         assert patched["journalAbbreviation"] == "ApJ"
         assert "bibcode: 2013ApJ...762...36X" in patched["extra"]
+        assert patched["url"] == "https://ui.adsabs.harvard.edu/abs/2013ApJ...762...36X"
 
     def test_no_identifier_returns_not_found(self):
         write_zot = MagicMock()
@@ -350,6 +352,52 @@ class TestEnrichSingleItem:
         patched = write_zot.update_item.call_args[0][0]
         assert "arXiv:2401.12345" in patched["extra"]
         assert "bibcode: 2024ApJ...961L..10X" in patched["extra"]
+
+    def test_ads_url_written_when_url_empty(self):
+        """ADS abstract URL written to the url field when it's empty."""
+        write_zot = MagicMock()
+        write_zot.item.return_value = {
+            "key": "GAP10004",
+            "data": {
+                "key": "GAP10004", "itemType": "journalArticle",
+                "title": "Test", "date": "2023", "journalAbbreviation": "ApJ",
+                "DOI": "10.1088/x", "url": "", "extra": "",
+            },
+        }
+        with patch("zotero_mcp.tools.write._ads_client") as mock_ads:
+            mock_ads._FULL_FIELDS = ads_client._FULL_FIELDS
+            mock_ads.fetch_record.return_value = None
+            mock_ads.search.return_value = [{"bibcode": "2024ApJ...961L..10X"}]
+            result = _enrich_single_item(write_zot, "GAP10004",
+                                         {"date", "journal_abbreviation"}, force=False)
+        assert "url" in result["filled"]
+        patched = write_zot.update_item.call_args[0][0]
+        assert patched["url"] == "https://ui.adsabs.harvard.edu/abs/2024ApJ...961L..10X"
+
+    def test_url_not_overwritten_when_already_present(self):
+        """Existing url (e.g. arXiv abstract page) is preserved, not replaced."""
+        write_zot = MagicMock()
+        write_zot.item.return_value = {
+            "key": "GAP10005",
+            "data": {
+                "key": "GAP10005", "itemType": "journalArticle",
+                "title": "Test", "date": "2023", "journalAbbreviation": "ApJ",
+                "DOI": "10.1088/x",
+                "url": "https://arxiv.org/abs/2401.12345",
+                "extra": "",
+            },
+        }
+        with patch("zotero_mcp.tools.write._ads_client") as mock_ads:
+            mock_ads._FULL_FIELDS = ads_client._FULL_FIELDS
+            mock_ads.fetch_record.return_value = None
+            mock_ads.search.return_value = [{"bibcode": "2024ApJ...961L..10X"}]
+            result = _enrich_single_item(write_zot, "GAP10005",
+                                         {"date", "journal_abbreviation"}, force=False)
+        # bibcode still written, but url unchanged
+        assert "bibcode" in result["filled"]
+        assert "url" not in result["filled"]
+        patched = write_zot.update_item.call_args[0][0]
+        assert patched["url"] == "https://arxiv.org/abs/2401.12345"
 
     # --- Gap 2: title fallback ---
 

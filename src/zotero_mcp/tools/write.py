@@ -3825,6 +3825,12 @@ def _enrich_single_item(
     if needs_bibcode and ads_bibcode:
         field_updates["extra"] = _append_extra_line(data.get("extra"), f"bibcode: {ads_bibcode}")
 
+    # Write ADS abstract URL to the url field if empty — gives the user a
+    # one-click link to the ADS record (citation metrics, references, etc.).
+    current_url = (data.get("url") or "").strip()
+    if not current_url and ads_bibcode:
+        field_updates["url"] = f"https://ui.adsabs.harvard.edu/abs/{ads_bibcode}"
+
     if not field_updates:
         result["status"] = "skipped_existing"
         return result
@@ -3849,6 +3855,8 @@ def _enrich_single_item(
         filled_display.append("journal_abbreviation")
     if "extra" in field_updates:
         filled_display.append("bibcode")
+    if "url" in field_updates:
+        filled_display.append("url")
     result["filled"] = filled_display
     result["skipped"] = [f for f in to_fill if f not in fill_values]
     return result
@@ -3866,8 +3874,10 @@ def _enrich_single_item(
         "like ApJ/MNRAS). Only fills fields that are currently empty — "
         "existing values are preserved unless force=True. "
         "When an ADS record is found, the bibcode is also written to the "
-        "item's Extra field (if not already present), enabling direct "
-        "citation export via zotero_export_ads. "
+        "item's Extra field (if not already present), and the ADS abstract "
+        "URL is written to the url field (if empty) — enabling direct "
+        "citation export via zotero_export_ads and one-click access to the "
+        "ADS record. "
         "Requires an ADS API token. "
         "item_key: 8-char Zotero item key. "
         "fields: list of field names to fill, default ['date', "
@@ -3927,8 +3937,10 @@ def enrich_item_metadata(
         "and PATCHes the values back. Only fills empty fields — existing "
         "values are preserved unless force=True. "
         "When an ADS record is found, the bibcode is also written to the "
-        "item's Extra field (if not already present), enabling direct "
-        "citation export via zotero_export_ads. "
+        "item's Extra field (if not already present), and the ADS abstract "
+        "URL is written to the url field (if empty) — enabling direct "
+        "citation export via zotero_export_ads and one-click access to the "
+        "ADS record. "
         "Use after importing many papers without full metadata, or to "
         "back-fill journal abbreviations on an existing library. "
         "fields: list of field names, default ['date', 'journal_abbreviation']. "
