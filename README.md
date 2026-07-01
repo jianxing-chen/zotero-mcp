@@ -649,6 +649,7 @@ For optimal annotation extraction, it is **highly recommended** to install the [
 - `zotero_create_note` / `zotero_update_note` / `zotero_delete_note`
 - `zotero_create_annotation` / `zotero_create_area_annotation` / `zotero_get_page_layout`
 - `zotero_update_annotation` / `zotero_delete_annotation`
+- `zotero_batch_cleanup_notes` — batch-delete (trash) standalone empty notes in one pass; dry-run preview by default
 
 ### ✏️ Item & Collection Management
 - `zotero_add_by_doi` / `zotero_add_by_url` / `zotero_add_by_isbn` / `zotero_add_by_bibtex` / `zotero_add_by_csl_json` / `zotero_add_from_file`

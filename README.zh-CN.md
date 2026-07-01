@@ -609,6 +609,7 @@ zotero-cli -v search "CRISPR"                # 详细模式
 - `zotero_create_note` / `zotero_update_note` / `zotero_delete_note`
 - `zotero_create_annotation` / `zotero_create_area_annotation` / `zotero_get_page_layout`
 - `zotero_update_annotation` / `zotero_delete_annotation`
+- `zotero_batch_cleanup_notes` — 批量删除（移入回收站）独立空笔记；默认 dry-run 预览
 
 ### 写入与 collection 管理
 - `zotero_add_by_doi` / `zotero_add_by_url` / `zotero_add_by_isbn` / `zotero_add_by_bibtex` / `zotero_add_by_csl_json` / `zotero_add_from_file`

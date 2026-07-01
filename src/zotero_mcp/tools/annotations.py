@@ -1198,6 +1198,175 @@ def delete_note(
 
 
 @mcp.tool(
+    name="zotero_batch_cleanup_notes",
+    description=(
+        "Batch-delete (trash) notes from your Zotero library. By default "
+        "targets only standalone empty notes — the 'Untitled' notes with no "
+        "parent item and no content that accumulate from failed imports or "
+        "sync artifacts. "
+        "standalone_only=True (default): only notes with no parentItem "
+        "(top-level notes), not notes attached to papers. "
+        "empty_only=True (default): only notes whose body is blank/whitespace. "
+        "dry_run=True (default): PREVIEW only — returns the matched list "
+        "without deleting anything. Pass dry_run=False after reviewing to "
+        "actually trash the matched notes (recoverable from Zotero's Trash). "
+        "limit: max notes to process (default 500, max 5000). "
+        "Example: zotero_batch_cleanup_notes(dry_run=False) to trash all "
+        "standalone empty notes after previewing. "
+        "Example: zotero_batch_cleanup_notes(standalone_only=False, "
+        "empty_only=False, dry_run=False) to trash ALL notes in the library."
+    )
+)
+@with_zotero_api_lock
+def batch_cleanup_notes(
+    standalone_only: bool = True,
+    empty_only: bool = True,
+    dry_run: bool = True,
+    limit: int | str | None = 500,
+    *,
+    ctx: Context
+) -> str:
+    """
+    Batch-delete notes matching criteria from the Zotero library.
+
+    Args:
+        standalone_only: If True, only process notes with no parentItem.
+        empty_only: If True, only process notes with blank content.
+        dry_run: If True (default), preview matched notes without deleting.
+        limit: Maximum notes to process.
+        ctx: MCP context
+
+    Returns:
+        Markdown preview (dry_run=True) or results summary (dry_run=False).
+    """
+    try:
+        ctx.info(
+            f"Batch cleanup notes: standalone_only={standalone_only} "
+            f"empty_only={empty_only} dry_run={dry_run}"
+        )
+
+        zot, err = _get_note_write_client("batch cleanup")
+        if err:
+            return err
+
+        limit = _helpers._normalize_limit(limit, default=500, max_val=5000)
+
+        # Fetch all notes from the library. _paginate's max_items is
+        # unreliable when results fit in a single page (it only checks
+        # mid-loop), so we cap after filtering instead.
+        all_notes = _helpers._paginate(zot.items, itemType="note")
+
+        # Filter based on criteria.
+        matched = []
+        for note in all_notes:
+            data = note.get("data", {})
+            if standalone_only and data.get("parentItem"):
+                continue
+            if empty_only:
+                note_text = _utils.clean_html(data.get("note", "")).strip()
+                if note_text:
+                    continue
+            matched.append(note)
+
+        # Apply limit after filtering (max notes to process).
+        if limit and len(matched) > limit:
+            matched = matched[:limit]
+
+        if not matched:
+            return "No notes found matching the criteria."
+
+        # --- dry run: preview only ---
+        if dry_run:
+            output = ["# Batch Note Cleanup — Preview (dry run)", ""]
+            output.append("## Criteria")
+            output.append(f"- Standalone only: {'yes' if standalone_only else 'no'}")
+            output.append(f"- Empty only: {'yes' if empty_only else 'no'}")
+            output.append(f"- Matched: {len(matched)} notes")
+            output.append("")
+
+            display = matched[:50]
+            output.append(f"## Matched Notes (showing first {len(display)})")
+            for note in display:
+                key = note.get("key", "")
+                data = note.get("data", {})
+                label = "standalone" if not data.get("parentItem") else "child"
+                emptiness = ", empty" if empty_only else ""
+                output.append(f"- `{key}` | ({label}{emptiness})")
+
+            if len(matched) > len(display):
+                output.append(
+                    f"\n*Showing {len(display)} of {len(matched)}. "
+                    "Increase the limit parameter to see more.*"
+                )
+
+            output.append(
+                "\nPass dry_run=False to trash these notes. "
+                "They will be moved to Zotero's Trash (recoverable from the UI)."
+            )
+            return "\n".join(output)
+
+        # --- execute: trash matched notes ---
+        from pyzotero.zotero import build_url as _build_url
+
+        trashed = []
+        failed = []
+
+        for note in matched:
+            item_key = note.get("key", "")
+            try:
+                # Re-fetch to get a fresh version number (previous deletes
+                # may have invalidated cached versions).
+                item = zot.item(item_key)
+                url = _build_url(
+                    zot.endpoint,
+                    f"/{zot.library_type}/{zot.library_id}/items/{item_key}",
+                )
+                resp = zot.client.patch(
+                    url=url,
+                    headers={"If-Unmodified-Since-Version": str(item["version"])},
+                    content=json.dumps({"deleted": 1}),
+                )
+                if resp.status_code in (200, 204):
+                    trashed.append(item_key)
+                else:
+                    failed.append(
+                        f"`{item_key}`: HTTP {resp.status_code}"
+                    )
+            except Exception as e:
+                ctx.error(f"Failed to trash note {item_key}: {e}")
+                failed.append(f"`{item_key}`: {str(e)}")
+
+        # --- results ---
+        output = ["# Batch Note Cleanup — Results", ""]
+        output.append("## Criteria")
+        output.append(f"- Standalone only: {'yes' if standalone_only else 'no'}")
+        output.append(f"- Empty only: {'yes' if empty_only else 'no'}")
+        output.append("")
+        output.append("## Summary")
+        output.append(f"- Matched: {len(matched)}")
+        output.append(f"- Trashed: {len(trashed)}")
+        output.append(f"- Failed: {len(failed)}")
+        output.append("")
+
+        if trashed:
+            output.append("## Trashed Notes")
+            for key in trashed:
+                output.append(f"- `{key}`")
+            output.append("")
+
+        if failed:
+            output.append("## Failed")
+            for msg in failed:
+                output.append(f"- {msg}")
+
+        return "\n".join(output)
+
+    except Exception as e:
+        ctx.error(f"Error in batch cleanup notes: {str(e)}")
+        return f"Error in batch cleanup notes: {str(e)}"
+
+
+@mcp.tool(
     name="zotero_create_annotation",
     description=(
         "Create a TEXT-HIGHLIGHT annotation on a PDF or EPUB attachment, "

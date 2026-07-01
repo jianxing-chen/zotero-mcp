@@ -93,6 +93,7 @@ from zotero_mcp.tools.annotations import (  # noqa: F401
     create_note,
     update_note,
     delete_note,
+    batch_cleanup_notes,
     create_annotation,
     create_area_annotation,
     get_page_layout,
