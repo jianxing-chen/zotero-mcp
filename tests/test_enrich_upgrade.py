@@ -291,7 +291,7 @@ class TestEnrichSingleItem:
         assert patched["date"] == "2013-01-10"
         assert patched["journalAbbreviation"] == "ApJ"
         assert "bibcode: 2013ApJ...762...36X" in patched["extra"]
-        assert patched["url"] == "https://ui.adsabs.harvard.edu/abs/2013ApJ...762...36X"
+        assert patched["url"] == "https://ui.adsabs.harvard.edu/abs/2013ApJ...762...36X/abstract"
 
     def test_no_identifier_returns_not_found(self):
         write_zot = MagicMock()
@@ -400,7 +400,7 @@ class TestEnrichSingleItem:
                                          {"date", "journal_abbreviation"}, force=False)
         assert "url" in result["filled"]
         patched = write_zot.update_item.call_args[0][0]
-        assert patched["url"] == "https://ui.adsabs.harvard.edu/abs/2024ApJ...961L..10X"
+        assert patched["url"] == "https://ui.adsabs.harvard.edu/abs/2024ApJ...961L..10X/abstract"
 
     def test_url_not_overwritten_when_already_present(self):
         """Existing url (e.g. arXiv abstract page) is preserved, not replaced."""

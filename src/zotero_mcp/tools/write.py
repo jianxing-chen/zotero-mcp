@@ -3861,7 +3861,7 @@ def _enrich_single_item(
     # one-click link to the ADS record (citation metrics, references, etc.).
     current_url = (data.get("url") or "").strip()
     if not current_url and ads_bibcode:
-        field_updates["url"] = f"https://ui.adsabs.harvard.edu/abs/{ads_bibcode}"
+        field_updates["url"] = f"https://ui.adsabs.harvard.edu/abs/{ads_bibcode}/abstract"
 
     if not field_updates:
         result["status"] = "skipped_existing"
