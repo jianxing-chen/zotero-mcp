@@ -3,6 +3,64 @@
 from unittest.mock import MagicMock, patch
 
 from zotero_mcp.ads_client import SUPPORTED_EXPORT_FORMATS, export
+from zotero_mcp.tools.ads import _bibcode_from_arxiv, _parse_arxiv_from_extra
+
+
+class TestParseArxivFromExtra:
+    """Tests for _parse_arxiv_from_extra — arXiv ID extraction from extra."""
+
+    def test_new_style_id(self):
+        assert _parse_arxiv_from_extra("arXiv:2401.12345") == "2401.12345"
+
+    def test_new_style_with_classification(self):
+        assert _parse_arxiv_from_extra("arXiv:2401.12345 [astro-ph.CO]") == "2401.12345"
+
+    def test_old_style_id(self):
+        assert _parse_arxiv_from_extra("arXiv:astro-ph/0501001") == "astro-ph/0501001"
+
+    def test_multiline_extra_picks_first_arxiv(self):
+        extra = "Some note\narXiv:2401.12345 [astro-ph.CO]\nDOI: 10.1234/abc"
+        assert _parse_arxiv_from_extra(extra) == "2401.12345"
+
+    def test_none_or_empty(self):
+        assert _parse_arxiv_from_extra(None) is None
+        assert _parse_arxiv_from_extra("") is None
+
+    def test_no_arxiv_line(self):
+        assert _parse_arxiv_from_extra("bibcode: 2024ApJ...968L..12A\nDOI: 10.1/x") is None
+
+
+class TestBibcodeFromArxiv:
+    """Tests for _bibcode_from_arxiv — ADS arXiv→bibcode lookup."""
+
+    def test_returns_bibcode_on_hit(self):
+        with patch("zotero_mcp.tools.ads.ads_client") as mock_ads:
+            mock_ads.is_available.return_value = True
+            mock_ads.search.return_value = [{"bibcode": "2024ApJ...968L..12A"}]
+            assert _bibcode_from_arxiv("2401.12345") == "2024ApJ...968L..12A"
+            mock_ads.search.assert_called_once_with("arxiv:2401.12345", rows=1)
+
+    def test_returns_none_on_no_hits(self):
+        with patch("zotero_mcp.tools.ads.ads_client") as mock_ads:
+            mock_ads.is_available.return_value = True
+            mock_ads.search.return_value = []
+            assert _bibcode_from_arxiv("9999.99999") is None
+
+    def test_returns_none_when_ads_unavailable(self):
+        with patch("zotero_mcp.tools.ads.ads_client") as mock_ads:
+            mock_ads.is_available.return_value = False
+            assert _bibcode_from_arxiv("2401.12345") is None
+            mock_ads.search.assert_not_called()
+
+    def test_returns_none_on_empty_id(self):
+        assert _bibcode_from_arxiv("") is None
+        assert _bibcode_from_arxiv(None) is None
+
+    def test_handles_search_exception(self):
+        with patch("zotero_mcp.tools.ads.ads_client") as mock_ads:
+            mock_ads.is_available.return_value = True
+            mock_ads.search.side_effect = RuntimeError("network")
+            assert _bibcode_from_arxiv("2401.12345") is None
 
 
 class TestExportFunction:
@@ -114,6 +172,109 @@ class TestExportAdsTool:
             )
         assert "@ARTICLE" in result
         assert "2024ApJ...968L..12A" in result
+
+    def test_export_ads_item_key_arxiv_only_fallback(self):
+        """Item key with only an arXiv: line (no bibcode:) should resolve via ADS."""
+        from zotero_mcp.tools.ads import export_ads
+
+        ctx = MagicMock()
+        ctx.info = MagicMock()
+
+        mock_zot = MagicMock()
+        mock_zot.item.return_value = {
+            "data": {"extra": "arXiv:2401.12345 [astro-ph.CO]"}
+        }
+
+        with patch("zotero_mcp.tools.ads._client") as mock_client, \
+             patch("zotero_mcp.tools.ads.ads_client") as mock_ads:
+            mock_client.get_zotero_client.return_value = mock_zot
+            mock_ads.is_available.return_value = True
+            mock_ads.normalize_bibcode.return_value = None  # not a raw bibcode
+            # The arXiv→bibcode ADS lookup returns one hit with a bibcode.
+            mock_ads.search.return_value = [{"bibcode": "2024ApJ...968L..12A"}]
+            mock_ads.export.return_value = "@ARTICLE{2024ApJ...968L..12A, ...}"
+
+            result = export_ads(
+                bibcodes="ABCD1234",
+                format="bibtex",
+                ctx=ctx,
+            )
+        assert "@ARTICLE" in result
+        assert "2024ApJ...968L..12A" in result
+        # Confirm the arXiv lookup was issued.
+        mock_ads.search.assert_called_once_with("arxiv:2401.12345", rows=1)
+
+    def test_export_ads_item_key_bibcode_preferred_over_arxiv(self):
+        """When extra has both bibcode: and arXiv:, bibcode wins (no ADS call)."""
+        from zotero_mcp.tools.ads import export_ads
+
+        ctx = MagicMock()
+        ctx.info = MagicMock()
+
+        mock_zot = MagicMock()
+        mock_zot.item.return_value = {
+            "data": {"extra": "arXiv:2401.12345\nbibcode: 2024ApJ...968L..12A"}
+        }
+
+        with patch("zotero_mcp.tools.ads._client") as mock_client, \
+             patch("zotero_mcp.tools.ads.ads_client") as mock_ads:
+            mock_client.get_zotero_client.return_value = mock_zot
+            mock_ads.is_available.return_value = True
+            mock_ads.normalize_bibcode.return_value = None
+            mock_ads.export.return_value = "@ARTICLE{...}"
+
+            result = export_ads(bibcodes="ABCD1234", ctx=ctx)
+        assert "2024ApJ...968L..12A" in result
+        # No ADS search should be issued — bibcode line suffices.
+        mock_ads.search.assert_not_called()
+
+    def test_export_ads_item_key_arxiv_lookup_returns_no_bibcode(self):
+        """If the arXiv→bibcode ADS search finds nothing, the item is unresolved."""
+        from zotero_mcp.tools.ads import export_ads
+
+        ctx = MagicMock()
+        mock_zot = MagicMock()
+        mock_zot.item.return_value = {
+            "data": {"extra": "arXiv:9999.99999 [astro-ph.CO]"}
+        }
+
+        with patch("zotero_mcp.tools.ads._client") as mock_client, \
+             patch("zotero_mcp.tools.ads.ads_client") as mock_ads:
+            mock_client.get_zotero_client.return_value = mock_zot
+            mock_ads.is_available.return_value = True
+            mock_ads.normalize_bibcode.return_value = None
+            mock_ads.search.return_value = []  # no hits
+
+            result = export_ads(bibcodes="ABCD1234", ctx=ctx)
+        assert "could not resolve" in result
+
+    def test_export_ads_item_key_old_style_arxiv_id(self):
+        """Old-style arXiv ID (astro-ph/0501001) should also resolve."""
+        from zotero_mcp.tools.ads import export_ads
+
+        ctx = MagicMock()
+        ctx.info = MagicMock()
+
+        mock_zot = MagicMock()
+        mock_zot.item.return_value = {
+            "data": {"extra": "arXiv:astro-ph/0501001"}
+        }
+
+        with patch("zotero_mcp.tools.ads._client") as mock_client, \
+             patch("zotero_mcp.tools.ads.ads_client") as mock_ads:
+            mock_client.get_zotero_client.return_value = mock_zot
+            mock_ads.is_available.return_value = True
+            mock_ads.normalize_bibcode.return_value = None
+            mock_ads.search.return_value = [{"bibcode": "2005ApJ...621..745B"}]
+            mock_ads.export.return_value = "@ARTICLE{2005ApJ...621..745B, ...}"
+
+            result = export_ads(
+                bibcodes="WXYZ5678",
+                format="bibtex",
+                ctx=ctx,
+            )
+        assert "2005ApJ...621..745B" in result
+        mock_ads.search.assert_called_once_with("arxiv:astro-ph/0501001", rows=1)
 
     def test_export_ads_multiple_bibcodes(self):
         from zotero_mcp.tools.ads import export_ads

@@ -104,8 +104,53 @@ def _ads_doc_summary(doc: dict) -> dict:
     }
 
 
+_ARXIV_NEW_RE = re.compile(r"arXiv:(\d{4}\.\d{4,5})")
+_ARXIV_OLD_RE = re.compile(r"arXiv:([a-z\-]+/\d{7})")
+
+
+def _bibcode_from_arxiv(arxiv_id: str) -> str | None:
+    """Resolve an arXiv ID to its ADS bibcode via a single-record search.
+
+    ADS indexes arXiv preprints, so ``arxiv:2401.12345`` reliably returns the
+    matching record. Returns the ``bibcode`` field of the first hit, or None.
+    """
+    if not arxiv_id or not ads_client.is_available():
+        return None
+    try:
+        docs = ads_client.search(f"arxiv:{arxiv_id}", rows=1)
+    except Exception:
+        return None
+    if not docs:
+        return None
+    bc = docs[0].get("bibcode")
+    return bc if bc else None
+
+
+def _parse_arxiv_from_extra(extra: str | None) -> str | None:
+    """Extract an arXiv ID from a Zotero item's extra field.
+
+    Recognizes both new-style (``arXiv:2401.12345``) and old-style
+    (``arXiv:astro-ph/0501001``) IDs, ignoring surrounding decoration.
+    """
+    if not extra:
+        return None
+    m = _ARXIV_NEW_RE.search(extra)
+    if m:
+        return m.group(1)
+    m = _ARXIV_OLD_RE.search(extra)
+    if m:
+        return m.group(1)
+    return None
+
+
 def _resolve_bibcode(identifier: str, zot) -> str | None:
-    """Resolve an identifier (Zotero item key or bibcode) to a normalized bibcode."""
+    """Resolve an identifier (Zotero item key or bibcode) to a normalized bibcode.
+
+    For Zotero item keys, the bibcode is read from the item's ``extra`` field
+    (``bibcode: <value>`` line). If no bibcode line is present, falls back to
+    the arXiv ID (``arXiv: <id>``) and resolves it via an ADS search — ADS
+    metadata is the canonical source, so bibcode is preferred over arXiv.
+    """
     ident = (identifier or "").strip()
     if not ident:
         return None
@@ -116,12 +161,17 @@ def _resolve_bibcode(identifier: str, zot) -> str | None:
         except Exception:
             return None
         extra = (item or {}).get("data", {}).get("extra", "") or ""
+        # Primary: explicit bibcode line.
         for line in extra.splitlines():
             line = line.strip()
             if line.lower().startswith("bibcode:"):
                 bc = line.split(":", 1)[1].strip()
                 if bc:
                     return bc
+        # Secondary: arXiv ID → ADS bibcode lookup.
+        arxiv_id = _parse_arxiv_from_extra(extra)
+        if arxiv_id:
+            return _bibcode_from_arxiv(arxiv_id)
         return None
     return ads_client.normalize_bibcode(ident)
 
@@ -330,8 +380,10 @@ def ads_citation_network(
         "returns the official, publisher-accurate citation text — more "
         "precise than local BibTeX generation. "
         "Accepts either ADS bibcodes (e.g. '2024ApJ...968L..12A') or Zotero "
-        "item keys (8-char, bibcode resolved from the item's extra field). "
-        "Pass a single value or a comma-separated/JSON list for batch export. "
+        "item keys (8-char). For item keys, the bibcode is resolved from the "
+        "item's extra field — first a 'bibcode:' line, then an 'arXiv:' line "
+        "(resolved to a bibcode via ADS). Pass a single value or a "
+        "comma-separated/JSON list for batch export. "
         "format: 'bibtex' (default, for .bib files), 'aastex' (AASTeX "
         "\\bibitem), 'mnras' (MNRAS style), 'ris', 'endnote', or 'ads'. "
         "sort: optional, e.g. 'date desc' or 'first_author asc'. "
@@ -398,7 +450,7 @@ def export_ads(
             return (
                 f"Error: could not resolve any valid bibcodes from {raw_list}. "
                 "Pass ADS bibcodes (e.g. '2024ApJ...968L..12A') or Zotero item "
-                "keys whose extra field contains 'bibcode: ...'."
+                "keys whose extra field contains 'bibcode: ...' or 'arXiv: ...'."
             )
 
         ctx.info(f"Exporting {len(resolved)} bibcode(s) as {format} from ADS...")
