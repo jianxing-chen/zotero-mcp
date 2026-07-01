@@ -3781,6 +3781,26 @@ def _enrich_single_item(
     # API returns HTTP 400 "not a valid field for type" otherwise.
     _JOURNAL_ABBR_TYPES = {"journalArticle", "magazineArticle", "newspaperArticle"}
 
+    # 0. If this is a preprint, try upgrading it to journalArticle first.
+    #    If a published version exists in ADS, the upgrade changes itemType
+    #    to journalArticle and fills volume/issue/pages/DOI/publicationTitle.
+    #    We then re-fetch the item so the enrichment below sees the upgraded
+    #    data (e.g. journalAbbreviation becomes a valid field to fill).
+    if item_type == "preprint":
+        upg = _upgrade_single_preprint(write_zot, item_key)
+        if upg.get("status") == "upgraded":
+            # Re-fetch the upgraded item.
+            try:
+                item = write_zot.item(item_key)
+            except Exception:
+                pass
+            if item:
+                data = item.get("data", {})
+                item_type = data.get("itemType", "")
+                result["title"] = (data.get("title") or "")[:60]
+            # Record the upgrade in the result.
+            result["upgraded_from_preprint"] = True
+
     # 1. Determine which wanted fields are actually missing.
     to_fill = set()
     for f in wanted:
@@ -3972,7 +3992,9 @@ def enrich_item_metadata(
         "or 'journal_abbreviation'. Scans the library, finds items missing "
         "the requested fields, looks each up in ADS (by bibcode, DOI, or "
         "arXiv ID; falls back to title search for items without identifiers), "
-        "and PATCHes the values back. Only fills empty fields — existing "
+        "and PATCHes the values back. Preprint items are automatically "
+        "upgraded to journalArticle (with volume/issue/pages/DOI) if a "
+        "published version exists in ADS. Only fills empty fields — existing "
         "values are preserved unless force=True. "
         "When an ADS record is found, the bibcode is also written to the "
         "item's Extra field (if not already present), and the ADS abstract "
