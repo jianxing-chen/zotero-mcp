@@ -27,6 +27,11 @@ logger = logging.getLogger(__name__)
 ADS_API_BASE = "https://api.adsabs.harvard.edu/v1"
 ADS_LINK_BASE = "https://ui.adsabs.harvard.edu/link_gateway"
 
+# Last error category from the most recent request, for upstream tool callers
+# to surface a clearer message than a generic "not found". Reset on each call.
+# One of: None, "auth" (invalid/expired token), "unavailable" (network/5xx).
+last_error: str | None = None
+
 # Fields requested for a full record (used by fetch_record and citation graph).
 _FULL_FIELDS = (
     "bibcode,title,author,first_author,year,doi,abstract,pub,bibstem,"
@@ -95,8 +100,11 @@ def _ads_request(
     """
     import requests
 
+    global last_error
+    last_error = None
     token = get_ads_token()
     if not token:
+        last_error = "auth"
         logger.warning("ADS_API_TOKEN not set; cannot query ADS.")
         return None
 
@@ -123,6 +131,18 @@ def _ads_request(
                 logger.warning(f"ADS returned non-JSON: {e}")
                 return None
 
+        # Authentication failure: invalid or expired token. Distinguish from a
+        # genuine "not found" so upstream tools can tell the user to fix the
+        # token instead of reporting a misleading empty result.
+        if resp.status_code in (401, 403):
+            last_error = "auth"
+            logger.warning(
+                f"ADS {method} {path} rejected token (HTTP {resp.status_code}). "
+                f"The ADS_API_TOKEN is invalid or expired — get a new one at "
+                f"https://ui.adsabs.harvard.edu/#user/settings/token"
+            )
+            return None
+
         if resp.status_code in _RETRY_STATUSES:
             # Respect rate-limit reset if advertised, else exponential backoff.
             reset = resp.headers.get("X-RateLimit-Reset")
@@ -137,12 +157,14 @@ def _ads_request(
             continue
 
         # Non-retryable error.
+        last_error = "unavailable"
         logger.warning(
             f"ADS {method} {path} failed: HTTP {resp.status_code}: "
             f"{resp.text[:200]}"
         )
         return None
 
+    last_error = "unavailable"
     logger.warning(f"ADS {method} {path} exhausted retries: {last_err}")
     return None
 

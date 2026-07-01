@@ -1,11 +1,8 @@
 """Tests for the ADS API client: requests mocked, no network."""
 
-import json
 import sys
 import types
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from zotero_mcp import ads_client as A
 
@@ -120,6 +117,46 @@ class TestApiRequests:
         fake_requests.request = MagicMock(return_value=self._mock_resp(500))
         monkeypatch.setitem(sys.modules, "requests", fake_requests)
         assert A.search("anything") == []
+
+    def test_401_sets_auth_error_flag(self, monkeypatch):
+        """A 401 (invalid/expired token) sets last_error='auth' so upstream
+        tools can show a clear 'fix your token' message instead of 'not found'."""
+        monkeypatch.setenv("ADS_API_TOKEN", "bad-token")
+        fake_requests = types.ModuleType("requests")
+        fake_requests.request = MagicMock(return_value=self._mock_resp(401))
+        monkeypatch.setitem(sys.modules, "requests", fake_requests)
+        assert A.search("anything") == []
+        assert A.last_error == "auth"
+
+    def test_403_sets_auth_error_flag(self, monkeypatch):
+        monkeypatch.setenv("ADS_API_TOKEN", "bad-token")
+        fake_requests = types.ModuleType("requests")
+        fake_requests.request = MagicMock(return_value=self._mock_resp(403))
+        monkeypatch.setitem(sys.modules, "requests", fake_requests)
+        assert A.search("anything") == []
+        assert A.last_error == "auth"
+
+    def test_500_sets_unavailable_error_flag(self, monkeypatch):
+        """A 5xx sets last_error='unavailable' (distinct from auth)."""
+        monkeypatch.setenv("ADS_API_TOKEN", "fake-token")
+        fake_requests = types.ModuleType("requests")
+        fake_requests.request = MagicMock(return_value=self._mock_resp(500))
+        monkeypatch.setitem(sys.modules, "requests", fake_requests)
+        A.search("x")
+        assert A.last_error == "unavailable"
+
+    def test_success_resets_error_flag(self, monkeypatch):
+        """A successful request clears any prior last_error."""
+        monkeypatch.setenv("ADS_API_TOKEN", "fake-token")
+        # First a 500, then a 200.
+        responses = [self._mock_resp(500), self._mock_resp(200, {"response": {"docs": []}})]
+        fake_requests = types.ModuleType("requests")
+        fake_requests.request = MagicMock(side_effect=responses)
+        monkeypatch.setitem(sys.modules, "requests", fake_requests)
+        A._ads_request("/x")  # 500
+        assert A.last_error == "unavailable"
+        A._ads_request("/x")  # 200
+        assert A.last_error is None
 
     def test_fetch_record_returns_single(self, monkeypatch):
         monkeypatch.setenv("ADS_API_TOKEN", "fake-token")

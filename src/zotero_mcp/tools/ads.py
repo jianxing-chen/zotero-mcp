@@ -169,24 +169,33 @@ def search_ads(
 
         docs = ads_client.search(query, fq=fq, rows=limit, sort=sort)
         if not docs:
+            if ads_client.last_error == "auth":
+                return (
+                    "Error: your ADS_API_TOKEN was rejected (invalid or expired). "
+                    "Get a new free token at "
+                    "https://ui.adsabs.harvard.edu/#user/settings/token and "
+                    "update the ADS_API_TOKEN environment variable."
+                )
             return f"No ADS results found for: {query}"
 
         zot = _client.get_zotero_client()
+        # Single pass: build summaries (with in-library status) once and reuse
+        # for both the count and the render, avoiding a 2x _in_library call.
+        summaries = []
         in_library_count = 0
         for doc in docs:
             summary = _ads_doc_summary(doc)
             summary["in_library"] = _in_library(zot, doc)
             if summary["in_library"]:
                 in_library_count += 1
+            summaries.append(summary)
 
         lines = [
             f"# ADS Search: {query}",
             f"**Results:** {len(docs)} | **Already in library:** {in_library_count}",
             "",
         ]
-        for i, doc in enumerate(docs, 1):
-            summary = _ads_doc_summary(doc)
-            summary["in_library"] = _in_library(zot, doc)
+        for i, summary in enumerate(summaries, 1):
             marker = "in library ✓" if summary["in_library"] else "not in library"
             authors = ", ".join(summary["authors"]) if summary["authors"] else "Unknown"
             lines.append(f"{i}. **{summary['title']}** ({summary['year']})")
@@ -262,6 +271,14 @@ def ads_citation_network(
             refs = ads_client.get_references(bibcode, rows=cap)
         if direction in ("citations", "both"):
             cits = ads_client.get_citations(bibcode, rows=cap)
+
+        if not refs and not cits and ads_client.last_error == "auth":
+            return (
+                "Error: your ADS_API_TOKEN was rejected (invalid or expired). "
+                "Get a new free token at "
+                "https://ui.adsabs.harvard.edu/#user/settings/token and "
+                "update the ADS_API_TOKEN environment variable."
+            )
 
         # Tag in-library status.
         ref_summaries = []

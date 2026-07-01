@@ -1134,7 +1134,7 @@ def add_by_url(
         # DOI URL routing
         doi = _helpers._normalize_doi(url)
         if doi:
-            return add_by_doi(doi=url, collections=collections, tags=tags,
+            return add_by_doi(doi=doi, collections=collections, tags=tags,
                               attach_mode=attach_mode, if_exists=if_exists,
                               create_missing_collections=create_missing_collections,
                               ctx=ctx)
@@ -2815,7 +2815,7 @@ def add_item_relation(
                 _helpers._strip_unwritable_fields(related_item)
                 write_zot.update_item(related_item)
         except Exception as e:
-            ctx.warn(f"Could not add reverse relation: {e}")
+            ctx.warning(f"Could not add reverse relation: {e}")
 
         item_title = data.get("title", "Untitled")
         related_title = related_data.get("title", "Untitled")
@@ -2930,7 +2930,7 @@ def remove_item_relation(
                         _helpers._strip_unwritable_fields(related_item)
                         write_zot.update_item(related_item)
             except Exception as e:
-                ctx.warn(f"Could not remove reverse relation: {e}")
+                ctx.warning(f"Could not remove reverse relation: {e}")
 
         return (
             f"Successfully removed relation:\n\n"
@@ -3359,9 +3359,15 @@ def add_by_bibcode(
                 })
                 continue
             if not doc:
+                err = "bibcode not found in ADS"
+                if _ads_client.last_error == "auth":
+                    err = (
+                        "ADS_API_TOKEN rejected (invalid or expired) — get a new "
+                        "free token at https://ui.adsabs.harvard.edu/#user/settings/token"
+                    )
                 results.append({
                     "ok": False, "key": None, "doi": None, "pdf_status": None,
-                    "error": "bibcode not found in ADS", "title": bc,
+                    "error": err, "title": bc,
                 })
                 continue
 
