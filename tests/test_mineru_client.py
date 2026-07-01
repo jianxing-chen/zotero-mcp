@@ -274,10 +274,17 @@ class TestSplitPages:
 # API backend
 # --------------------------------------------------------------------------- #
 class TestApiBackend:
+    # These tests use the fake host ``h`` (non-resolvable); bypass the SSRF
+    # host check so the api-backend routing logic can be exercised. The guard
+    # itself is covered by TestMineruSSRFGuard below.
+    def _bypass_ssrf(self, monkeypatch):
+        monkeypatch.setattr(M, "_url_is_public", lambda url: True)
+
     def test_api_success(self, tmp_path, monkeypatch):
         import io
         import zipfile
 
+        self._bypass_ssrf(monkeypatch)
         pdf = tmp_path / "paper.pdf"
         pdf.write_bytes(b"%PDF-1.4 fake")
         config = {"enabled": True, "backend": "api", "api_url": "http://h:8000", "timeout": 30}
@@ -304,6 +311,7 @@ class TestApiBackend:
         assert "mc^2" in parsed.markdown
 
     def test_api_failure_returns_none(self, tmp_path, monkeypatch):
+        self._bypass_ssrf(monkeypatch)
         pdf = tmp_path / "paper.pdf"
         pdf.write_bytes(b"%PDF-1.4 fake")
         config = {"enabled": True, "backend": "api", "api_url": "http://h:8000", "timeout": 30}
@@ -320,103 +328,57 @@ class TestApiBackend:
 
 
 # --------------------------------------------------------------------------- #
-# markdown_to_plaintext (reserved utility)
+# SSRF guards on cloud/api backend fetches
 # --------------------------------------------------------------------------- #
-class TestMarkdownToPlaintext:
-    def test_strips_structure_keeps_latex_symbols(self):
-        md = "# Heading\n\n**bold** and _italic_\n\n$$x^2 + y^2$$\n\n![img](x.png)\n\n| a | b |"
-        text = M.markdown_to_plaintext(md)
-        assert "#" not in text
-        assert "**" not in text
-        assert "![img]" not in text
-        assert "x^2 + y^2" in text  # LaTeX symbols preserved
-        assert "$$" not in text     # delimiters dropped
+class TestMineruSSRFGuard:
+    """The cloud download URL and api upload URL are server-controlled, so
+    they must be validated through the SSRF guard before any HTTP request —
+    a malicious/compromised mineru.net response pointing at a private host or
+    the 169.254.169.254 cloud-metadata endpoint must be rejected."""
 
-    def test_table_converts_to_natural_language(self):
-        """HTML table → 'Field: value, Field: value' rows (not flat number stream)."""
-        md = (
-            "<table><tr><th>Name</th><th>Mass</th></tr>"
-            "<tr><td>J0023</td><td>0.3</td></tr></table>"
-        )
-        text = M.markdown_to_plaintext(md)
-        assert "<table>" not in text
-        assert "Name: J0023" in text
-        assert "Mass: 0.3" in text
+    def test_url_is_public_rejects_loopback(self):
+        assert M._url_is_public("http://127.0.0.1:23119/x") is False
 
-    def test_table_skips_empty_cells(self):
-        """Empty cells and ellipsis are skipped, not emitted as 'Field: ...'."""
-        md = (
-            "<table><tr><th>A</th><th>B</th></tr>"
-            "<tr><td>x</td><td>...</td></tr></table>"
-        )
-        text = M.markdown_to_plaintext(md)
-        assert "A: x" in text
-        assert "B:" not in text
+    def test_url_is_public_rejects_cloud_metadata(self):
+        assert M._url_is_public("http://169.254.169.254/latest/meta-data/") is False
 
-    def test_latex_mathrm_removed(self):
-        r"""$\mathrm{X}$ → X, not raw \mathrm fragments."""
-        text = M.markdown_to_plaintext(r"Flux $F_{\mathrm{X}}$ here")
-        assert "\\mathrm" not in text
-        assert "FX" in text or "F_X" in text
+    def test_url_is_public_rejects_private_range(self):
+        assert M._url_is_public("http://10.0.0.5/secret.pdf") is False
+        assert M._url_is_public("http://192.168.1.1/x") is False
 
-    def test_latex_frac_to_slash(self):
-        r"""$\frac{a}{b}$ → a/b."""
-        text = M.markdown_to_plaintext(r"Ratio $\frac{a}{b}$ end")
-        assert "a/b" in text
+    def test_url_is_public_rejects_non_http_scheme(self):
+        assert M._url_is_public("file:///etc/passwd") is False
+        assert M._url_is_public("gopher://127.0.0.1/x") is False
 
-    def test_latex_pm_to_unicode(self):
-        r"""$\pm$ → ±."""
-        text = M.markdown_to_plaintext(r"Value $0.3 \pm 0.1$ end")
-        assert "±" in text
+    def test_url_is_public_allows_public_host(self):
+        # mineru.net is a real public host; the resolver should accept it.
+        assert M._url_is_public("https://mineru.net/api/v4/x") is True
 
+    def test_cloud_download_zip_rejects_loopback(self, monkeypatch):
+        """A loopback download URL is rejected before requests.get is called."""
+        monkeypatch.setattr(M, "_url_is_public", lambda url: False)
+        result = M._cloud_download_zip("http://127.0.0.1/evil.zip")
+        assert result is None
 
-# --------------------------------------------------------------------------- #
-# read_cached_fulltext (cache-only read for semantic-search build path)
-# --------------------------------------------------------------------------- #
-class TestReadCachedFulltext:
-    """Verify the cache-only entry point used by the semantic-search build
-    path to reuse MinerU "精读" output without triggering a new parse."""
+    def test_cloud_download_zip_redirect_to_private_rejected(self, monkeypatch):
+        """A public URL that 302-redirects to a private host is rejected."""
+        calls = {"n": 0}
 
-    def test_returns_none_when_no_cache(self, tmp_path, monkeypatch):
-        """No cache dir → None (caller falls back to pdfminer)."""
-        monkeypatch.setattr(M, "_resolve_cache_dir", lambda _cfg: tmp_path / "mineru")
-        assert M.read_cached_fulltext("NOPEKEY") is None
+        def fake_public(url):
+            calls["n"] += 1
+            # First check (public start URL) passes; the redirect target fails.
+            return calls["n"] == 1
 
-    def test_returns_plaintext_when_cache_present(self, tmp_path, monkeypatch):
-        """Valid cache → markdown converted to plaintext (LaTeX symbols kept)."""
-        cache_root = tmp_path / "mineru"
-        (cache_root / "ATTKEY").mkdir(parents=True)
-        (cache_root / "ATTKEY" / "fulltext.md").write_text(
-            "# Title\n\nThe energy is $E = mc^2$ here.\n\n| col1 | col2 |\n",
-            encoding="utf-8",
-        )
-        monkeypatch.setattr(M, "_resolve_cache_dir", lambda _cfg: cache_root)
-        # No explicit config → load_mineru_config() is called; patch _resolve
-        # already done above so the default-config path resolves to our root.
-        monkeypatch.setattr(M, "load_mineru_config", lambda *a, **k: {})
-        text = M.read_cached_fulltext("ATTKEY")
-        assert text is not None
-        assert "E = mc^2" in text  # LaTeX symbols survive
-        assert "#" not in text      # heading markers stripped
+        monkeypatch.setattr(M, "_url_is_public", fake_public)
 
-    def test_empty_cache_file_returns_none(self, tmp_path, monkeypatch):
-        """Empty fulltext.md → None."""
-        cache_root = tmp_path / "mineru"
-        (cache_root / "ATTKEY").mkdir(parents=True)
-        (cache_root / "ATTKEY" / "fulltext.md").write_text("", encoding="utf-8")
-        monkeypatch.setattr(M, "_resolve_cache_dir", lambda _cfg: cache_root)
-        monkeypatch.setattr(M, "load_mineru_config", lambda *a, **k: {})
-        assert M.read_cached_fulltext("ATTKEY") is None
+        class _FakeResp:
+            status_code = 302
+            headers = {"Location": "http://127.0.0.1/secret"}
 
-    def test_whitespace_only_cache_returns_none(self, tmp_path, monkeypatch):
-        """Whitespace-only fulltext.md → None after plaintext strip."""
-        cache_root = tmp_path / "mineru"
-        (cache_root / "ATTKEY").mkdir(parents=True)
-        (cache_root / "ATTKEY" / "fulltext.md").write_text("   \n\n  \n", encoding="utf-8")
-        monkeypatch.setattr(M, "_resolve_cache_dir", lambda _cfg: cache_root)
-        monkeypatch.setattr(M, "load_mineru_config", lambda *a, **k: {})
-        assert M.read_cached_fulltext("ATTKEY") is None
+            def close(self):
+                pass
 
-    def test_empty_key_returns_none(self):
-        assert M.read_cached_fulltext("") is None
-        assert M.read_cached_fulltext(None) is None
+        import requests
+        monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResp())
+        result = M._cloud_download_zip("https://mineru.net/result.zip")
+        assert result is None

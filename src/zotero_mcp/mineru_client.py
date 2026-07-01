@@ -27,18 +27,20 @@ import json
 import logging
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
 import zipfile
 from dataclasses import dataclass
+from ipaddress import ip_address
 from pathlib import Path, PurePosixPath
 from typing import Any
+from urllib.parse import urljoin, urlparse
 
 logger = logging.getLogger(__name__)
 
-# Subprocess sentinels and limits, mirroring local_db.py conventions.
-_EXTRACTION_TIMEOUT = "__EXTRACTION_TIMEOUT__"
+# Subprocess limits.
 _DEFAULT_TIMEOUT = 600  # MinerU is heavy: 10-30s on GPU, minutes on CPU.
 
 # API keys stripped from child-process env (copied from local_db.py:303-311).
@@ -330,6 +332,93 @@ def _call_cli_with_fallback(
 
 
 # --------------------------------------------------------------------------- #
+# SSRF guards (mirrors tools/_helpers.py:_url_resolves_to_public_host + _guarded_pdf_get)
+# --------------------------------------------------------------------------- #
+_MAX_DOWNLOAD_REDIRECTS = 5
+_REDIRECT_STATUSES = {301, 302, 303, 307, 308}
+
+
+def _url_is_public(url: str) -> bool:
+    """Return True only if ``url`` is http(s) and its host resolves entirely
+    to globally-routable IPs.
+
+    SSRF guard for MinerU's cloud/api backends. The cloud ``full_zip_url`` is
+    server-controlled (returned by mineru.net), and ``api_url`` is
+    user-configured; both are fetched by the server, so we reject
+    private/loopback/link-local addresses — including 169.254.169.254 (cloud
+    metadata), which matters for HTTP/SSE-transport deployments.
+
+    The 198.18.0.0/15 RFC-2544 range is allowed (transparent proxies like
+    Clash/Surge route public domains through it on macOS). Mirrors
+    ``tools/_helpers.py:_url_resolves_to_public_host``.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return False
+    try:
+        infos = socket.getaddrinfo(parsed.hostname, parsed.port or None)
+    except (socket.gaierror, UnicodeError, ValueError):
+        return False
+    if not infos:
+        return False
+    for info in infos:
+        try:
+            ip = ip_address(info[4][0])
+        except (ValueError, IndexError):
+            return False
+        if int(ip) >> 17 == (0xC6120000 >> 17):  # 198.18.0.0/15
+            continue
+        if not ip.is_global or ip.is_reserved or ip.is_multicast:
+            return False
+    return True
+
+
+def _guarded_download(url: str, timeout: int, method: str = "GET",
+                      files=None, data=None, stream: bool = False):
+    """Fetch ``url`` with SSRF protection and manual redirect re-validation.
+
+    Returns the final ``requests`` response, or ``None`` if any URL in the
+    redirect chain is rejected as non-public, or there are too many redirects.
+    For POST (the api-backend upload) redirects are not followed — the
+    initial URL is validated and the request issued once.
+    """
+    import requests
+
+    if not _url_is_public(url):
+        logger.warning(f"MinerU URL rejected by SSRF guard: {url}")
+        return None
+    if method.upper() == "POST":
+        try:
+            return requests.post(url, files=files, data=data, timeout=timeout, stream=stream)
+        except Exception as e:
+            logger.warning(f"MinerU API request failed: {e}")
+            return None
+    current = url
+    for _ in range(_MAX_DOWNLOAD_REDIRECTS + 1):
+        if not _url_is_public(current):
+            logger.warning(f"MinerU URL rejected by SSRF guard: {current}")
+            return None
+        try:
+            resp = requests.get(current, timeout=timeout, stream=stream, allow_redirects=False)
+        except Exception as e:
+            logger.warning(f"MinerU download failed: {e}")
+            return None
+        if resp.status_code in _REDIRECT_STATUSES:
+            location = resp.headers.get("Location")
+            try:
+                resp.close()
+            except Exception:
+                pass
+            if not location:
+                return None
+            current = urljoin(current, location)
+            continue
+        return resp
+    logger.warning("Too many redirects while fetching MinerU result")
+    return None
+
+
+# --------------------------------------------------------------------------- #
 # API (remote FastAPI) invocation
 # --------------------------------------------------------------------------- #
 def _safe_extract_zip(zip_bytes: bytes, dest: Path) -> None:
@@ -361,9 +450,8 @@ def _call_mineru_api(
     """POST the PDF to a remote MinerU FastAPI ``/file_parse`` endpoint.
 
     Returns (markdown, content_list, "mineru:api") or None on failure.
+    The URL is validated through the SSRF guard before the request.
     """
-    import requests  # optional dependency, only needed for api backend
-
     # Build multipart form. MinerU's /file_parse accepts file + options.
     data: dict[str, str] = {
         "return_md": "true",
@@ -377,19 +465,16 @@ def _call_mineru_api(
     if end_page_0 >= 0:
         data["end_page_id"] = str(end_page_0)
 
-    try:
-        with open(pdf_path, "rb") as fh:
-            resp = requests.post(
-                f"{api_url.rstrip('/')}/file_parse",
-                files={"files": (pdf_path.name, fh, "application/pdf")},
-                data=data,
-                timeout=timeout,
-                stream=True,
-            )
-    except Exception as e:
-        logger.warning(f"MinerU API request failed: {e}")
-        return None
+    endpoint = f"{api_url.rstrip('/')}/file_parse"
+    with open(pdf_path, "rb") as fh:
+        resp = _guarded_download(
+            endpoint, timeout, method="POST",
+            files={"files": (pdf_path.name, fh, "application/pdf")},
+            data=data, stream=True,
+        )
 
+    if resp is None:
+        return None
     if resp.status_code != 200:
         logger.warning(f"MinerU API returned HTTP {resp.status_code}: {resp.text[:200]}")
         return None
@@ -445,13 +530,13 @@ def _cloud_request(method: str, path: str, token: str, **kwargs) -> dict | None:
 
 
 def _cloud_download_zip(zip_url: str) -> bytes | None:
-    """Download the result zip from a CDN URL. Returns bytes or None."""
-    import requests
+    """Download the result zip from a CDN URL. Returns bytes or None.
 
-    try:
-        resp = requests.get(zip_url, timeout=120)
-    except Exception as e:
-        logger.warning(f"MinerU cloud zip download failed: {e}")
+    The URL is server-controlled (returned by mineru.net) and therefore
+    validated through the SSRF guard with manual redirect re-validation.
+    """
+    resp = _guarded_download(zip_url, timeout=120)
+    if resp is None:
         return None
     if resp.status_code != 200:
         return None
@@ -551,7 +636,11 @@ def _cloud_parse_single(
         return None
 
     # 2. PUT upload the PDF (no Content-Type header per docs).
+    #    upload_url is server-controlled → validate via SSRF guard.
     upload_url = file_urls[0]
+    if not _url_is_public(upload_url):
+        logger.warning(f"MinerU cloud upload URL rejected by SSRF guard: {upload_url}")
+        return None
     try:
         import requests
 
@@ -568,9 +657,18 @@ def _cloud_parse_single(
     deadline = time.time() + timeout
     while time.time() < deadline:
         poll = _cloud_request("GET", f"/extract-results/batch/{batch_id}", token)
-        if not poll or poll.get("code") != 0:
+        if poll is None:
+            # Network/transport error — may be transient, keep polling.
             time.sleep(_CLOUD_POLL_INTERVAL)
             continue
+        if poll.get("code") != 0:
+            # Structured API error (e.g. auth, invalid batch). Retrying the
+            # same batch won't help — abort rather than burn the full timeout.
+            logger.warning(
+                f"MinerU cloud poll returned error (code={poll.get('code')}, "
+                f"msg={poll.get('msg')!r}) for {model_version}; aborting"
+            )
+            return None
         results = (poll.get("data") or {}).get("extract_result") or []
         if not results:
             time.sleep(_CLOUD_POLL_INTERVAL)
@@ -679,22 +777,33 @@ def _write_cache(
     source: str,
     config: dict[str, Any],
 ) -> None:
-    """Persist parse results + invalidation metadata."""
+    """Persist parse results + invalidation metadata.
+
+    Each file is written to a ``.tmp`` sibling first and then atomically
+    replaced (``os.replace``), so a crash mid-write cannot leave a mismatched
+    cache (e.g. new ``fulltext.md`` with a stale ``meta.json``). The cache is
+    either fully old or fully new at any point on disk.
+    """
     cache_dir = _cache_dir_for(attachment_key, config)
     cache_dir.mkdir(parents=True, exist_ok=True)
     try:
-        (cache_dir / "fulltext.md").write_text(markdown, encoding="utf-8")
-        (cache_dir / "pages.json").write_text(
-            json.dumps(pages, ensure_ascii=False), encoding="utf-8"
-        )
+        pages_json = json.dumps(pages, ensure_ascii=False)
         stat = pdf_path.stat()
-        meta = {
+        meta = json.dumps({
             "pdf_mtime": stat.st_mtime,
             "pdf_size": stat.st_size,
             "mineru_source": source,
             "created_at": _now_iso(),
-        }
-        (cache_dir / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+        })
+
+        def _atomic(path: Path, content: str) -> None:
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_text(content, encoding="utf-8")
+            os.replace(tmp, path)
+
+        _atomic(cache_dir / "fulltext.md", markdown)
+        _atomic(cache_dir / "pages.json", pages_json)
+        _atomic(cache_dir / "meta.json", meta)
     except Exception as e:
         logger.warning(f"Failed to write MinerU cache for {attachment_key}: {e}")
 
@@ -811,152 +920,3 @@ def _dispatch_parse(
 def _invalidate_cache(attachment_key: str, config: dict[str, Any]) -> None:
     cache_dir = _cache_dir_for(attachment_key, config)
     shutil.rmtree(cache_dir, ignore_errors=True)
-
-
-# --------------------------------------------------------------------------- #
-# Plaintext conversion for semantic-search embedding
-# --------------------------------------------------------------------------- #
-def _latex_to_readable(latex: str) -> str:
-    """Convert a LaTeX snippet to a compact, embedding-friendly string.
-
-    Drops ``\\mathrm``/``\\text``/``\\frac``/``\\dot`` etc., keeping the
-    symbol characters so that ``$F_{\\mathrm{X}}$`` → ``F_X`` and
-    ``$\\dot{E}$`` → ``E``.  Strips ``{}`` grouping but preserves sub/superscript
-    content via ``_`` / ``^``.
-    """
-    import re
-
-    s = latex
-    # \mathrm{x} → x, \text{x} → x, \mathcal{x} → x, etc.
-    s = re.sub(r"\\(?:mathrm|mathit|mathbf|mathcal|text|operatorname)\s*\{([^}]*)\}", r"\1", s)
-    # \frac{a}{b} → a/b
-    s = re.sub(r"\\frac\s*\{([^}]*)\}\s*\{([^}]*)\}", r"\1/\2", s)
-    # \dot{x} → x, \ddot{x} → x, \hat{x} → x, \bar{x} → x, \tilde{x} → x
-    s = re.sub(r"\\(?:dot|ddot|hat|bar|tilde|vec|overline)\s*\{([^}]*)\}", r"\1", s)
-    # \pm → ±, \times → ×, \sim → ~, \le → <=, \ge → >=, \approx → ~
-    s = s.replace(r"\pm", "±").replace(r"\times", "×")
-    s = s.replace(r"\sim", "~").replace(r"\le", "<=").replace(r"\ge", ">=")
-    s = s.replace(r"\approx", "~").replace(r"\propto", "∝").replace(r"\infty", "∞")
-    # Drop remaining \command (e.g. \gamma → gamma, \sigma → sigma)
-    s = re.sub(r"\\([a-zA-Z]+)", r"\1", s)
-    # {subscript} after _ → _subscript  (keep _ for embedding readability)
-    s = re.sub(r"_\s*\{([^}]*)\}", r"_\1", s)
-    s = re.sub(r"\^\s*\{([^}]*)\}", r"^\1", s)
-    # Remove bare { } (grouping without _ or ^)
-    s = re.sub(r"(?<![_^])\{([^}]*)\}", r"\1", s)
-    s = s.replace("{", "").replace("}", "")
-    # Collapse spaces
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
-
-
-def _table_to_natural_language(table_html: str) -> str:
-    """Convert an HTML table to natural-language rows for embedding.
-
-    ``<table><tr><th>Name</th><th>Mass</th></tr><tr><td>J0023</td><td>0.3</td></tr></table>``
-    → ``Name: J0023, Mass: 0.3``  (one line per data row).
-
-    This preserves field-value pairing so the embedding model sees structured
-    information instead of a flat number stream.
-    """
-    import re
-
-    rows = re.findall(r"<tr[^>]*>(.*?)</tr>", table_html, re.DOTALL)
-    if not rows:
-        return table_html  # fallback
-
-    # First row = header (th or td).
-    def _cells(row_html: str) -> list[str]:
-        return [c.strip() for c in re.findall(r"<t[hd][^>]*>(.*?)</t[hd]>", row_html, re.DOTALL)]
-
-    headers = _cells(rows[0])
-    lines: list[str] = []
-    for row_html in rows[1:]:
-        cells = _cells(row_html)
-        if not cells:
-            continue
-        # Pair each cell with its header.
-        parts = []
-        for i, cell in enumerate(cells):
-            header = headers[i] if i < len(headers) else f"col{i}"
-            # Skip empty cells and ellipsis.
-            if cell in ("", "...", "…"):
-                continue
-            parts.append(f"{header}: {cell}")
-        if parts:
-            lines.append(", ".join(parts))
-    return "\n".join(lines)
-
-
-def markdown_to_plaintext(md: str) -> str:
-    """Convert MinerU Markdown to a plain text string optimized for embedding.
-
-    Unlike a naive ``strip-tags`` approach, this preserves *structured signal*:
-
-    - **Tables** → natural-language rows (``Field: value, Field: value``) so the
-      embedding model sees field-value pairing instead of a flat number stream.
-    - **LaTeX** → readable symbols (``$F_{\\mathrm{X}}$`` → ``F_X``) instead of
-      raw ``\\mathrm`` fragments that act as noise for embeddings.
-    - **Headings/emphasis/image refs** → stripped (no semantic value for
-      embedding).
-
-    Used by :func:`read_cached_fulltext` (semantic-search build path). The
-    ``zotero_read_pdf_pages`` tool keeps the original Markdown for LLM
-    consumption where HTML tables and LaTeX are directly understandable.
-    """
-    import re
-
-    text = md
-    # Drop image refs ![alt](path)
-    text = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", text)
-    # Convert HTML tables to natural-language rows BEFORE stripping tags.
-    def _replace_table(m: re.Match) -> str:
-        return "\n" + _table_to_natural_language(m.group(0)) + "\n"
-
-    text = re.sub(r"<table[^>]*>.*?</table>", _replace_table, text, flags=re.DOTALL)
-    # Drop any remaining stray HTML tags
-    text = re.sub(r"<[^>]+>", "", text)
-    # Drop heading markers
-    text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
-    # Drop emphasis/strong markers
-    text = re.sub(r"\*{1,3}|_{1,3}", "", text)
-    # Convert LaTeX: $...$ and $$...$$ → readable symbols
-    text = re.sub(r"\$\$([^$]*)\$\$", lambda m: _latex_to_readable(m.group(1)), text)
-    text = re.sub(r"\$([^$]*)\$", lambda m: _latex_to_readable(m.group(1)), text)
-    # Collapse whitespace
-    text = re.sub(r"[ \t]+", " ", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
-
-
-def read_cached_fulltext(
-    attachment_key: str, config: dict[str, Any] | None = None
-) -> str | None:
-    """Return cached MinerU fulltext for an attachment, or ``None``.
-
-    This is a *cache-only* read: it never triggers a parse. It is intended for
-    the semantic-search build path, which should silently reuse text already
-    produced by ``zotero_read_pdf_pages`` (a prior "精读" session) rather than
-    re-extracting the PDF with pdfminer.
-
-    Returns the MinerU markdown converted to plain text via
-    :func:`markdown_to_plaintext` (so LaTeX symbols survive as signal for
-    embedding). Returns ``None`` when the cache is absent, empty, or corrupt,
-    so the caller falls back to the normal pdfminer extraction chain.
-    """
-    if not attachment_key:
-        return None
-    cfg = config if config is not None else load_mineru_config()
-    try:
-        cache_dir = _cache_dir_for(attachment_key, cfg)
-        md_path = cache_dir / "fulltext.md"
-        if not md_path.exists():
-            return None
-        md = md_path.read_text(encoding="utf-8", errors="replace")
-    except Exception as e:
-        logger.debug(f"read_cached_fulltext({attachment_key}) read failed: {e}")
-        return None
-    if not md or not md.strip():
-        return None
-    plain = markdown_to_plaintext(md)
-    return plain or None

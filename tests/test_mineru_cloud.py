@@ -10,11 +10,19 @@ import json
 import sys
 import types
 import zipfile
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 from zotero_mcp import mineru_client as M
+
+
+@pytest.fixture(autouse=True)
+def _bypass_mineru_ssrf_guard(monkeypatch):
+    """Bypass the SSRF host check so tests can use fake hostnames (``upload``,
+    ``cdn``, ``u``, ``r``) without real DNS resolution. The SSRF guard itself
+    is tested directly in ``test_mineru_client.py::TestMineruSSRFGuard``."""
+    monkeypatch.setattr(M, "_url_is_public", lambda url: True)
 
 
 def _make_zip_bytes(md_text: str, content_list: list | None = None) -> bytes:
