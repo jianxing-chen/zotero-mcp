@@ -595,6 +595,37 @@ class TestFindPublishedVersion:
             result = _find_published_version(eprint_doc)
         assert result is None
 
+    def test_query_escapes_quotes_and_lowercases_title(self):
+        # Title with embedded double quotes, uppercase, and LaTeX would break
+        # the title:"..." phrase (closing it early) and fail ADS's
+        # case-sensitive phrase match. The query should be cleaned:
+        # quotes stripped, lowercased, LaTeX normalized.
+        eprint_doc = {
+            "doctype": "eprint",
+            "title": 'Measurement of "Dark Matter" Halo $\\sigma$ Profile',
+            "bibcode": "2024arXiv240199999X",
+        }
+        published_doc = {
+            "doctype": "article",
+            "pub": "The Astrophysical Journal",
+            "title": "Measurement of Dark Matter Halo sigma Profile",
+            "bibstem": "ApJ",
+        }
+        with patch("zotero_mcp.tools.write._ads_client") as mock_ads:
+            mock_ads._FULL_FIELDS = ads_client._FULL_FIELDS
+            mock_ads.search.return_value = [published_doc]
+            result = _find_published_version(eprint_doc)
+        assert result is not None
+        # Inspect the query passed to ADS.
+        q = mock_ads.search.call_args[0][0]
+        # No unescaped double quotes inside the phrase payload — the only
+        # quotes should be the two wrapping each phrase.
+        assert q.count('"') == 2
+        # Lowercased and LaTeX normalized (\\sigma → sigma).
+        assert "dark matter" in q
+        assert "sigma" in q
+        assert "Measurement" not in q
+
 
 # --------------------------------------------------------------------------- #
 # _upgrade_single_preprint

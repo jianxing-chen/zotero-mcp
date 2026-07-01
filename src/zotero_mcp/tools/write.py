@@ -4149,8 +4149,12 @@ def _find_published_version(doc: dict) -> dict | None:
     if not title or not isinstance(title, str):
         return None
 
-    # Use first 6 title words as a precise-enough query.
-    words = [w for w in title.split() if len(w) > 1][:8]
+    # Clean the title before building the phrase: strip double quotes (which
+    # would otherwise close the title:"..." phrase and break the query syntax),
+    # normalize LaTeX/Greek, and lowercase (ADS title:"..." is case-sensitive).
+    # Mirrors what _find_by_title does for its title search.
+    cleaned = _clean_title_for_ads(title)
+    words = [w for w in cleaned.split() if len(w) > 1][:8]
     if len(words) < 3:
         return None
     q = "title:\"{}\" doctype:article property:refereed".format(" ".join(words))
@@ -4161,11 +4165,13 @@ def _find_published_version(doc: dict) -> dict | None:
 
     for d in docs:
         if d.get("doctype") == "article" and d.get("pub"):
-            # Sanity: the title should be a close match.
+            # Sanity: the titles should be a close match. Compare both sides
+            # after _clean_title_for_ads so quotes/LaTeX/case don't mask a
+            # true match (e.g. '$\\sigma$' vs 'sigma', '"Dark"' vs 'dark').
             dtitle = d.get("title")
             if isinstance(dtitle, list):
                 dtitle = dtitle[0] if dtitle else ""
-            if dtitle and _title_similarity(title, dtitle) > 0.7:
+            if dtitle and _title_similarity(cleaned, _clean_title_for_ads(dtitle)) > 0.7:
                 return d
     return None
 
