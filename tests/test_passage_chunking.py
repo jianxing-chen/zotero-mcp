@@ -19,6 +19,7 @@ if sys.version_info >= (3, 14):
 
 from zotero_mcp import semantic_search
 from zotero_mcp.semantic_search import (
+    _chunks_for_pages,
     _page_for_offset,
     best_snippet,
     split_into_passages,
@@ -83,6 +84,36 @@ def test_page_for_offset_counts_form_feeds():
     assert _page_for_offset(text, 0) == 1
     assert _page_for_offset(text, text.index("page two")) == 2
     assert _page_for_offset(text, text.index("page three")) == 3
+
+
+# ---------------------------------------------------------------------------
+# _chunks_for_pages — page-to-chunk estimate
+# ---------------------------------------------------------------------------
+
+
+def test_chunks_for_pages_zero_or_negative_returns_one():
+    assert _chunks_for_pages(0) == 1
+    assert _chunks_for_pages(-5) == 1
+
+
+def test_chunks_for_pages_proportional():
+    # stride = 1500 - 200 = 1300; chars = pages * 2500
+    # 100 pages → 100 * 2500 / 1300 ≈ 192.3 → ceil = 193
+    assert _chunks_for_pages(100) == 193
+    # 10 pages → 10 * 2500 / 1300 ≈ 19.23 → ceil = 20
+    assert _chunks_for_pages(10) == 20
+
+
+def test_chunks_for_pages_custom_stride():
+    # chunk_size=1000, overlap=100 → stride=900
+    # 5 pages → 5 * 2500 / 900 ≈ 13.9 → ceil = 14
+    assert _chunks_for_pages(5, chunk_size=1000, overlap=100) == 14
+
+
+def test_chunks_for_pages_large_overlap_clamped():
+    # overlap >= chunk_size would give stride <= 0; clamped to 1
+    # 2 pages → 2 * 2500 / 1 = 5000
+    assert _chunks_for_pages(2, chunk_size=100, overlap=200) == 5000
 
 
 # ---------------------------------------------------------------------------
@@ -293,6 +324,53 @@ def test_override_does_not_affect_other_items(monkeypatch):
     book2 = [i for i in s.chroma_client.upserted_ids if i.startswith("BOOK0002#")]
     assert len(book1) > 10    # overridden
     assert len(book2) == 10   # global cap
+
+
+def test_max_pages_override_converts_to_chunks(monkeypatch):
+    """max_pages_override lets the user specify pages instead of chunks.
+    The code converts via _chunks_for_pages; with chunk_size=120/overlap=20
+    (stride=100), 50 pages → 50 * 2500 / 100 = 1250 chunks."""
+    s = _chunking_search(
+        monkeypatch,
+        config={"max_pages_override": {"BOOK0001": 50}},
+    )
+    # Provide enough text that the cap (not the text) is the limiting factor.
+    # 1250 chunks × 120 chars ≈ 150k chars needed; we give 200k to be safe.
+    body = "Word token here. " * 12000  # ~216k chars
+    book_item = {
+        "key": "BOOK0001",
+        "data": {
+            "title": "Thick Book",
+            "itemType": "book",
+            "abstractNote": "An abstract.",
+            "creators": [],
+            "fulltext": body,
+        },
+    }
+    s._process_item_batch([book_item], force_rebuild=True)
+    n = len(s.chroma_client.upserted_ids)
+    # Should exceed the global cap of 10 — pages override worked.
+    assert n > 10, f"pages override should allow >10 chunks, got {n}"
+
+
+def test_max_chunks_override_takes_precedence_over_pages(monkeypatch):
+    """If both max_chunks_override and max_pages_override are set for the same
+    key, the explicit chunk count wins (more precise)."""
+    s = _chunking_search(
+        monkeypatch,
+        config={
+            "max_chunks_override": {"BOOK0001": 30},
+            "max_pages_override": {"BOOK0001": 500},  # would give a huge number
+        },
+    )
+    body = "Word token here. " * 12000
+    book_item = {
+        "key": "BOOK0001",
+        "data": {"itemType": "book", "title": "T", "fulltext": body, "creators": []},
+    }
+    s._process_item_batch([book_item], force_rebuild=True)
+    # Should be capped at 30 (explicit chunks), not the pages-derived number.
+    assert len(s.chroma_client.upserted_ids) == 30
 
 
 def test_chunking_config_loaded_from_file(monkeypatch, tmp_path):

@@ -267,6 +267,34 @@ def _page_for_offset(text: str, offset: int) -> int | None:
     return text.count(_PAGE_SEPARATOR, 0, max(0, offset)) + 1
 
 
+# Empirical average characters per PDF page. pdfminer extracts the text layer
+# of a typical academic page at roughly 2000-3000 chars; we use the midpoint so
+# the estimate errs on the side of slightly more chunks (better coverage).
+_CHARS_PER_PAGE = 2500
+
+
+def _chunks_for_pages(pages: int, chunk_size: int = 1500, overlap: int = 200) -> int:
+    """Estimate how many overlapping chunks are needed to cover *pages* pages.
+
+    Each chunk advances by ``chunk_size - overlap`` characters of the source
+    text, so the number of chunks to cover ``pages × _CHARS_PER_PAGE`` chars is::
+
+        chunks = ceil(pages * _CHARS_PER_PAGE / (chunk_size - overlap))
+
+    Returns at least 1. This is an *upper-bound estimate* — the actual chunk
+    count may be lower because ``split_into_passages`` snaps to paragraph/
+    sentence boundaries (making chunks slightly longer), and the document's
+    real text may be shorter than the page-based estimate. The estimate is
+    intentionally generous so the override rarely under-covers.
+    """
+    import math
+
+    if pages <= 0:
+        return 1
+    stride = max(1, chunk_size - overlap)
+    return max(1, math.ceil(pages * _CHARS_PER_PAGE / stride))
+
+
 def best_snippet(query: str, text: str, width: int = 320) -> tuple[str, int]:
     """Return the ``width``-char window of *text* richest in query terms.
 
@@ -480,6 +508,10 @@ class ZoteroSemanticSearch:
             # the whole library — use reindex_keys=["KEY"] to re-slice just
             # that item. Keys are case-insensitive (upper-cased on lookup).
             "max_chunks_override": {},
+            # Friendlier alternative: {item_key: num_pages}. The code converts
+            # pages → chunks so you don't have to guess. Uses the empirically
+            # estimated chars-per-page; see _chunks_for_pages.
+            "max_pages_override": {},
         }
         if self.config_path and os.path.exists(self.config_path):
             try:
@@ -1984,10 +2016,14 @@ class ZoteroSemanticSearch:
         chunk_size = int(self._chunking_config.get("chunk_size", 1500))
         overlap = int(self._chunking_config.get("overlap", 200))
         max_chunks = int(self._chunking_config.get("max_chunks_per_item", 20))
-        # Per-item-key override map (case-insensitive). Keys are upper-cased
+        # Per-item-key override maps (case-insensitive). Keys are upper-cased
         # on lookup so config authors don't worry about Zotero key casing.
+        # Two equivalent forms: direct chunk count, or page count (auto-
+        # converted via _chunks_for_pages so the user doesn't guess).
         _override_raw = self._chunking_config.get("max_chunks_override", {}) or {}
         _override = {str(k).upper(): int(v) for k, v in _override_raw.items()}
+        _pages_raw = self._chunking_config.get("max_pages_override", {}) or {}
+        _pages = {str(k).upper(): int(v) for k, v in _pages_raw.items()}
 
         documents: list[str] = []
         metadatas: list[dict[str, Any]] = []
@@ -2021,7 +2057,13 @@ class ZoteroSemanticSearch:
                     # Index one vector per overlapping passage so search can
                     # return a grounded quote and long PDFs stay searchable
                     # past the single-vector truncation limit.
-                    item_max = _override.get(item_key.upper(), max_chunks)
+                    uk = item_key.upper()
+                    if uk in _override:
+                        item_max = _override[uk]
+                    elif uk in _pages:
+                        item_max = _chunks_for_pages(_pages[uk], chunk_size, overlap)
+                    else:
+                        item_max = max_chunks
                     passages = split_into_passages(doc_text, chunk_size, overlap, item_max)
                     if not passages:
                         stats["skipped"] += 1
