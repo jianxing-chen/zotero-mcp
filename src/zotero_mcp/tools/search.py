@@ -643,6 +643,10 @@ def advanced_search(
                 date_value = str(data.get("date", "")).strip()
                 return [date_value[:4]] if len(date_value) >= 4 else []
 
+            if field_lower in {"collection", "collections"}:
+                colls = data.get("collections", []) or []
+                return [str(c) for c in colls if c]
+
             field_aliases = {
                 "itemtype": "itemType",
                 "dateadded": "dateAdded",
