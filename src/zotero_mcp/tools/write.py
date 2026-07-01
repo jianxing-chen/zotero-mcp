@@ -684,6 +684,132 @@ def delete_collection(
 
 
 @mcp.tool(
+    name="zotero_update_collection",
+    description=(
+        "Rename and/or move a collection (folder) in your Zotero library. "
+        "Pass collection_key plus any of new_name, new_parent you wish to "
+        "change; omitted parameters keep the existing value. "
+        "new_parent is the target parent collection — a collection key "
+        "(8 chars), a collection name, or '/'-separated path. Pass "
+        "'root' or empty string to move the collection to the top level "
+        "(no parent). "
+        "Items inside the collection are unaffected — only the folder's "
+        "name and/or position in the hierarchy change. "
+        "Use zotero_search_collections to find the key first. "
+        "Example: zotero_update_collection(collection_key='KMMQDFQ4', "
+        "new_name='Renamed Folder', new_parent='parent-name'). "
+        "Example (move to top level): zotero_update_collection("
+        "collection_key='KMMQDFQ4', new_parent='root')."
+    )
+)
+@with_zotero_api_lock
+def update_collection(
+    collection_key: str,
+    new_name: str | None = None,
+    new_parent: str | None = None,
+    *,
+    ctx: Context
+) -> str:
+    """
+    Rename and/or move a collection.
+
+    Args:
+        collection_key: The 8-character key of the collection to modify.
+        new_name: New name for the collection. None keeps the existing name.
+        new_parent: New parent collection (key, name, or path). 'root' or
+            '' moves to top level. None keeps the existing parent.
+        ctx: MCP context
+
+    Returns:
+        Markdown confirmation of what changed.
+    """
+    try:
+        read_zot, write_zot = _helpers._get_write_client(ctx)
+    except ValueError as e:
+        return str(e)
+
+    try:
+        if not new_name and new_parent is None:
+            return (
+                "Error: Nothing to update. Pass new_name and/or new_parent "
+                "to change the collection."
+            )
+
+        # Fetch the current collection. We need the full dict (with key +
+        # version) to feed back into update_collection.
+        try:
+            coll = write_zot.collection(collection_key)
+        except Exception as e:
+            return (
+                f"Collection not found or not accessible: `{collection_key}` "
+                f"({e})"
+            )
+
+        coll_data = coll.get("data", {})
+        old_name = coll_data.get("name", collection_key)
+        old_parent = coll_data.get("parentCollection") or False
+
+        changes = []
+
+        # --- Rename ---
+        if new_name:
+            coll_data["name"] = new_name
+            changes.append(f'name: "{old_name}" → "{new_name}"')
+
+        # --- Move (change parent) ---
+        if new_parent is not None:
+            if new_parent.strip().lower() == "root" or new_parent.strip() == "":
+                coll_data["parentCollection"] = False
+                if old_parent:
+                    changes.append("parent: moved to top level (no parent)")
+                else:
+                    # Already at top level — no-op but not an error.
+                    pass
+            else:
+                # Resolve parent: key as-is, name/path via _resolve_collection_names.
+                parent_value = new_parent.strip()
+                if re.match(r'^[A-Z0-9]{8}$', parent_value):
+                    parent_key = parent_value
+                else:
+                    try:
+                        keys = _helpers._resolve_collection_names(
+                            read_zot, [parent_value], ctx=ctx
+                        )
+                        parent_key = keys[0] if keys else None
+                    except ValueError as e:
+                        return f"Error resolving parent collection: {e}"
+
+                if not parent_key:
+                    return f"Error: Could not resolve parent collection '{new_parent}'"
+
+                # Guard against making a collection its own parent (Zotero
+                # would reject this server-side, but fail early with a
+                # clear message).
+                if parent_key == collection_key:
+                    return "Error: A collection cannot be its own parent."
+
+                coll_data["parentCollection"] = parent_key
+                changes.append(f"parent: \"{old_parent or 'top level'}\" → \"{new_parent}\"")
+
+        if not changes:
+            return "No changes needed — the values already match."
+
+        # update_collection expects the full payload dict (with key + version).
+        resp = write_zot.update_collection(coll)
+        if _helpers._handle_write_response(resp, ctx):
+            summary = "; ".join(changes)
+            return (
+                f"Updated collection `{collection_key}`: {summary}\n\n"
+                f"Collection key: `{collection_key}`"
+            )
+        return f"Failed to update collection `{collection_key}`: {resp}"
+
+    except Exception as e:
+        ctx.error(f"Error updating collection: {e}")
+        return f"Error updating collection: {e}"
+
+
+@mcp.tool(
     name="zotero_search_collections",
     description=(
         "Search collections by name in the active library and return their "

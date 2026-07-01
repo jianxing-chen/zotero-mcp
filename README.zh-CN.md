@@ -612,7 +612,7 @@ zotero-cli -v search "CRISPR"                # 详细模式
 
 ### 写入与 collection 管理
 - `zotero_add_by_doi` / `zotero_add_by_url` / `zotero_add_by_isbn` / `zotero_add_by_bibtex` / `zotero_add_by_csl_json` / `zotero_add_from_file`
-- `zotero_create_collection` / `zotero_delete_collection` / `zotero_search_collections` / `zotero_manage_collections`
+- `zotero_create_collection` / `zotero_delete_collection` / `zotero_update_collection`（重命名/移动文件夹）/ `zotero_search_collections` / `zotero_manage_collections`
 - `zotero_update_item` / `zotero_delete_item` / `zotero_find_duplicates` / `zotero_merge_duplicates`
 - `zotero_batch_update_tags` / `zotero_batch_update_extra` / `zotero_get_pdf_outline`
 - `zotero_enrich_item_metadata` / `zotero_enrich_batch` — 从 NASA ADS 补全 date、期刊缩写、bibcode、ADS 链接（无 DOI/arXiv 的条目用标题搜索兜底；preprint 自动升级为 journalArticle）

@@ -652,7 +652,7 @@ For optimal annotation extraction, it is **highly recommended** to install the [
 
 ### ✏️ Item & Collection Management
 - `zotero_add_by_doi` / `zotero_add_by_url` / `zotero_add_by_isbn` / `zotero_add_by_bibtex` / `zotero_add_by_csl_json` / `zotero_add_from_file`
-- `zotero_create_collection` / `zotero_delete_collection` / `zotero_search_collections` / `zotero_manage_collections`
+- `zotero_create_collection` / `zotero_delete_collection` / `zotero_update_collection` (rename/move) / `zotero_search_collections` / `zotero_manage_collections`
 - `zotero_update_item` / `zotero_delete_item` / `zotero_find_duplicates` / `zotero_merge_duplicates`
 - `zotero_batch_update_tags` / `zotero_batch_update_extra` / `zotero_get_pdf_outline`
 - `zotero_enrich_item_metadata` / `zotero_enrich_batch` — back-fill date, journal abbreviation, bibcode, and ADS URL from NASA ADS (title-search fallback for items without DOI/arXiv; auto-upgrades preprints to journalArticle)
