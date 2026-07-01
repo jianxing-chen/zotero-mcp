@@ -592,6 +592,7 @@ zotero-cli -v search "CRISPR"                # 详细模式
 ### 搜索
 - `zotero_search_items` / `zotero_advanced_search` / `zotero_search_by_tag` / `zotero_search_by_citation_key`
 - `zotero_get_collections` / `zotero_get_collection_items` / `zotero_get_tags` / `zotero_get_recent`
+- `zotero_audit_collection_membership` — 一次性审计全库的文件夹归属：多少条目已分类/未分类、哪些条目不属于任何文件夹、哪些条目同时出现在多个文件夹
 
 ### 内容
 - `zotero_get_item_metadata`（支持 markdown / json / bibtex）/ `zotero_get_item_fulltext` / `zotero_get_item_children`

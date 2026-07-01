@@ -615,6 +615,159 @@ def get_collection_items(
 
 
 @mcp.tool(
+    name="zotero_audit_collection_membership",
+    description=(
+        "Audit collection (folder) membership across the ENTIRE library in "
+        "a single pass. Answers three questions at once: how many items are "
+        "filed vs. unfiled, which items belong to NO collection (unfiled), "
+        "and which items appear in multiple collections (cross-filed). "
+        "Use this to see what's organized and what isn't, and to spot items "
+        "duplicated across folders. "
+        "limit: max items to list in EACH of the unfiled and multi-collection "
+        "sections (default 50, max 500). The Overview counts are always "
+        "complete regardless of limit. "
+        "Returns three markdown sections: Overview (total/filed/unfiled/multi "
+        "counts), Unfiled Items (key, title, date, [PDF]), and Items in "
+        "Multiple Collections (sorted by membership count descending, with "
+        "folder names resolved from keys). "
+        "Scope: active library only (switch with zotero_switch_library). "
+        "Example: zotero_audit_collection_membership(limit=100)."
+    )
+)
+@with_zotero_api_lock
+def audit_collection_membership(
+    limit: int | str | None = 50,
+    *,
+    ctx: Context
+) -> str:
+    """
+    Audit collection membership across the entire library.
+
+    Args:
+        limit: Max items to display in each of the unfiled and multi-collection
+            sections. Overview counts are always complete.
+        ctx: MCP context
+
+    Returns:
+        Markdown report with overview, unfiled items, and cross-filed items.
+    """
+    try:
+        ctx.info("Auditing collection membership for entire library")
+        zot = _client.get_zotero_client()
+        limit = _helpers._normalize_limit(limit, default=50, max_val=500)
+
+        # Build collection key→name map for readable output. Non-fatal — if
+        # this fails we degrade to showing raw keys in the multi-collection
+        # section (consistent with the dangling-key philosophy in
+        # format_item_metadata).
+        coll_names: dict[str, str] = {}
+        try:
+            collections = _helpers._paginate(zot.collections)
+            for coll in collections:
+                key = coll.get("key")
+                if key:
+                    coll_names[key] = coll.get("data", {}).get("name", key)
+        except Exception as e:
+            ctx.warning(f"Could not fetch collection names: {e}")
+
+        # Pull all top-level items (excludes attachments/notes/annotations,
+        # same filter as library_coverage and advanced_search).
+        all_items = _helpers._paginate(zot.items, itemType="-attachment")
+        if not all_items:
+            return "No items found in the library."
+
+        unfiled: list[dict] = []
+        multi: list[dict] = []
+        filed_count = 0
+
+        for item in all_items:
+            data = item.get("data", {})
+            colls = data.get("collections") or []
+            if colls:
+                filed_count += 1
+                if len(colls) >= 2:
+                    multi.append(item)
+            else:
+                unfiled.append(item)
+
+        total = len(all_items)
+        unfiled_count = len(unfiled)
+        multi_count = len(multi)
+
+        output = ["# Collection Membership Audit", ""]
+        output.append("## Overview")
+        output.append(f"- Total items: {total}")
+        output.append(f"- Filed (in ≥1 collection): {filed_count}")
+        output.append(f"- Unfiled (in 0 collections): {unfiled_count}")
+        output.append(f"- In multiple collections: {multi_count}")
+        output.append("")
+
+        # --- Unfiled Items section ---
+        output.append(f"## Unfiled Items ({unfiled_count})")
+        if not unfiled:
+            output.append("All items are filed in at least one collection.")
+        else:
+            display = unfiled[:limit]
+            for item in display:
+                key = item.get("key", "")
+                data = item.get("data", {})
+                title = data.get("title") or data.get("filename") or "Untitled"
+                date = data.get("date", "")
+                flags = []
+                if (
+                    _is_standalone_attachment(data)
+                    and data.get("contentType") == "application/pdf"
+                ):
+                    flags.append("PDF")
+                flag_str = f" [{', '.join(flags)}]" if flags else ""
+                output.append(f"- `{key}` | {title} ({date}){flag_str}")
+            if unfiled_count > limit:
+                output.append(
+                    f"\n*Showing {limit} of {unfiled_count}. "
+                    "Increase the limit parameter to see more.*"
+                )
+        output.append("")
+
+        # --- Items in Multiple Collections section ---
+        output.append(
+            f"## Items in Multiple Collections ({multi_count}"
+            ", sorted by membership count)"
+        )
+        if not multi:
+            output.append("No items appear in multiple collections.")
+        else:
+            # Sort by number of collections descending.
+            multi.sort(
+                key=lambda it: len(it.get("data", {}).get("collections") or []),
+                reverse=True,
+            )
+            display = multi[:limit]
+            for item in display:
+                key = item.get("key", "")
+                data = item.get("data", {})
+                title = data.get("title") or data.get("filename") or "Untitled"
+                date = data.get("date", "")
+                colls = data.get("collections") or []
+                # Resolve names; show raw key if name unknown (dangling ref).
+                names = [coll_names.get(c, c) for c in colls]
+                output.append(
+                    f"- `{key}` | {title} ({date}) — "
+                    f"in {len(colls)}: {', '.join(names)}"
+                )
+            if multi_count > limit:
+                output.append(
+                    f"\n*Showing {limit} of {multi_count}. "
+                    "Increase the limit parameter to see more.*"
+                )
+
+        return "\n".join(output)
+
+    except Exception as e:
+        ctx.error(f"Error auditing collection membership: {str(e)}")
+        return f"Error auditing collection membership: {str(e)}"
+
+
+@mcp.tool(
     name="zotero_get_item_children",
     description=(
         "List the child items (attachments, notes, and annotations that are "

@@ -632,6 +632,7 @@ For optimal annotation extraction, it is **highly recommended** to install the [
 ### 🔍 Search
 - `zotero_search_items` / `zotero_advanced_search` / `zotero_search_by_tag` / `zotero_search_by_citation_key`
 - `zotero_get_collections` / `zotero_get_collection_items` / `zotero_get_tags` / `zotero_get_recent`
+- `zotero_audit_collection_membership` — audit the entire library's folder organization in one pass: how many items are filed vs. unfiled, which items belong to no collection, and which items appear in multiple collections
 
 ### 📚 Content
 - `zotero_get_item_metadata` (supports `markdown` / `json` / `bibtex`) / `zotero_get_item_fulltext` / `zotero_get_item_children`

@@ -71,6 +71,7 @@ from zotero_mcp.tools.retrieval import (  # noqa: F401
     get_item_fulltext,
     get_collections,
     get_collection_items,
+    audit_collection_membership,
     get_item_children,
     get_items_children,
     get_tags,
