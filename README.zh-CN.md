@@ -47,7 +47,7 @@
 - **精确提取 PDF 公式为 LaTeX、表格为 HTML**——这是 PyMuPDF 文本层提取做不到的
 - 当 LLM 调用 `zotero_read_pdf_pages` 精读论文时，自动用 MinerU 解析，公式如 `$\text{Attention}(Q,K,V)=\text{softmax}(\frac{QK^T}{\sqrt{d_k}})V$` 能正确返回
 - **按场景分流**：语义搜索（批量分析）保持 PyMuPDF 的毫秒级速度；只有精读单篇时才上 MinerU
-- 三种后端：`api`（远程服务，零本地依赖）、`hybrid`（本地 GPU）、`pipeline`（本地 CPU 兜底），hybrid 失败自动降级 pipeline
+- 四种后端：`cloud`（推荐，mineru.net 云端，精度最高）、`api`（远程服务，零本地依赖）、`hybrid`（本地 GPU）、`pipeline`（本地 CPU 兜底），自动降级链：`cloud-vlm → cloud-pipeline → 本地 hybrid → 本地 pipeline → PyMuPDF`
 - 结果按 attachment key 缓存，避免重复解析
 - 任何失败都静默回退到 PyMuPDF，不装 MinerU 时行为与原版 100% 一致
 
@@ -55,6 +55,7 @@
 - **`zotero_add_by_bibcode`**：按 bibcode 导入论文，自动从 ADS 拉取元数据转为 Zotero 条目，bibcode 存入 Extra 字段供查重，并尝试下载 OA PDF（Unpaywall 级联 + ADS link_gateway 兜底）
 - **`zotero_search_ads`**：ADS 字段化搜索（如 `title:exoplanets`、`author:"Riess, A"`），结果标注哪些已在你的 Zotero 库（DOI + bibcode 双重匹配）
 - **`zotero_ads_citation_network`**：引用图分析——一篇论文引用了谁、被谁引用，并标出库里缺漏的高影响力文献
+- **`zotero_export_ads`**：导出引用格式（BibTeX、AASTeX、MNRAS 等）
 - Token 免费（[申请地址](https://ui.adsabs.harvard.edu/#user/settings/token)），通过 `ADS_API_TOKEN` 环境变量配置
 
 ### 📝 批注与笔记
@@ -600,6 +601,7 @@ zotero-cli -v search "CRISPR"                # 详细模式
 - `zotero_add_by_bibcode` — 按 bibcode 导入
 - `zotero_search_ads` — ADS 字段化搜索
 - `zotero_ads_citation_network` — 引用图分析
+- `zotero_export_ads` — 导出引用格式（BibTeX、AASTeX、MNRAS 等）
 
 ### 批注与笔记
 - `zotero_get_annotations` / `zotero_get_notes` / `zotero_search_notes`
@@ -612,6 +614,8 @@ zotero-cli -v search "CRISPR"                # 详细模式
 - `zotero_create_collection` / `zotero_delete_collection` / `zotero_search_collections` / `zotero_manage_collections`
 - `zotero_update_item` / `zotero_delete_item` / `zotero_find_duplicates` / `zotero_merge_duplicates`
 - `zotero_batch_update_tags` / `zotero_batch_update_extra` / `zotero_get_pdf_outline`
+- `zotero_enrich_item_metadata` / `zotero_enrich_batch` — 从 NASA ADS 补全 date、期刊缩写、bibcode、ADS 链接（无 DOI/arXiv 的条目用标题搜索兜底；preprint 自动升级为 journalArticle）
+- `zotero_upgrade_preprints` — 将 arXiv 预印本升级为正式发表的 journalArticle
 
 所有 add 工具支持 `collections`（key / 名称 / `父/子` 路径）、`if_exists`（duplicate / file / skip）、`create_missing_collections` 参数。
 

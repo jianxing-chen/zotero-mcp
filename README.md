@@ -199,9 +199,12 @@ zotero-mcp setup   # the wizard asks whether to configure MinerU
 ```
 
 The wizard guides you through choosing a backend:
+- **`cloud`** (recommended): MinerU cloud API (mineru.net) — highest accuracy (vlm 95+), ~15s/paper, needs `cloud_token`
 - **`api`**: call a remote MinerU FastAPI service (zero local torch/ray deps) — configure `api_url`
-- **`hybrid`** (default): local `mineru` CLI with GPU — auto-falls back to `pipeline` on OOM
+- **`hybrid`**: local `mineru` CLI with GPU — auto-falls back to `pipeline` on OOM
 - **`pipeline`**: local CPU, always works but slower
+
+Fallback chain (all automatic): `cloud-vlm → cloud-pipeline → local hybrid → local pipeline → PyMuPDF`.
 
 ```json
 // mineru block in ~/.config/zotero-mcp/config.json
@@ -638,6 +641,7 @@ For optimal annotation extraction, it is **highly recommended** to install the [
 - `zotero_add_by_bibcode` — import by bibcode
 - `zotero_search_ads` — fielded ADS search
 - `zotero_ads_citation_network` — citation graph analysis
+- `zotero_export_ads` — export citation formats (BibTeX, AASTeX, MNRAS, etc.)
 
 ### 📝 Annotations & Notes
 - `zotero_get_annotations` / `zotero_get_notes` / `zotero_search_notes`
@@ -650,6 +654,8 @@ For optimal annotation extraction, it is **highly recommended** to install the [
 - `zotero_create_collection` / `zotero_delete_collection` / `zotero_search_collections` / `zotero_manage_collections`
 - `zotero_update_item` / `zotero_delete_item` / `zotero_find_duplicates` / `zotero_merge_duplicates`
 - `zotero_batch_update_tags` / `zotero_batch_update_extra` / `zotero_get_pdf_outline`
+- `zotero_enrich_item_metadata` / `zotero_enrich_batch` — back-fill date, journal abbreviation, bibcode, and ADS URL from NASA ADS (title-search fallback for items without DOI/arXiv; auto-upgrades preprints to journalArticle)
+- `zotero_upgrade_preprints` — upgrade arXiv preprints to published journalArticle when ADS has the published version
 
 All add tools take `collections` (keys, names, or `parent/child` paths), `if_exists` (`duplicate` / `file` / `skip`), and `create_missing_collections` parameters.
 
@@ -678,14 +684,6 @@ uv run pytest tests/     # full test suite
 - **MinerU unavailable**: Check that `mineru` CLI is on PATH or `mineru.executable` is set; falls back to PyMuPDF automatically
 - **ADS reports token not set**: Run `zotero-mcp setup` to configure `ADS_API_TOKEN`
 - **Database issues after switching install/search methods**: `zotero-mcp update-db --force-rebuild`
-
-## ☕ Support
-
-If you find Zotero MCP useful, consider buying me a coffee!
-
-<a href="https://buymeacoffee.com/stevenyuyy">
-  <img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me a Coffee">
-</a>
 
 ## 📄 License
 
