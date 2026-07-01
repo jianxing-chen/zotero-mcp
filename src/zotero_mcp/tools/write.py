@@ -3857,11 +3857,17 @@ def _enrich_single_item(
     if needs_bibcode and ads_bibcode:
         field_updates["extra"] = _append_extra_line(data.get("extra"), f"bibcode: {ads_bibcode}")
 
-    # Write ADS abstract URL to the url field if empty — gives the user a
-    # one-click link to the ADS record (citation metrics, references, etc.).
+    # Write ADS abstract URL to the url field — gives the user a one-click
+    # link to the ADS record (citation metrics, references, etc.). Always
+    # overwrites with the canonical ADS URL when force=True; otherwise only
+    # fills when empty (preserves existing publisher/arXiv links).
     current_url = (data.get("url") or "").strip()
-    if not current_url and ads_bibcode:
-        field_updates["url"] = f"https://ui.adsabs.harvard.edu/abs/{ads_bibcode}/abstract"
+    ads_url = f"https://ui.adsabs.harvard.edu/abs/{ads_bibcode}/abstract" if ads_bibcode else None
+    if ads_url and (force or not current_url or current_url != ads_url):
+        # When force: always replace (even non-ADS urls like IOP/arXiv).
+        # When not force: only fill if empty (don't clobber existing links).
+        if force or not current_url:
+            field_updates["url"] = ads_url
 
     if not field_updates:
         result["status"] = "skipped_existing"
@@ -3907,9 +3913,9 @@ def _enrich_single_item(
         "existing values are preserved unless force=True. "
         "When an ADS record is found, the bibcode is also written to the "
         "item's Extra field (if not already present), and the ADS abstract "
-        "URL is written to the url field (if empty) — enabling direct "
-        "citation export via zotero_export_ads and one-click access to the "
-        "ADS record. "
+        "URL is written to the url field (if empty, or always when "
+        "force=True) — enabling direct citation export via "
+        "zotero_export_ads and one-click access to the ADS record. "
         "Requires an ADS API token. "
         "item_key: 8-char Zotero item key. "
         "fields: list of field names to fill, default ['date', "
@@ -3970,9 +3976,9 @@ def enrich_item_metadata(
         "values are preserved unless force=True. "
         "When an ADS record is found, the bibcode is also written to the "
         "item's Extra field (if not already present), and the ADS abstract "
-        "URL is written to the url field (if empty) — enabling direct "
-        "citation export via zotero_export_ads and one-click access to the "
-        "ADS record. "
+        "URL is written to the url field (if empty, or always when "
+        "force=True) — enabling direct citation export via "
+        "zotero_export_ads and one-click access to the ADS record. "
         "Use after importing many papers without full metadata, or to "
         "back-fill journal abbreviations on an existing library. "
         "fields: list of field names, default ['date', 'journal_abbreviation']. "
