@@ -71,6 +71,49 @@ def _make_coll(key, name):
     return {"key": key, "version": 1, "data": {"name": name, "parentCollection": False}}
 
 
+def _make_child_note(key, parent, content="<p>note text</p>"):
+    """A note that hangs off a parent item — should NOT appear in the audit."""
+    return {
+        "key": key,
+        "version": 1,
+        "data": {
+            "itemType": "note",
+            "note": content,
+            "parentItem": parent,
+            "collections": [],  # children inherit parent's collections, own list is empty
+        },
+    }
+
+
+def _make_child_attachment(key, parent, filename="child.pdf"):
+    """An attachment that hangs off a parent item — should NOT appear in audit."""
+    return {
+        "key": key,
+        "version": 1,
+        "data": {
+            "itemType": "attachment",
+            "filename": filename,
+            "contentType": "application/pdf",
+            "parentItem": parent,
+            "collections": [],
+        },
+    }
+
+
+def _make_standalone_note(key, content="<p>standalone note</p>"):
+    """A standalone note (no parent) — should NOT appear in audit."""
+    return {
+        "key": key,
+        "version": 1,
+        "data": {
+            "itemType": "note",
+            "note": content,
+            "parentItem": "",
+            "collections": [],
+        },
+    }
+
+
 # ---------------------------------------------------------------------------
 # Mixed library — the headline test exercising all three sections at once.
 # ---------------------------------------------------------------------------
@@ -307,3 +350,101 @@ def test_audit_limit_truncates_both_sections(monkeypatch):
     assert "Showing 2 of 3" in result
     # The footer line appears twice (once per section).
     assert result.count("Showing 2 of 3") == 2
+
+
+# ---------------------------------------------------------------------------
+# Regression: child notes/attachments and standalone notes excluded.
+# ---------------------------------------------------------------------------
+
+
+def test_audit_excludes_child_notes(monkeypatch):
+    """Child notes (parentItem set) must NOT appear as unfiled items."""
+    _make_audit_zot(
+        monkeypatch,
+        items=[
+            _make_item("PAP00001", "Real Paper", "2023", collections=["COLAAAAA"]),
+            _make_child_note("NOTE0001", "PAP00001"),
+            _make_child_note("NOTE0002", "PAP00001", content=""),
+        ],
+        collections=[_make_coll("COLAAAAA", "ML")],
+    )
+
+    result = server.audit_collection_membership(ctx=DummyContext())
+
+    # Total should be 1 (the real paper), not 3.
+    assert "Total items: 1" in result
+    assert "NOTE0001" not in result
+    assert "NOTE0002" not in result
+
+
+def test_audit_excludes_child_attachments(monkeypatch):
+    """Child attachments (parentItem set) must NOT appear as unfiled items."""
+    _make_audit_zot(
+        monkeypatch,
+        items=[
+            _make_item("PAP00001", "Real Paper", "2023", collections=[]),
+            _make_child_attachment("ATT00001", "PAP00001"),
+        ],
+    )
+
+    result = server.audit_collection_membership(ctx=DummyContext())
+
+    assert "Total items: 1" in result
+    assert "ATT00001" not in result
+
+
+def test_audit_excludes_standalone_notes(monkeypatch):
+    """Standalone notes (no parent, itemType=note) must NOT appear in audit."""
+    _make_audit_zot(
+        monkeypatch,
+        items=[
+            _make_item("PAP00001", "Real Paper", "2023", collections=[]),
+            _make_standalone_note("NOTE0001"),
+        ],
+    )
+
+    result = server.audit_collection_membership(ctx=DummyContext())
+
+    assert "Total items: 1" in result
+    assert "NOTE0001" not in result
+
+
+def test_audit_includes_standalone_pdf(monkeypatch):
+    """Standalone PDF (no parent, itemType=attachment) SHOULD appear in audit."""
+    _make_audit_zot(
+        monkeypatch,
+        items=[
+            _make_item("PAP00001", "Real Paper", "2023", collections=["COLAAAAA"]),
+            _make_pdf_item("PDF00001", "loose.pdf", "2020", collections=[]),
+        ],
+        collections=[_make_coll("COLAAAAA", "ML")],
+    )
+
+    result = server.audit_collection_membership(ctx=DummyContext())
+
+    # Both should be counted: the filed paper + the unfiled standalone PDF.
+    assert "Total items: 2" in result
+    assert "`PDF00001`" in result
+    assert "[PDF]" in result
+
+
+def test_audit_child_note_does_not_inflate_unfiled_count(monkeypatch):
+    """A paper with child notes should not show inflated unfiled count."""
+    _make_audit_zot(
+        monkeypatch,
+        items=[
+            _make_item("PAP00001", "Filed Paper", "2023", collections=["COLAAAAA"]),
+            _make_child_note("NOTE0001", "PAP00001"),
+            _make_item("PAP00002", "Unfiled Paper", "2022", collections=[]),
+            _make_child_note("NOTE0002", "PAP00002"),
+        ],
+        collections=[_make_coll("COLAAAAA", "ML")],
+    )
+
+    result = server.audit_collection_membership(ctx=DummyContext())
+
+    # Total = 2 (only the two papers, not the 4 items in the library).
+    assert "Total items: 2" in result
+    # Unfiled = 1 (only the unfiled paper, not its child note).
+    assert "Unfiled (in 0 collections): 1" in result
+    assert "Filed (in ≥1 collection): 1" in result

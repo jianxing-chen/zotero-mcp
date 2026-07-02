@@ -670,17 +670,27 @@ def audit_collection_membership(
         except Exception as e:
             ctx.warning(f"Could not fetch collection names: {e}")
 
-        # Pull all top-level items (excludes attachments/notes/annotations,
-        # same filter as library_coverage and advanced_search).
-        all_items = _helpers._paginate(zot.items, itemType="-attachment")
+        # Pull all items from the library, then filter client-side to keep
+        # only audit-relevant top-level entries: real metadata items
+        # (journalArticle, book, …) and standalone attachments (PDFs dragged
+        # in with no parent item). Child notes, child attachments, annotations,
+        # and standalone notes are excluded — they either inherit their
+        # parent's collection membership (children) or carry no meaningful
+        # title/classification value (standalone notes). _is_top_level_item
+        # encodes exactly this policy (shared with get_collection_items).
+        all_items = _helpers._paginate(zot.items)
         if not all_items:
             return "No items found in the library."
+
+        items = [item for item in all_items if _is_top_level_item(item)]
+        if not items:
+            return "No top-level items found in the library."
 
         unfiled: list[dict] = []
         multi: list[dict] = []
         filed_count = 0
 
-        for item in all_items:
+        for item in items:
             data = item.get("data", {})
             colls = data.get("collections") or []
             if colls:
@@ -690,7 +700,7 @@ def audit_collection_membership(
             else:
                 unfiled.append(item)
 
-        total = len(all_items)
+        total = len(items)
         unfiled_count = len(unfiled)
         multi_count = len(multi)
 
