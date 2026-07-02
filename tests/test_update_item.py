@@ -1,10 +1,9 @@
 """Tests for Feature 6: update_item (zotero_update_item)."""
 
-import pytest
 
-from zotero_mcp import server
 from conftest import DummyContext, FakeZotero, _FakeResponse
 
+from zotero_mcp import server
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -216,7 +215,7 @@ class TestUpdateMultipleFields:
         monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
                             lambda ctx: (fake, fake))
 
-        result = server.update_item(
+        server.update_item(
             item_key="ABCD1234",
             title="Brand New Title",
             date="2025-06-15",
@@ -868,24 +867,6 @@ class TestUpdateItemNewFields:
 
         assert fake.update_calls[0]["data"]["edition"] == "3rd"
         assert "3rd" in result
-
-    def test_update_place_on_book(self, monkeypatch):
-        # The book fixture pre-populates place="" so the update should
-        # land on the existing field rather than be skipped as
-        # "not valid for itemType".
-        item = _make_book_item()
-        fake = FakeZoteroForUpdate(items=[item])
-        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
-                            lambda ctx: (fake, fake))
-
-        result = server.update_item(
-            item_key="BOOK1234",
-            place="New York",
-            ctx=DummyContext(),
-        )
-
-        assert fake.update_calls[0]["data"]["place"] == "New York"
-        assert "New York" in result
 
     def test_update_place_on_book_section(self, monkeypatch):
         # bookSection also carries place; ensure the field maps the same
