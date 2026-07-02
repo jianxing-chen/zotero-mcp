@@ -1822,6 +1822,9 @@ _UPDATE_ITEM_API_TO_PARAM = {
         "Requires a writable library (web API key or hybrid mode); fails "
         "in local-only mode. To edit notes use zotero_update_note, not "
         "this. "
+        "NOTE: editing title/abstract/tags changes the text used for "
+        "semantic embeddings — call zotero_update_search_database() "
+        "afterward to re-embed the affected items. "
         "Example: zotero_update_item(item_key='RTKZQI8E', "
         "add_tags=['reviewed'], doi='10.1145/3708319')."
     ),
@@ -2094,7 +2097,10 @@ def update_item(
         "zotero_delete_note — identical mechanism, constrained to notes "
         "for safety. Trashed items are recoverable from Zotero's Trash — "
         "empty the Trash in the Zotero UI for permanent deletion. "
-        "By default refuses to trash notes; set allow_note=True to override."
+        "By default refuses to trash notes; set allow_note=True to override. "
+        "NOTE: trashing a paper does NOT remove it from the semantic search "
+        "index — call zotero_update_search_database() afterward to prune "
+        "deleted items from the embedding database."
     ),
 )
 @with_zotero_api_lock
