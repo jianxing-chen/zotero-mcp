@@ -96,6 +96,9 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 timeout = 30
 testpaths = ["tests"]
+# auto mode lets async tests run without per-test @pytest.mark.asyncio,
+# and silences PytestUnknownMarkWarning for existing decorated tests.
+asyncio_mode = "auto"
 filterwarnings = [
     "ignore::DeprecationWarning",
 ]
