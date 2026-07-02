@@ -311,3 +311,137 @@ def test_local_only_mode_returns_error(monkeypatch):
 
     assert "Error" in result
     assert "API" in result or "web" in result.lower()
+
+
+# ---------------------------------------------------------------------------
+# content_filter tests
+# ---------------------------------------------------------------------------
+
+
+def test_content_filter_auto_comments_matches_comment_notes(monkeypatch):
+    """content_filter='auto_comments' matches notes starting with 'Comment:'."""
+    notes = [
+        _make_note("COM00001", content="<p>Comment: 12 pages, 6 figures. Accepted for publication in ApJ</p>"),
+        _make_note("COM00002", content="<p>Comment: Accepted for publication in MNRAS</p>"),
+        _make_note("HAN00001", content="<p>Pulsating WD in MSP Binary</p>"),
+        _make_note("EMP00001"),  # empty
+    ]
+    fake = FakeZoteroBatchCleanup(notes)
+    _patch(monkeypatch, fake)
+
+    result = server.batch_cleanup_notes(
+        content_filter="auto_comments", standalone_only=False, dry_run=True, ctx=DummyContext()
+    )
+
+    assert "Matched: 2 notes" in result
+    assert "`COM00001`" in result
+    assert "`COM00002`" in result
+    # Handwritten and empty notes should NOT match.
+    assert "HAN00001" not in result
+    assert "EMP00001" not in result
+
+
+def test_content_filter_auto_comments_skips_handwritten(monkeypatch):
+    """Handwritten notes (not starting with 'Comment:') must be preserved."""
+    notes = [
+        _make_note("HAN00001", content="<p>About the cooling sequence of 47 Tuc</p>"),
+        _make_note("HAN00002", content="<p>Need to check Eq. 15 in section 3</p>"),
+        _make_note("COM00001", content="<p>Comment: 20 pages, accepted</p>"),
+    ]
+    fake = FakeZoteroBatchCleanup(notes)
+    _patch(monkeypatch, fake)
+
+    result = server.batch_cleanup_notes(
+        content_filter="auto_comments", standalone_only=False, dry_run=True, ctx=DummyContext()
+    )
+
+    assert "Matched: 1 notes" in result
+    assert "`COM00001`" in result
+    assert "HAN00001" not in result
+    assert "HAN00002" not in result
+
+
+def test_content_filter_empty_or_auto_matches_both(monkeypatch):
+    """content_filter='empty_or_auto' matches empty + Comment: notes, keeps handwritten."""
+    notes = [
+        _make_note("EMP00001"),  # empty
+        _make_note("EMP00002", content="<p>   </p>"),  # whitespace-only
+        _make_note("COM00001", content="<p>Comment: 12 pages, 6 figures</p>"),
+        _make_note("COM00002", content="<p>Comment: Accepted in ApJ</p>"),
+        _make_note("HAN00001", content="<p>Pulsating WD in MSP Binary</p>"),
+        _make_note("HAN00002", content="<p>关于视差为负数的情况</p>"),
+    ]
+    fake = FakeZoteroBatchCleanup(notes)
+    _patch(monkeypatch, fake)
+
+    result = server.batch_cleanup_notes(
+        content_filter="empty_or_auto", standalone_only=False, dry_run=True, ctx=DummyContext()
+    )
+
+    # 2 empty + 2 Comment: = 4 matched; 2 handwritten preserved.
+    assert "Matched: 4 notes" in result
+    assert "`EMP00001`" in result
+    assert "`EMP00002`" in result
+    assert "`COM00001`" in result
+    assert "`COM00002`" in result
+    assert "HAN00001" not in result
+    assert "HAN00002" not in result
+
+
+def test_content_filter_regex(monkeypatch):
+    """A custom regex pattern should match note content."""
+    notes = [
+        _make_note("MAT00001", content="<p>TODO: check this reference</p>"),
+        _make_note("MAT00002", content="<p>Need to verify TODO item</p>"),
+        _make_note("NOM00001", content="<p>Regular note without keyword</p>"),
+    ]
+    fake = FakeZoteroBatchCleanup(notes)
+    _patch(monkeypatch, fake)
+
+    result = server.batch_cleanup_notes(content_filter="TODO", standalone_only=False, dry_run=True, ctx=DummyContext())
+
+    assert "Matched: 2 notes" in result
+    assert "`MAT00001`" in result
+    assert "`MAT00002`" in result
+    assert "NOM00001" not in result
+
+
+def test_content_filter_none_uses_empty_only(monkeypatch):
+    """When content_filter=None, behavior falls back to empty_only."""
+    notes = [
+        _make_note("EMP00001"),  # empty
+        _make_note("COM00001", content="<p>Comment: accepted</p>"),
+        _make_note("HAN00001", content="<p>Handwritten note</p>"),
+    ]
+    fake = FakeZoteroBatchCleanup(notes)
+    _patch(monkeypatch, fake)
+
+    # content_filter=None + empty_only=True → only empty notes.
+    result = server.batch_cleanup_notes(content_filter=None, empty_only=True, dry_run=True, ctx=DummyContext())
+    assert "Matched: 1 notes" in result
+    assert "`EMP00001`" in result
+
+    # content_filter=None + empty_only=False → all notes.
+    result2 = server.batch_cleanup_notes(
+        content_filter=None, empty_only=False, standalone_only=False, dry_run=True, ctx=DummyContext()
+    )
+    assert "Matched: 3 notes" in result2
+
+
+def test_content_filter_preview_shows_note_content(monkeypatch):
+    """Dry-run preview should show note content snippet for verification."""
+    notes = [
+        _make_note("COM00001", content="<p>Comment: 12 pages, accepted in ApJ</p>"),
+        _make_note("EMP00001"),  # empty
+    ]
+    fake = FakeZoteroBatchCleanup(notes)
+    _patch(monkeypatch, fake)
+
+    result = server.batch_cleanup_notes(
+        content_filter="empty_or_auto", standalone_only=False, dry_run=True, ctx=DummyContext()
+    )
+
+    # Preview should show content snippet and (empty) marker.
+    assert "Comment: 12 pages" in result  # content preview for COM00001
+    assert "(empty)" in result  # empty marker for EMP00001
+    assert "Content filter: empty_or_auto" in result

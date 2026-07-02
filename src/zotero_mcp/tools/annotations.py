@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import tempfile
 import uuid
 
@@ -1176,26 +1177,37 @@ def delete_note(item_key: str, *, ctx: Context) -> str:
         "subset of notes. "
         "Use this when the user says: delete all notes / clean up notes / "
         "批量删除笔记 / 清理空笔记 / remove all Untitled notes / "
-        "删除所有 note. "
+        "删除所有 note / 删除自动生成的 note / 清理 arXiv comment / "
+        "delete auto-generated notes. "
         "standalone_only=True (default): only notes with no parentItem "
         "(top-level notes). Set False to also match notes attached to "
         "papers. "
         "empty_only=True (default): only notes whose body is blank. Set "
-        "False to match notes with content too. "
+        "False to match notes with content too. Ignored when content_filter "
+        "is set. "
+        "content_filter: filter by note content pattern. "
+        "'auto_comments' = only notes starting with 'Comment:' (arXiv "
+        "auto-imported submission comments). "
+        "'empty_or_auto' = empty notes + Comment: notes (deletes "
+        "auto-generated junk, KEEPS your handwritten notes). "
+        "Any other string = regex pattern matched against note text. "
+        "None (default) = no content filtering. "
         "dry_run=True (default): PREVIEW only — returns the matched list "
         "without deleting. Pass dry_run=False after reviewing to actually "
         "trash the matched notes (recoverable from Zotero's Trash). "
         "limit: max notes to process (default 500, max 5000). "
+        "Example: zotero_batch_cleanup_notes(content_filter='empty_or_auto', "
+        "standalone_only=False, dry_run=False) — delete all empty + arXiv "
+        "Comment notes (keep handwritten), including child notes. "
         "Example: zotero_batch_cleanup_notes(dry_run=False) — trash all "
-        "standalone empty notes after previewing. "
-        "Example: zotero_batch_cleanup_notes(standalone_only=False, "
-        "empty_only=False, dry_run=False) — trash ALL notes in the library."
+        "standalone empty notes after previewing."
     ),
 )
 @with_zotero_api_lock
 def batch_cleanup_notes(
     standalone_only: bool = True,
     empty_only: bool = True,
+    content_filter: str | None = None,
     dry_run: bool = True,
     limit: int | str | None = 500,
     *,
@@ -1207,6 +1219,14 @@ def batch_cleanup_notes(
     Args:
         standalone_only: If True, only process notes with no parentItem.
         empty_only: If True, only process notes with blank content.
+            Ignored when content_filter is set.
+        content_filter: Filter by note content pattern:
+            'auto_comments' = only notes starting with 'Comment:' (arXiv
+            auto-imported submission comments).
+            'empty_or_auto' = empty notes + Comment: notes (deletes
+            auto-generated junk, keeps handwritten notes).
+            Any other string = regex pattern matched against note text.
+            None (default) = no content filtering.
         dry_run: If True (default), preview matched notes without deleting.
         limit: Maximum notes to process.
         ctx: MCP context
@@ -1215,7 +1235,11 @@ def batch_cleanup_notes(
         Markdown preview (dry_run=True) or results summary (dry_run=False).
     """
     try:
-        ctx.info(f"Batch cleanup notes: standalone_only={standalone_only} empty_only={empty_only} dry_run={dry_run}")
+        ctx.info(
+            f"Batch cleanup notes: standalone_only={standalone_only} "
+            f"empty_only={empty_only} content_filter={content_filter} "
+            f"dry_run={dry_run}"
+        )
 
         zot, err = _get_note_write_client("batch cleanup")
         if err:
@@ -1234,10 +1258,26 @@ def batch_cleanup_notes(
             data = note.get("data", {})
             if standalone_only and data.get("parentItem"):
                 continue
-            if empty_only:
-                note_text = _utils.clean_html(data.get("note", "")).strip()
+
+            note_text = _utils.clean_html(data.get("note", "")).strip()
+
+            if content_filter == "auto_comments":
+                # Only match notes starting with "Comment:" (arXiv auto-imported).
+                if not note_text or not note_text.lower().startswith("comment:"):
+                    continue
+            elif content_filter == "empty_or_auto":
+                # Match empty notes + Comment: notes; keep handwritten.
+                if note_text and not note_text.lower().startswith("comment:"):
+                    continue
+            elif content_filter:
+                # Regex pattern matching (advanced usage).
+                if not re.search(content_filter, note_text, re.IGNORECASE):
+                    continue
+            elif empty_only:
+                # Default: only empty notes.
                 if note_text:
                     continue
+
             matched.append(note)
 
         # Apply limit after filtering (max notes to process).
@@ -1252,7 +1292,10 @@ def batch_cleanup_notes(
             output = ["# Batch Note Cleanup — Preview (dry run)", ""]
             output.append("## Criteria")
             output.append(f"- Standalone only: {'yes' if standalone_only else 'no'}")
-            output.append(f"- Empty only: {'yes' if empty_only else 'no'}")
+            if content_filter:
+                output.append(f"- Content filter: {content_filter}")
+            else:
+                output.append(f"- Empty only: {'yes' if empty_only else 'no'}")
             output.append(f"- Matched: {len(matched)} notes")
             output.append("")
 
@@ -1262,8 +1305,10 @@ def batch_cleanup_notes(
                 key = note.get("key", "")
                 data = note.get("data", {})
                 label = "standalone" if not data.get("parentItem") else "child"
-                emptiness = ", empty" if empty_only else ""
-                output.append(f"- `{key}` | ({label}{emptiness})")
+                note_text = _utils.clean_html(data.get("note", "")).strip()
+                preview = (note_text[:80] + "...") if len(note_text) > 80 else note_text
+                content_label = preview if preview else "(empty)"
+                output.append(f"- `{key}` | ({label}) | {content_label}")
 
             if len(matched) > len(display):
                 output.append(
