@@ -2912,7 +2912,10 @@ def add_item_relation(item_key: str, related_item_key: str, relation_type: str =
         return f"Error adding item relation: {e}"
 
 
-@mcp.tool(name="zotero_remove_item_relation", description="Remove a related item relationship from a Zotero item.")
+@mcp.tool(
+    name="zotero_remove_item_relation",
+    description="Remove a related item relationship from a Zotero item.",
+)
 def remove_item_relation(
     item_key: str,
     related_item_key: str,
