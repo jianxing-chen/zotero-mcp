@@ -272,6 +272,15 @@ def _try_mineru(
         output.append(
             f"**Note:** page-level split unavailable; showing full document for pages {start_page}-{actual_end}."
         )
+    # When MinerU just parsed the full document (not a cache hit), the
+    # per-page cache is now available for the semantic-search build path.
+    # Nudge the agent to build a complete, page-aware vector index.
+    if parsed.source != "mineru:cached":
+        output.append(
+            f"**MinerU cache created.** To make this document fully "
+            f"searchable in the semantic index (with page numbers), "
+            f"call: `zotero_update_search_database(reindex_keys=['{item_key}'])`"
+        )
     output.append("")
 
     if single_page_caveat:
