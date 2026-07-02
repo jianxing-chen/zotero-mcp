@@ -1097,8 +1097,13 @@ def update_note(item_key: str, note_text: str, append: bool = False, *, ctx: Con
 @mcp.tool(
     name="zotero_delete_note",
     description=(
-        "Move a Zotero note to the Trash. Non-destructive: trashed notes "
-        "remain recoverable from the Trash view in Zotero desktop. "
+        "Move a SINGLE Zotero note to the Trash. For deleting MULTIPLE "
+        "notes at once (e.g. 'delete all notes', 'clean up empty notes'), "
+        "use zotero_batch_cleanup_notes instead — it handles bulk deletion "
+        "in one call. "
+        "This tool is for targeted single-note deletion. "
+        "Non-destructive: trashed notes remain recoverable from the Trash "
+        "view in Zotero desktop. "
         "item_key: the NOTE's own key — use zotero_get_notes or "
         "zotero_search_notes to find it (passing a parent item's key will "
         "fail or trash the wrong thing). "
@@ -1164,21 +1169,27 @@ def delete_note(item_key: str, *, ctx: Context) -> str:
 @mcp.tool(
     name="zotero_batch_cleanup_notes",
     description=(
-        "Batch-delete (trash) notes from your Zotero library. By default "
-        "targets only standalone empty notes — the 'Untitled' notes with no "
-        "parent item and no content that accumulate from failed imports or "
-        "sync artifacts. "
+        "Batch-delete (trash) notes from your Zotero library — use this "
+        "INSTEAD of calling zotero_delete_note repeatedly. By default "
+        "targets only standalone empty notes (the 'Untitled' notes with "
+        "no parent and no content), but can be configured to match ANY "
+        "subset of notes. "
+        "Use this when the user says: delete all notes / clean up notes / "
+        "批量删除笔记 / 清理空笔记 / remove all Untitled notes / "
+        "删除所有 note. "
         "standalone_only=True (default): only notes with no parentItem "
-        "(top-level notes), not notes attached to papers. "
-        "empty_only=True (default): only notes whose body is blank/whitespace. "
+        "(top-level notes). Set False to also match notes attached to "
+        "papers. "
+        "empty_only=True (default): only notes whose body is blank. Set "
+        "False to match notes with content too. "
         "dry_run=True (default): PREVIEW only — returns the matched list "
-        "without deleting anything. Pass dry_run=False after reviewing to "
-        "actually trash the matched notes (recoverable from Zotero's Trash). "
+        "without deleting. Pass dry_run=False after reviewing to actually "
+        "trash the matched notes (recoverable from Zotero's Trash). "
         "limit: max notes to process (default 500, max 5000). "
-        "Example: zotero_batch_cleanup_notes(dry_run=False) to trash all "
+        "Example: zotero_batch_cleanup_notes(dry_run=False) — trash all "
         "standalone empty notes after previewing. "
         "Example: zotero_batch_cleanup_notes(standalone_only=False, "
-        "empty_only=False, dry_run=False) to trash ALL notes in the library."
+        "empty_only=False, dry_run=False) — trash ALL notes in the library."
     ),
 )
 @with_zotero_api_lock
