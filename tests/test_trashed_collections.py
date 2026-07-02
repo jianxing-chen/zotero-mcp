@@ -66,9 +66,7 @@ class _CollectionFakeZotero(FakeZotero):
 
 def _patch_clients(monkeypatch, zot):
     monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: zot)
-    monkeypatch.setattr(
-        "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (zot, zot)
-    )
+    monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (zot, zot))
 
 
 # ---------------------------------------------------------------------------
@@ -103,9 +101,7 @@ class TestHelpers:
         assert _helpers.is_collection_trashed(z, "DEAD0000") is True
 
     def test_is_collection_trashed_returns_false_for_live(self):
-        z = _CollectionFakeZotero(
-            live=[_coll("LIVE0000", "Live")], trashed=[]
-        )
+        z = _CollectionFakeZotero(live=[_coll("LIVE0000", "Live")], trashed=[])
         assert _helpers.is_collection_trashed(z, "LIVE0000") is False
 
     def test_is_collection_trashed_returns_none_for_missing(self):
@@ -150,9 +146,7 @@ class TestManageCollectionsValidation:
         assert z.addto_calls == []
 
     def test_live_collection_proceeds_normally(self, monkeypatch):
-        z = _CollectionFakeZotero(
-            live=[_coll("LIVE0000", "Live")], trashed=[]
-        )
+        z = _CollectionFakeZotero(live=[_coll("LIVE0000", "Live")], trashed=[])
         _patch_clients(monkeypatch, z)
 
         result = server.manage_collections(
@@ -232,9 +226,7 @@ class TestSearchCollections:
         )
         _patch_clients(monkeypatch, z)
 
-        result = server.search_collections(
-            query="important", include_trashed=True, ctx=DummyContext()
-        )
+        result = server.search_collections(query="important", include_trashed=True, ctx=DummyContext())
         assert "Important Stuff" in result
         assert "DEAD0000" in result
         assert "*[trashed]*" in result

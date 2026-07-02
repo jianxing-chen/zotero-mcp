@@ -32,9 +32,7 @@ from zotero_mcp.semantic_search import ZoteroSemanticSearch  # noqa: E402
 @pytest.fixture
 def search(monkeypatch):
     # Avoid network / env requirements: stub both clients.
-    monkeypatch.setattr(
-        "zotero_mcp.semantic_search.get_zotero_client", lambda: MagicMock()
-    )
+    monkeypatch.setattr("zotero_mcp.semantic_search.get_zotero_client", lambda: MagicMock())
     return ZoteroSemanticSearch(chroma_client=MagicMock())
 
 
@@ -64,9 +62,7 @@ def _annotation_item(text: str = "", comment: str = "", tags: list[str] | None =
 class TestAnnotationDocumentText:
     def test_uses_annotation_text_not_no_authors_listed(self, search):
         """The headline regression for #287."""
-        ann = _annotation_item(
-            text="The pre-Columbian Pueblo economy depended on …"
-        )
+        ann = _annotation_item(text="The pre-Columbian Pueblo economy depended on …")
         out = search._create_document_text(ann)
         assert "No authors listed" not in out
         assert "Pueblo economy" in out

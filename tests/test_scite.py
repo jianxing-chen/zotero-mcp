@@ -77,13 +77,7 @@ def test_enrich_items_matches_lowercased_scite_keys(monkeypatch):
     monkeypatch.setattr(
         scite_tools._scite,
         "get_papers_batch",
-        lambda dois: {
-            LOWER_DOI: {
-                "editorialNotices": [
-                    {"type": "retraction", "sourceDoi": "10.1016/x"}
-                ]
-            }
-        },
+        lambda dois: {LOWER_DOI: {"editorialNotices": [{"type": "retraction", "sourceDoi": "10.1016/x"}]}},
     )
 
     items = [{"data": {"DOI": UPPER_DOI, "title": "Wakefield 1998"}}]
@@ -97,20 +91,12 @@ def test_enrich_items_matches_lowercased_scite_keys(monkeypatch):
 
 def test_check_retractions_flags_uppercase_doi(monkeypatch, dummy_ctx, fake_zot):
     """check_retractions must flag a retracted paper whose DOI is uppercase."""
-    fake_zot._items = [
-        {"key": "ITEM0001", "data": {"DOI": UPPER_DOI, "title": "Wakefield 1998"}}
-    ]
+    fake_zot._items = [{"key": "ITEM0001", "data": {"DOI": UPPER_DOI, "title": "Wakefield 1998"}}]
     monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake_zot)
     monkeypatch.setattr(
         scite_tools._scite,
         "get_papers_batch",
-        lambda dois: {
-            LOWER_DOI: {
-                "editorialNotices": [
-                    {"type": "retraction", "sourceDoi": "10.1016/x"}
-                ]
-            }
-        },
+        lambda dois: {LOWER_DOI: {"editorialNotices": [{"type": "retraction", "sourceDoi": "10.1016/x"}]}},
     )
 
     result = scite_tools.check_retractions(ctx=dummy_ctx)

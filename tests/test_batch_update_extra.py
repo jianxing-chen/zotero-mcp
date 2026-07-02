@@ -43,18 +43,14 @@ class FakeZoteroForExtra:
 
 
 def test_apply_extra_edits_upserts_into_empty_extra():
-    new_extra, changed = _apply_extra_edits(
-        "", set_keys={"tex.otscore": "2"}, remove_keys=[], replace=False
-    )
+    new_extra, changed = _apply_extra_edits("", set_keys={"tex.otscore": "2"}, remove_keys=[], replace=False)
     assert new_extra == "tex.otscore: 2"
     assert changed is True
 
 
 def test_apply_extra_edits_replaces_existing_key_case_insensitive():
     extra = "Citation Key: smith2020\ntex.otscore: 1\nfree-form note line"
-    new_extra, changed = _apply_extra_edits(
-        extra, set_keys={"TEX.OTSCORE": "2"}, remove_keys=[], replace=False
-    )
+    new_extra, changed = _apply_extra_edits(extra, set_keys={"TEX.OTSCORE": "2"}, remove_keys=[], replace=False)
     assert new_extra == "Citation Key: smith2020\nTEX.OTSCORE: 2\nfree-form note line"
     assert changed is True
 
@@ -67,54 +63,41 @@ def test_apply_extra_edits_appends_new_key_at_end():
         remove_keys=[],
         replace=False,
     )
-    assert new_extra == (
-        "Citation Key: smith2020\n"
-        "tex.provenance: coursework:waldstreicher-80010"
-    )
+    assert new_extra == ("Citation Key: smith2020\ntex.provenance: coursework:waldstreicher-80010")
     assert changed is True
 
 
 def test_apply_extra_edits_removes_matching_lines():
     extra = "tex.otscore: 2\nCitation Key: smith2020\nTex.OtScore: 3"
-    new_extra, changed = _apply_extra_edits(
-        extra, set_keys={}, remove_keys=["tex.otscore"], replace=False
-    )
+    new_extra, changed = _apply_extra_edits(extra, set_keys={}, remove_keys=["tex.otscore"], replace=False)
     assert new_extra == "Citation Key: smith2020"
     assert changed is True
 
 
 def test_apply_extra_edits_no_change_when_nothing_matches():
     extra = "Citation Key: smith2020"
-    new_extra, changed = _apply_extra_edits(
-        extra, set_keys={}, remove_keys=["tex.otscore"], replace=False
-    )
+    new_extra, changed = _apply_extra_edits(extra, set_keys={}, remove_keys=["tex.otscore"], replace=False)
     assert new_extra == extra
     assert changed is False
 
 
 def test_apply_extra_edits_no_change_when_value_already_set():
     extra = "tex.otscore: 2"
-    new_extra, changed = _apply_extra_edits(
-        extra, set_keys={"tex.otscore": "2"}, remove_keys=[], replace=False
-    )
+    new_extra, changed = _apply_extra_edits(extra, set_keys={"tex.otscore": "2"}, remove_keys=[], replace=False)
     assert new_extra == extra
     assert changed is False
 
 
 def test_apply_extra_edits_replace_rebuilds_from_set_keys():
     extra = "Citation Key: smith2020\nfree-form note line"
-    new_extra, changed = _apply_extra_edits(
-        extra, set_keys={"tex.otscore": "2"}, remove_keys=[], replace=True
-    )
+    new_extra, changed = _apply_extra_edits(extra, set_keys={"tex.otscore": "2"}, remove_keys=[], replace=True)
     assert new_extra == "tex.otscore: 2"
     assert changed is True
 
 
 def test_apply_extra_edits_preserves_freeform_lines():
     extra = "this is not a key-value line\ntex.otscore: 1"
-    new_extra, changed = _apply_extra_edits(
-        extra, set_keys={"tex.otscore": "2"}, remove_keys=[], replace=False
-    )
+    new_extra, changed = _apply_extra_edits(extra, set_keys={"tex.otscore": "2"}, remove_keys=[], replace=False)
     assert new_extra == "this is not a key-value line\ntex.otscore: 2"
     assert changed is True
 
@@ -213,9 +196,7 @@ def test_batch_update_extra_accepts_json_string_set_keys(monkeypatch):
 def test_batch_update_extra_requires_item_keys(monkeypatch):
     _setup(monkeypatch, _make_items())
 
-    result = server.batch_update_extra(
-        item_keys=[], set_keys={"tex.otscore": "2"}, ctx=DummyContext()
-    )
+    result = server.batch_update_extra(item_keys=[], set_keys={"tex.otscore": "2"}, ctx=DummyContext())
 
     assert result.startswith("Error")
 
@@ -223,9 +204,7 @@ def test_batch_update_extra_requires_item_keys(monkeypatch):
 def test_batch_update_extra_requires_an_action(monkeypatch):
     _setup(monkeypatch, _make_items())
 
-    result = server.batch_update_extra(
-        item_keys=["ITEM0001"], ctx=DummyContext()
-    )
+    result = server.batch_update_extra(item_keys=["ITEM0001"], ctx=DummyContext())
 
     assert result.startswith("Error")
 

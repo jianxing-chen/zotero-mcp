@@ -207,9 +207,9 @@ class TestGetPdfUrl:
         doc = {"bibcode": "2003ApJ...589L..21B", "esources": ["EPRINT_PDF", "PUB_PDF"]}
         payload = {"response": {"docs": [doc]}}
         fake_requests = types.ModuleType("requests")
-        fake_requests.request = MagicMock(return_value=MagicMock(
-            status_code=200, json=MagicMock(return_value=payload), headers={}, text=""
-        ))
+        fake_requests.request = MagicMock(
+            return_value=MagicMock(status_code=200, json=MagicMock(return_value=payload), headers={}, text="")
+        )
         monkeypatch.setitem(sys.modules, "requests", fake_requests)
         url = A.get_pdf_url("2003ApJ...589L..21B")
         assert url is not None
@@ -220,9 +220,9 @@ class TestGetPdfUrl:
         doc = {"bibcode": "2003ApJ...589L..21B", "esources": ["EPRINT_PDF", "PUB_PDF"]}
         payload = {"response": {"docs": [doc]}}
         fake_requests = types.ModuleType("requests")
-        fake_requests.request = MagicMock(return_value=MagicMock(
-            status_code=200, json=MagicMock(return_value=payload), headers={}, text=""
-        ))
+        fake_requests.request = MagicMock(
+            return_value=MagicMock(status_code=200, json=MagicMock(return_value=payload), headers={}, text="")
+        )
         monkeypatch.setitem(sys.modules, "requests", fake_requests)
         url = A.get_pdf_url("2003ApJ...589L..21B", prefer="pub")
         assert url is not None
@@ -233,9 +233,9 @@ class TestGetPdfUrl:
         doc = {"bibcode": "2003ApJ...589L..21B", "esources": []}
         payload = {"response": {"docs": [doc]}}
         fake_requests = types.ModuleType("requests")
-        fake_requests.request = MagicMock(return_value=MagicMock(
-            status_code=200, json=MagicMock(return_value=payload), headers={}, text=""
-        ))
+        fake_requests.request = MagicMock(
+            return_value=MagicMock(status_code=200, json=MagicMock(return_value=payload), headers={}, text="")
+        )
         monkeypatch.setitem(sys.modules, "requests", fake_requests)
         url = A.get_pdf_url("2003ApJ...589L..21B")
         assert url is not None
@@ -245,9 +245,9 @@ class TestGetPdfUrl:
         monkeypatch.setenv("ADS_API_TOKEN", "fake-token")
         payload = {"response": {"docs": []}}
         fake_requests = types.ModuleType("requests")
-        fake_requests.request = MagicMock(return_value=MagicMock(
-            status_code=200, json=MagicMock(return_value=payload), headers={}, text=""
-        ))
+        fake_requests.request = MagicMock(
+            return_value=MagicMock(status_code=200, json=MagicMock(return_value=payload), headers={}, text="")
+        )
         monkeypatch.setitem(sys.modules, "requests", fake_requests)
         assert A.get_pdf_url("BADBIBCODE") is None
 

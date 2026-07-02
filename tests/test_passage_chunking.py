@@ -322,8 +322,8 @@ def test_override_does_not_affect_other_items(monkeypatch):
     s._process_item_batch(items, force_rebuild=True)
     book1 = [i for i in s.chroma_client.upserted_ids if i.startswith("BOOK0001#")]
     book2 = [i for i in s.chroma_client.upserted_ids if i.startswith("BOOK0002#")]
-    assert len(book1) > 10    # overridden
-    assert len(book2) == 10   # global cap
+    assert len(book1) > 10  # overridden
+    assert len(book2) == 10  # global cap
 
 
 def test_max_pages_override_converts_to_chunks(monkeypatch):

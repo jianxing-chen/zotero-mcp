@@ -7,7 +7,6 @@ which agents sometimes confuse with the filter shape). pyzotero's `tag=`
 parameter wants list[str] — the normalizer collapses all inputs to that.
 """
 
-
 from zotero_mcp.tools._helpers import _normalize_tag_filter
 
 
@@ -28,9 +27,7 @@ class TestNormalizeTagFilter:
     def test_list_of_dicts_with_tag_key(self):
         """The #237 primary case — LLM sends Zotero's stored-tag dict shape."""
         assert _normalize_tag_filter([{"tag": "FIXME"}]) == ["FIXME"]
-        assert _normalize_tag_filter(
-            [{"tag": "a"}, {"tag": "b"}]
-        ) == ["a", "b"]
+        assert _normalize_tag_filter([{"tag": "a"}, {"tag": "b"}]) == ["a", "b"]
 
     def test_list_of_dicts_with_name_key(self):
         """Accept {'name': 'X'} as a fallback shape some clients emit."""
@@ -50,9 +47,7 @@ class TestNormalizeTagFilter:
 
     def test_mixed_list(self):
         """Heterogeneous list: dicts and bare strings interleaved."""
-        assert _normalize_tag_filter(
-            [{"tag": "a"}, "b", {"name": "c"}]
-        ) == ["a", "b", "c"]
+        assert _normalize_tag_filter([{"tag": "a"}, "b", {"name": "c"}]) == ["a", "b", "c"]
 
     def test_empty_dict_ignored(self):
         assert _normalize_tag_filter([{}]) == []

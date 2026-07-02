@@ -40,6 +40,7 @@ def _load_zotero_mcp_config() -> dict:
 # Pagination helper
 # ---------------------------------------------------------------------------
 
+
 def _paginate(zot_method, *args, max_items=None, **kwargs):
     """Fetch all results from a pyzotero method using manual pagination.
 
@@ -89,6 +90,7 @@ CROSSREF_TYPE_MAP = {
 # Write-operation helpers
 # ---------------------------------------------------------------------------
 
+
 def apply_library_override(zot, override: dict | None) -> None:
     """Apply an active-library override to *zot* in place.
 
@@ -136,9 +138,7 @@ def fetch_trashed_collections(zot) -> list[dict]:
     failures as "no trash data available" rather than raising.
     """
     try:
-        resp = zot._retrieve_data(
-            f"/{zot.library_type}/{zot.library_id}/collections/trash"
-        )
+        resp = zot._retrieve_data(f"/{zot.library_type}/{zot.library_id}/collections/trash")
     except Exception:
         return []
     try:
@@ -232,6 +232,7 @@ def ensure_collection_membership(write_zot, item_key: str, coll_keys: list[str],
 # Input normalization
 # ---------------------------------------------------------------------------
 
+
 def _normalize_limit(limit: int | str | None, default: int = 10, max_val: int = 100) -> int:
     """Coerce *limit* to a bounded int."""
     if limit is None:
@@ -258,10 +259,7 @@ def _normalize_str_list_input(value, field_name="value"):
             if isinstance(parsed, str):
                 s = parsed.strip()
                 return [s] if s else []
-            raise ValueError(
-                f"{field_name} must be a list of strings or a string, "
-                f"got JSON {type(parsed).__name__}"
-            )
+            raise ValueError(f"{field_name} must be a list of strings or a string, got JSON {type(parsed).__name__}")
         except json.JSONDecodeError:
             pass
         parts = [p.strip() for p in raw.split(",") if p.strip()]
@@ -288,6 +286,7 @@ def _normalize_tag_filter(value):
     pyzotero's ``tag=`` parameter expects. Either path ended up rejected
     upstream of the search logic. This normalizer collapses them all.
     """
+
     def _extract(v):
         if isinstance(v, dict):
             for key in ("tag", "name", "value"):
@@ -328,10 +327,7 @@ def _resolve_collection_names(zot, names, ctx=None):
     results = []
     for name in names:
         name_lower = name.lower()
-        matches = [
-            c["key"] for c in all_collections
-            if c.get("data", {}).get("name", "").lower() == name_lower
-        ]
+        matches = [c["key"] for c in all_collections if c.get("data", {}).get("name", "").lower() == name_lower]
         if not matches:
             raise ValueError(f"No collection found matching name '{name}'")
         if len(matches) > 1 and ctx is not None:
@@ -420,16 +416,13 @@ def resolve_collection_specs(
             raise ValueError(f"Collection spec '{spec}' is empty.")
 
         matches = [
-            key for key, segs in paths.items()
-            if len(segs) >= len(wanted)
-            and [s.lower() for s in segs[-len(wanted):]] == wanted
+            key
+            for key, segs in paths.items()
+            if len(segs) >= len(wanted) and [s.lower() for s in segs[-len(wanted) :]] == wanted
         ]
 
         if len(matches) > 1:
-            candidates = "; ".join(
-                f"'{'/'.join(paths[k])}' ({k})"
-                for k in sorted(matches, key=lambda k: paths[k])
-            )
+            candidates = "; ".join(f"'{'/'.join(paths[k])}' ({k})" for k in sorted(matches, key=lambda k: paths[k]))
             raise ValueError(
                 f"Collection spec '{spec}' is ambiguous — it matches: "
                 f"{candidates}. Disambiguate with a longer path or the "
@@ -441,13 +434,8 @@ def resolve_collection_specs(
 
         if create_missing:
             if write_zot is None:
-                raise ValueError(
-                    f"Collection '{spec}' not found and no writable client "
-                    "is available to create it."
-                )
-            resolved.append(
-                _create_collection_path(write_zot, paths, spec, ctx=ctx)
-            )
+                raise ValueError(f"Collection '{spec}' not found and no writable client is available to create it.")
+            resolved.append(_create_collection_path(write_zot, paths, spec, ctx=ctx))
             continue
 
         raise ValueError(_collection_not_found_message(zot, spec, paths))
@@ -471,16 +459,14 @@ def _create_collection_path(write_zot, paths, spec, ctx=None) -> str:
     for i in range(len(names) - 1, 0, -1):
         prefix = [s.lower() for s in names[:i]]
         matches = [
-            key for key, segs in paths.items()
-            if len(segs) >= len(prefix)
-            and [s.lower() for s in segs[-len(prefix):]] == prefix
+            key
+            for key, segs in paths.items()
+            if len(segs) >= len(prefix) and [s.lower() for s in segs[-len(prefix) :]] == prefix
         ]
         if len(matches) > 1:
             candidates = "; ".join(f"'{'/'.join(paths[k])}' ({k})" for k in matches)
             raise ValueError(
-                f"Cannot create '{spec}': parent path "
-                f"'{'/'.join(names[:i])}' is ambiguous — it matches: "
-                f"{candidates}."
+                f"Cannot create '{spec}': parent path '{'/'.join(names[:i])}' is ambiguous — it matches: {candidates}."
             )
         if matches:
             parent_key = matches[0]
@@ -500,8 +486,7 @@ def _create_collection_path(write_zot, paths, spec, ctx=None) -> str:
     return parent_key
 
 
-def find_existing_items(zot, *, doi=None, arxiv_id=None, isbn=None, url=None,
-                        bibcode=None, ctx=None) -> list[dict]:
+def find_existing_items(zot, *, doi=None, arxiv_id=None, isbn=None, url=None, bibcode=None, ctx=None) -> list[dict]:
     """Find non-attachment items already in the library by a normalized id.
 
     Exactly one of doi / arxiv_id / isbn / url / bibcode should be given
@@ -522,20 +507,24 @@ def find_existing_items(zot, *, doi=None, arxiv_id=None, isbn=None, url=None,
     """
     if doi:
         query = doi
+
         def _matches(data):
             return _normalize_doi(data.get("DOI") or "") == doi
     elif arxiv_id:
         query = arxiv_id
+
         def _matches(data):
             if _normalize_arxiv_id(data.get("url") or "") == arxiv_id:
                 return True
             return f"arxiv:{arxiv_id}".lower() in (data.get("extra") or "").lower()
     elif bibcode:
         query = bibcode
+
         def _matches(data):
             return f"bibcode: {bibcode}".lower() in (data.get("extra") or "").lower()
     elif isbn:
         query = isbn
+
         def _matches(data):
             # Zotero's ISBN field may hold several space-separated values,
             # in 10- or 13-digit form; compare each normalized to ISBN-13.
@@ -546,15 +535,14 @@ def find_existing_items(zot, *, doi=None, arxiv_id=None, isbn=None, url=None,
             return False
     elif url:
         query = url
+
         def _matches(data):
             return (data.get("url") or "").rstrip("/") == url.rstrip("/")
     else:
         return []
 
     try:
-        candidates = zot.items(
-            q=query, qmode="everything", itemType="-attachment", limit=50
-        )
+        candidates = zot.items(q=query, qmode="everything", itemType="-attachment", limit=50)
     except Exception as e:
         if ctx is not None:
             ctx.warning(f"Existing-item search failed (treating as no match): {e}")
@@ -582,26 +570,14 @@ def _collection_not_found_message(zot, spec, paths) -> str:
                 f"Collection '{spec}' is in the Zotero Trash. Restore it in "
                 "Zotero (or use another collection) before filing items into it."
             )
-    msg = (
-        f"Collection '{spec}' not found in the active library "
-        "(tried key, name, and path matching)."
-    )
+    msg = f"Collection '{spec}' not found in the active library (tried key, name, and path matching)."
     words = [w for w in spec.lower().replace("/", " ").split() if w]
-    suggestions = [
-        key for key, segs in paths.items()
-        if all(w in "/".join(segs).lower() for w in words)
-    ]
+    suggestions = [key for key, segs in paths.items() if all(w in "/".join(segs).lower() for w in words)]
     if suggestions:
-        shown = ", ".join(
-            f"'{'/'.join(paths[k])}' ({k})"
-            for k in sorted(suggestions, key=lambda k: paths[k])[:5]
-        )
+        shown = ", ".join(f"'{'/'.join(paths[k])}' ({k})" for k in sorted(suggestions, key=lambda k: paths[k])[:5])
         msg += f" Close matches: {shown}."
     else:
-        msg += (
-            " Use zotero_search_collections (or `zotero-cli collections "
-            "search`) to list available collections."
-        )
+        msg += " Use zotero_search_collections (or `zotero-cli collections search`) to list available collections."
     return msg
 
 
@@ -639,8 +615,7 @@ def _normalize_isbn(raw):
     if s.lower().startswith("isbn-") or s.lower().startswith("isbn "):
         s = s[5:].strip()
     if s.lower().startswith("http://") or s.lower().startswith("https://"):
-        m = re.search(r"/(97[89][\- ]?\d[\- ]?\d{3}[\- ]?\d{5}[\- ]?\d|\d{9}[\dX])",
-                      s, flags=re.IGNORECASE)
+        m = re.search(r"/(97[89][\- ]?\d[\- ]?\d{3}[\- ]?\d{5}[\- ]?\d|\d{9}[\dX])", s, flags=re.IGNORECASE)
         if not m:
             return None
         s = m.group(1)
@@ -691,7 +666,8 @@ def _normalize_arxiv_id(raw):
     if s.lower().startswith("http://") or s.lower().startswith("https://"):
         m = re.search(
             r"arxiv\.org/(?:abs|pdf)/([0-9]{4}\.[0-9]{4,5}(?:v\d+)?|[a-z\-]+/\d{7}(?:v\d+)?)(?:\.pdf)?",
-            s, flags=re.IGNORECASE,
+            s,
+            flags=re.IGNORECASE,
         )
         if not m:
             return None
@@ -943,8 +919,7 @@ def _try_arxiv_from_crossref(crossref_metadata, ctx):
         return None
     try:
         relations = crossref_metadata.get("relation", {})
-        for rel_type in ("has-preprint", "is-preprint-of", "is-identical-to",
-                         "is-version-of", "has-version"):
+        for rel_type in ("has-preprint", "is-preprint-of", "is-identical-to", "is-version-of", "has-version"):
             for rel in relations.get(rel_type, []):
                 rel_id = rel.get("id", "")
                 if rel.get("id-type") == "arxiv" and rel_id:
@@ -1004,8 +979,7 @@ def _try_pmc(doi, ctx):
     try:
         conv_resp = requests.get(
             "https://pmc.ncbi.nlm.nih.gov/tools/idconv/api/v1/articles/",
-            params={"ids": doi, "format": "json", "tool": "zotero-mcp",
-                    "email": "zotero-mcp@users.noreply.github.com"},
+            params={"ids": doi, "format": "json", "tool": "zotero-mcp", "email": "zotero-mcp@users.noreply.github.com"},
             timeout=10,
         )
         if conv_resp.status_code != 200:
@@ -1027,8 +1001,7 @@ def _try_pmc(doi, ctx):
         return None
 
 
-def _try_attach_oa_pdf(write_zot, item_key, doi, ctx, crossref_metadata=None,
-                       attach_mode="auto"):
+def _try_attach_oa_pdf(write_zot, item_key, doi, ctx, crossref_metadata=None, attach_mode="auto"):
     """Attempt to find and attach an open-access PDF for a DOI."""
     sources = [
         ("Unpaywall", lambda: _try_unpaywall(doi, ctx)),
@@ -1050,9 +1023,7 @@ def _try_attach_oa_pdf(write_zot, item_key, doi, ctx, crossref_metadata=None,
                     if _attach_pdf_linked_url(write_zot, pdf_url, item_key, ctx):
                         return f"PDF linked (source: {source_name})"
                 else:  # "auto" or "import_file" — try download only
-                    webdav_suffix = _download_and_attach_pdf(
-                        write_zot, item_key, pdf_url, doi, ctx
-                    )
+                    webdav_suffix = _download_and_attach_pdf(write_zot, item_key, pdf_url, doi, ctx)
                     if webdav_suffix is not None:
                         return f"PDF attached (source: {source_name}){webdav_suffix}"
 
@@ -1075,6 +1046,7 @@ def _try_attach_oa_pdf(write_zot, item_key, doi, ctx, crossref_metadata=None,
 # ---------------------------------------------------------------------------
 # Citation key helpers
 # ---------------------------------------------------------------------------
+
 
 def _extra_has_citekey(extra: str, citekey: str) -> bool:
     """Check if the Extra field contains the given citation key."""
@@ -1120,6 +1092,7 @@ def _format_bbt_result(bbt_item: dict, citekey: str) -> str:
 # ---------------------------------------------------------------------------
 # Token estimation helpers
 # ---------------------------------------------------------------------------
+
 
 def _estimate_tokens(text: str) -> int:
     """Rough token estimate at ~4 characters per token."""

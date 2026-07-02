@@ -34,9 +34,7 @@ def _is_uv_tool_installation() -> bool:
             text=True,
             timeout=10,
         )
-        return result.returncode == 0 and (
-            "zotero-mcp-server" in result.stdout or "zotero-mcp" in result.stdout
-        )
+        return result.returncode == 0 and ("zotero-mcp-server" in result.stdout or "zotero-mcp" in result.stdout)
     except Exception:
         return False
 
@@ -102,12 +100,7 @@ def is_pipx_installation() -> bool:
             return False
 
         # Try to get pipx list
-        result = subprocess.run(
-            ["pipx", "list"],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
+        result = subprocess.run(["pipx", "list"], capture_output=True, text=True, timeout=10)
 
         if result.returncode == 0:
             return "zotero-mcp-server" in result.stdout or "zotero-mcp" in result.stdout
@@ -122,15 +115,13 @@ def get_current_version() -> str | None:
     """Get the currently installed version of zotero-mcp."""
     try:
         from zotero_mcp._version import __version__
+
         return __version__
     except ImportError:
         # Fallback to pip show
         try:
             result = subprocess.run(
-                [sys.executable, "-m", "pip", "show", "zotero-mcp-server"],
-                capture_output=True,
-                text=True,
-                timeout=10
+                [sys.executable, "-m", "pip", "show", "zotero-mcp-server"], capture_output=True, text=True, timeout=10
             )
 
             if result.returncode == 0:
@@ -151,10 +142,7 @@ def get_latest_version() -> str | None:
 
     # Try PyPI first
     try:
-        response = requests.get(
-            "https://pypi.org/pypi/zotero-mcp-server/json",
-            timeout=10
-        )
+        response = requests.get("https://pypi.org/pypi/zotero-mcp-server/json", timeout=10)
         if response.status_code == 200:
             data = response.json()
             return data.get("info", {}).get("version")
@@ -163,10 +151,7 @@ def get_latest_version() -> str | None:
 
     # Fallback to GitHub releases
     try:
-        response = requests.get(
-            "https://api.github.com/repos/54yyyu/zotero-mcp/releases/latest",
-            timeout=10
-        )
+        response = requests.get("https://api.github.com/repos/54yyyu/zotero-mcp/releases/latest", timeout=10)
         if response.status_code == 200:
             data = response.json()
             tag_name = data.get("tag_name", "")
@@ -322,10 +307,7 @@ def update_via_method(method: str, force: bool = False) -> tuple[bool, str]:
             # First try to upgrade, if that fails, reinstall
             try:
                 result = subprocess.run(
-                    ["pipx", "upgrade", "zotero-mcp-server"],
-                    capture_output=True,
-                    text=True,
-                    timeout=300
+                    ["pipx", "upgrade", "zotero-mcp-server"], capture_output=True, text=True, timeout=300
                 )
                 if result.returncode == 0:
                     return True, "Updated successfully via pipx"
@@ -337,20 +319,11 @@ def update_via_method(method: str, force: bool = False) -> tuple[bool, str]:
         else:
             return False, f"Unknown installation method: {method}"
 
-        if (
-            force
-            and method != "pipx"
-            and cmd[:3] != ["uv", "tool", "install"]
-        ):
+        if force and method != "pipx" and cmd[:3] != ["uv", "tool", "install"]:
             cmd.append("--force-reinstall")
 
         print(f"Running: {' '.join(cmd)}")
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=300
-        )
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
 
         if result.returncode == 0:
             return True, f"Successfully updated via {method}"
@@ -378,10 +351,7 @@ def verify_installation() -> tuple[bool, str]:
 
         # Try to run a basic command
         result = subprocess.run(
-            [sys.executable, "-m", "zotero_mcp.cli", "version"],
-            capture_output=True,
-            text=True,
-            timeout=10
+            [sys.executable, "-m", "zotero_mcp.cli", "version"], capture_output=True, text=True, timeout=10
         )
 
         if result.returncode == 0:
@@ -393,9 +363,7 @@ def verify_installation() -> tuple[bool, str]:
         return False, f"Installation verification error: {str(e)}"
 
 
-def update_zotero_mcp(check_only: bool = False,
-                     force: bool = False,
-                     method: str | None = None) -> dict[str, Any]:
+def update_zotero_mcp(check_only: bool = False, force: bool = False, method: str | None = None) -> dict[str, Any]:
     """
     Main update function for zotero-mcp.
 
@@ -413,7 +381,7 @@ def update_zotero_mcp(check_only: bool = False,
         "latest_version": None,
         "method": None,
         "message": "",
-        "needs_update": False
+        "needs_update": False,
     }
 
     # Get current version

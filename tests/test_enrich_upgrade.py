@@ -19,6 +19,7 @@ from zotero_mcp.tools.write import (
 # ads_client.doc_to_csl_json — bibstem + pubdate extraction
 # --------------------------------------------------------------------------- #
 
+
 class TestDocToCslJsonBibstemPubdate:
     def test_bibstem_mapped_to_container_title_short(self):
         doc = {
@@ -70,6 +71,7 @@ class TestDocToCslJsonBibstemPubdate:
 # --------------------------------------------------------------------------- #
 # citation_import.csl_json_to_zotero — journalAbbreviation mapping
 # --------------------------------------------------------------------------- #
+
 
 class TestCslJournalAbbreviation:
     # Realistic journalArticle template with all writable fields.
@@ -127,6 +129,7 @@ class TestCslJournalAbbreviation:
 # Helper functions
 # --------------------------------------------------------------------------- #
 
+
 class TestParseBibcodeFromExtra:
     def test_extracts_bibcode(self):
         extra = "arXiv:2401.12345\nbibcode: 2024ApJ...961L..10X"
@@ -177,6 +180,7 @@ class TestTitleSimilarity:
 # --------------------------------------------------------------------------- #
 # _ads_doc_to_enrich_fields
 # --------------------------------------------------------------------------- #
+
 
 class TestAdsDocToEnrichFields:
     def test_extracts_date_and_abbreviation(self):
@@ -234,6 +238,7 @@ class TestAdsDocToEnrichFields:
 # _enrich_single_item
 # --------------------------------------------------------------------------- #
 
+
 class TestEnrichSingleItem:
     def test_skips_when_fields_already_present_and_bibcode_exists(self):
         """All wanted fields present AND bibcode already in Extra → skip."""
@@ -271,15 +276,16 @@ class TestEnrichSingleItem:
         with patch("zotero_mcp.tools.write._ads_client") as mock_ads:
             mock_ads._FULL_FIELDS = ads_client._FULL_FIELDS
             mock_ads.fetch_record.return_value = None
-            mock_ads.search.return_value = [{
-                "bibcode": "2013ApJ...762...36X",
-                "pubdate": "2013-01-10",
-                "bibstem": "ApJ",
-                "year": "2013",
-                "pub": "The Astrophysical Journal",
-            }]
-            result = _enrich_single_item(write_zot, "ABC12345",
-                                         {"date", "journal_abbreviation"}, force=False)
+            mock_ads.search.return_value = [
+                {
+                    "bibcode": "2013ApJ...762...36X",
+                    "pubdate": "2013-01-10",
+                    "bibstem": "ApJ",
+                    "year": "2013",
+                    "pub": "The Astrophysical Journal",
+                }
+            ]
+            result = _enrich_single_item(write_zot, "ABC12345", {"date", "journal_abbreviation"}, force=False)
         assert result["status"] == "enriched"
         assert "date" in result["filled"]
         assert "journal_abbreviation" in result["filled"]
@@ -318,17 +324,20 @@ class TestEnrichSingleItem:
         write_zot.item.return_value = {
             "key": "GAP10001",
             "data": {
-                "key": "GAP10001", "itemType": "journalArticle",
-                "title": "Test", "date": "2023", "journalAbbreviation": "ApJ",
-                "DOI": "10.1088/x", "extra": "",
+                "key": "GAP10001",
+                "itemType": "journalArticle",
+                "title": "Test",
+                "date": "2023",
+                "journalAbbreviation": "ApJ",
+                "DOI": "10.1088/x",
+                "extra": "",
             },
         }
         with patch("zotero_mcp.tools.write._ads_client") as mock_ads:
             mock_ads._FULL_FIELDS = ads_client._FULL_FIELDS
             mock_ads.fetch_record.return_value = None
             mock_ads.search.return_value = [{"bibcode": "2023ApJ...945L..15A"}]
-            result = _enrich_single_item(write_zot, "GAP10001",
-                                         {"date", "journal_abbreviation"}, force=False)
+            result = _enrich_single_item(write_zot, "GAP10001", {"date", "journal_abbreviation"}, force=False)
         assert result["status"] == "enriched"
         assert "bibcode" in result["filled"]
         patched = write_zot.update_item.call_args[0][0]
@@ -340,19 +349,24 @@ class TestEnrichSingleItem:
         write_zot.item.return_value = {
             "key": "GAP10002",
             "data": {
-                "key": "GAP10002", "itemType": "journalArticle",
-                "title": "Test", "date": "", "journalAbbreviation": "",
-                "DOI": "10.1088/x", "extra": "bibcode: 2023ApJ...945L..15A",
+                "key": "GAP10002",
+                "itemType": "journalArticle",
+                "title": "Test",
+                "date": "",
+                "journalAbbreviation": "",
+                "DOI": "10.1088/x",
+                "extra": "bibcode: 2023ApJ...945L..15A",
             },
         }
         with patch("zotero_mcp.tools.write._ads_client") as mock_ads:
             mock_ads._FULL_FIELDS = ads_client._FULL_FIELDS
             mock_ads.fetch_record.return_value = {
-                "bibcode": "2023ApJ...945L..15A", "pubdate": "2023-01",
-                "bibstem": "ApJ", "year": "2023",
+                "bibcode": "2023ApJ...945L..15A",
+                "pubdate": "2023-01",
+                "bibstem": "ApJ",
+                "year": "2023",
             }
-            result = _enrich_single_item(write_zot, "GAP10002",
-                                         {"date", "journal_abbreviation"}, force=False)
+            result = _enrich_single_item(write_zot, "GAP10002", {"date", "journal_abbreviation"}, force=False)
         # bibcode was already present → only date/journalAbbr filled
         assert "bibcode" not in result["filled"]
         patched = write_zot.update_item.call_args[0][0]
@@ -365,17 +379,20 @@ class TestEnrichSingleItem:
         write_zot.item.return_value = {
             "key": "GAP10003",
             "data": {
-                "key": "GAP10003", "itemType": "journalArticle",
-                "title": "Test", "date": "2023", "journalAbbreviation": "ApJ",
-                "DOI": "10.1088/x", "extra": "arXiv:2401.12345 [astro-ph]",
+                "key": "GAP10003",
+                "itemType": "journalArticle",
+                "title": "Test",
+                "date": "2023",
+                "journalAbbreviation": "ApJ",
+                "DOI": "10.1088/x",
+                "extra": "arXiv:2401.12345 [astro-ph]",
             },
         }
         with patch("zotero_mcp.tools.write._ads_client") as mock_ads:
             mock_ads._FULL_FIELDS = ads_client._FULL_FIELDS
             mock_ads.fetch_record.return_value = None
             mock_ads.search.return_value = [{"bibcode": "2024ApJ...961L..10X"}]
-            result = _enrich_single_item(write_zot, "GAP10003",
-                                         {"date", "journal_abbreviation"}, force=False)
+            result = _enrich_single_item(write_zot, "GAP10003", {"date", "journal_abbreviation"}, force=False)
         assert "bibcode" in result["filled"]
         patched = write_zot.update_item.call_args[0][0]
         assert "arXiv:2401.12345" in patched["extra"]
@@ -387,17 +404,21 @@ class TestEnrichSingleItem:
         write_zot.item.return_value = {
             "key": "GAP10004",
             "data": {
-                "key": "GAP10004", "itemType": "journalArticle",
-                "title": "Test", "date": "2023", "journalAbbreviation": "ApJ",
-                "DOI": "10.1088/x", "url": "", "extra": "",
+                "key": "GAP10004",
+                "itemType": "journalArticle",
+                "title": "Test",
+                "date": "2023",
+                "journalAbbreviation": "ApJ",
+                "DOI": "10.1088/x",
+                "url": "",
+                "extra": "",
             },
         }
         with patch("zotero_mcp.tools.write._ads_client") as mock_ads:
             mock_ads._FULL_FIELDS = ads_client._FULL_FIELDS
             mock_ads.fetch_record.return_value = None
             mock_ads.search.return_value = [{"bibcode": "2024ApJ...961L..10X"}]
-            result = _enrich_single_item(write_zot, "GAP10004",
-                                         {"date", "journal_abbreviation"}, force=False)
+            result = _enrich_single_item(write_zot, "GAP10004", {"date", "journal_abbreviation"}, force=False)
         assert "url" in result["filled"]
         patched = write_zot.update_item.call_args[0][0]
         assert patched["url"] == "https://ui.adsabs.harvard.edu/abs/2024ApJ...961L..10X/abstract"
@@ -408,8 +429,11 @@ class TestEnrichSingleItem:
         write_zot.item.return_value = {
             "key": "GAP10005",
             "data": {
-                "key": "GAP10005", "itemType": "journalArticle",
-                "title": "Test", "date": "2023", "journalAbbreviation": "ApJ",
+                "key": "GAP10005",
+                "itemType": "journalArticle",
+                "title": "Test",
+                "date": "2023",
+                "journalAbbreviation": "ApJ",
                 "DOI": "10.1088/x",
                 "url": "https://arxiv.org/abs/2401.12345",
                 "extra": "",
@@ -419,8 +443,7 @@ class TestEnrichSingleItem:
             mock_ads._FULL_FIELDS = ads_client._FULL_FIELDS
             mock_ads.fetch_record.return_value = None
             mock_ads.search.return_value = [{"bibcode": "2024ApJ...961L..10X"}]
-            result = _enrich_single_item(write_zot, "GAP10005",
-                                         {"date", "journal_abbreviation"}, force=False)
+            result = _enrich_single_item(write_zot, "GAP10005", {"date", "journal_abbreviation"}, force=False)
         # bibcode still written, but url unchanged
         assert "bibcode" in result["filled"]
         assert "url" not in result["filled"]
@@ -436,23 +459,29 @@ class TestEnrichSingleItem:
         write_zot.item.return_value = {
             "key": "GAP20001",
             "data": {
-                "key": "GAP20001", "itemType": "journalArticle",
+                "key": "GAP20001",
+                "itemType": "journalArticle",
                 "title": "Spectral analysis of \u03c3 Ori and $\\lambda$ Orionis",
-                "date": "", "journalAbbreviation": "",
-                "DOI": "", "extra": "",
+                "date": "",
+                "journalAbbreviation": "",
+                "DOI": "",
+                "extra": "",
             },
         }
         with patch("zotero_mcp.tools.write._ads_client") as mock_ads:
             mock_ads._FULL_FIELDS = ads_client._FULL_FIELDS
             mock_ads.fetch_record.return_value = None
             # The title search should be called with cleaned words.
-            mock_ads.search.return_value = [{
-                "bibcode": "2018A&A...618A..50S",
-                "title": ["Spectral analysis of sigma Ori and lambda Orionis"],
-                "pubdate": "2018-11", "bibstem": "A&A", "year": "2018",
-            }]
-            result = _enrich_single_item(write_zot, "GAP20001",
-                                         {"date", "journal_abbreviation"}, force=False)
+            mock_ads.search.return_value = [
+                {
+                    "bibcode": "2018A&A...618A..50S",
+                    "title": ["Spectral analysis of sigma Ori and lambda Orionis"],
+                    "pubdate": "2018-11",
+                    "bibstem": "A&A",
+                    "year": "2018",
+                }
+            ]
+            result = _enrich_single_item(write_zot, "GAP20001", {"date", "journal_abbreviation"}, force=False)
         assert result["status"] == "enriched"
         # Verify the ADS search was called with a title: query
         search_call = mock_ads.search.call_args
@@ -466,16 +495,18 @@ class TestEnrichSingleItem:
         write_zot.item.return_value = {
             "key": "GAP20002",
             "data": {
-                "key": "GAP20002", "itemType": "journalArticle",
+                "key": "GAP20002",
+                "itemType": "journalArticle",
                 "title": "Dark Matter",
-                "date": "", "journalAbbreviation": "",
-                "DOI": "", "extra": "",
+                "date": "",
+                "journalAbbreviation": "",
+                "DOI": "",
+                "extra": "",
             },
         }
         with patch("zotero_mcp.tools.write._ads_client") as mock_ads:
             mock_ads._FULL_FIELDS = ads_client._FULL_FIELDS
-            result = _enrich_single_item(write_zot, "GAP20002",
-                                         {"date", "journal_abbreviation"}, force=False)
+            result = _enrich_single_item(write_zot, "GAP20002", {"date", "journal_abbreviation"}, force=False)
         # "Dark Matter" → 2 words → _find_by_title returns None before calling ADS
         assert result["status"] == "not_found"
         # ADS search was NOT called for title (no identifier path either)
@@ -487,21 +518,27 @@ class TestEnrichSingleItem:
         write_zot.item.return_value = {
             "key": "GAP20003",
             "data": {
-                "key": "GAP20003", "itemType": "journalArticle",
+                "key": "GAP20003",
+                "itemType": "journalArticle",
                 "title": "Variable stars in omega Cen survey observations",
-                "date": "", "journalAbbreviation": "",
-                "DOI": "", "extra": "",
+                "date": "",
+                "journalAbbreviation": "",
+                "DOI": "",
+                "extra": "",
             },
         }
         with patch("zotero_mcp.tools.write._ads_client") as mock_ads:
             mock_ads._FULL_FIELDS = ads_client._FULL_FIELDS
-            mock_ads.search.return_value = [{
-                "bibcode": "2020ApJ...890...50N",
-                "title": ["Variable stars in omega Cen survey observations"],
-                "pubdate": "2020-02", "bibstem": "ApJ", "year": "2020",
-            }]
-            result = _enrich_single_item(write_zot, "GAP20003",
-                                         {"date", "journal_abbreviation"}, force=False)
+            mock_ads.search.return_value = [
+                {
+                    "bibcode": "2020ApJ...890...50N",
+                    "title": ["Variable stars in omega Cen survey observations"],
+                    "pubdate": "2020-02",
+                    "bibstem": "ApJ",
+                    "year": "2020",
+                }
+            ]
+            result = _enrich_single_item(write_zot, "GAP20003", {"date", "journal_abbreviation"}, force=False)
         assert result["status"] == "enriched"
         assert "date" in result["filled"]
         assert "bibcode" in result["filled"]
@@ -510,6 +547,7 @@ class TestEnrichSingleItem:
 # --------------------------------------------------------------------------- #
 # _clean_title_for_ads — Greek letters + LaTeX normalization
 # --------------------------------------------------------------------------- #
+
 
 class TestCleanTitleForAds:
     def test_greek_unicode_transliterated(self):
@@ -555,6 +593,7 @@ class TestCleanTitleForAds:
 # --------------------------------------------------------------------------- #
 # _find_published_version
 # --------------------------------------------------------------------------- #
+
 
 class TestFindPublishedVersion:
     def test_returns_none_for_already_article(self):
@@ -630,6 +669,7 @@ class TestFindPublishedVersion:
 # --------------------------------------------------------------------------- #
 # _upgrade_single_preprint
 # --------------------------------------------------------------------------- #
+
 
 class TestUpgradeSinglePreprint:
     def test_skips_non_preprint(self):

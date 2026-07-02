@@ -55,11 +55,16 @@ def _maybe_fire_presearch_sync(search) -> None:
 
 
 @with_zotero_api_lock
-def _search_with_variants(zot, query: str, qmode: str, limit: int,
-                          item_type: str = "-attachment",
-                          tag: list[str] | None = None,
-                          cascade_start: float | None = None,
-                          cascade_timeout: float | None = None) -> list:
+def _search_with_variants(
+    zot,
+    query: str,
+    qmode: str,
+    limit: int,
+    item_type: str = "-attachment",
+    tag: list[str] | None = None,
+    cascade_start: float | None = None,
+    cascade_timeout: float | None = None,
+) -> list:
     """Search using multiple query variants, deduplicate by key.
 
     Generates ASCII, dash-to-space, and umlaut-expanded variants of the query
@@ -84,7 +89,10 @@ def _search_with_variants(zot, query: str, qmode: str, limit: int,
                 break
 
         params: dict = {
-            "q": variant, "qmode": qmode, "limit": limit, "itemType": item_type,
+            "q": variant,
+            "qmode": qmode,
+            "limit": limit,
+            "itemType": item_type,
         }
         if tag:
             params["tag"] = tag
@@ -129,7 +137,7 @@ def _search_with_variants(zot, query: str, qmode: str, limit: int,
         "the fallback cascade). "
         "Example: zotero_search_items(query='Cladder-Micus') or "
         "zotero_search_items(query='Brewer 2011', limit=5)."
-    )
+    ),
 )
 @with_zotero_api_lock
 def search_items(
@@ -140,7 +148,7 @@ def search_items(
     tag: list[str] | list[dict] | str | None = None,
     collection_key: str | None = None,
     *,
-    ctx: Context
+    ctx: Context,
 ) -> str:
     """
     Search for items in your Zotero library.
@@ -187,19 +195,31 @@ def search_items(
             if not _col or _col.get("key") != collection_key:
                 return f"Collection not found: '{collection_key}'. Use zotero_get_collections or zotero_search_collections to find valid collection keys."
             items = _helpers._paginate(
-                zot.collection_items, collection_key,
-                q=query, qmode=qmode, itemType=item_type,
-                max_items=limit, **({"tag": tag} if tag else {}),
+                zot.collection_items,
+                collection_key,
+                q=query,
+                qmode=qmode,
+                itemType=item_type,
+                max_items=limit,
+                **({"tag": tag} if tag else {}),
             )
             fallback_strategy = None
         else:
             # --- Initial search with variant generation ---
             _cascade_start = _time.monotonic()
-            items = _search_with_variants(zot, query, qmode, limit,
-                                          item_type=item_type, tag=tag,
-                                          cascade_start=_cascade_start,
-                                          cascade_timeout=CASCADE_TIMEOUT)
-            _search_logger.debug(f"[CASCADE] initial: {len(items)} results in {_time.monotonic() - _cascade_start:.2f}s")
+            items = _search_with_variants(
+                zot,
+                query,
+                qmode,
+                limit,
+                item_type=item_type,
+                tag=tag,
+                cascade_start=_cascade_start,
+                cascade_timeout=CASCADE_TIMEOUT,
+            )
+            _search_logger.debug(
+                f"[CASCADE] initial: {len(items)} results in {_time.monotonic() - _cascade_start:.2f}s"
+            )
 
             # --- Fallback cascade (only if initial search returned nothing) ---
             fallback_strategy = None
@@ -220,9 +240,9 @@ def search_items(
                 # Strategy 1: Simplify to author + year (P2 fix)
                 if not _check_cascade_timeout() and not items and len(words) > 2:
                     # Extract year-like token (4 digits between 1800-2099)
-                    year_token = next((w for w in words if re.match(r'^(1[89]\d{2}|20\d{2})$', w)), None)
+                    year_token = next((w for w in words if re.match(r"^(1[89]\d{2}|20\d{2})$", w)), None)
                     # Extract author (first non-numeric word)
-                    author_token = next((w for w in words if not re.match(r'^\d+$', w)), None)
+                    author_token = next((w for w in words if not re.match(r"^\d+$", w)), None)
 
                     if author_token and year_token:
                         simple_query = f"{author_token} {year_token}"
@@ -233,24 +253,40 @@ def search_items(
 
                     t0 = _time.monotonic()
                     ctx.info(f"Retry with simplified query: '{simple_query}'")
-                    items = _search_with_variants(zot, simple_query, qmode, limit,
-                                                  item_type=item_type, tag=tag,
-                                                  cascade_start=_cascade_start,
-                                                  cascade_timeout=CASCADE_TIMEOUT)
-                    _search_logger.debug(f"[CASCADE] strategy 1 (author+year): {len(items)} results in {_time.monotonic() - t0:.2f}s")
+                    items = _search_with_variants(
+                        zot,
+                        simple_query,
+                        qmode,
+                        limit,
+                        item_type=item_type,
+                        tag=tag,
+                        cascade_start=_cascade_start,
+                        cascade_timeout=CASCADE_TIMEOUT,
+                    )
+                    _search_logger.debug(
+                        f"[CASCADE] strategy 1 (author+year): {len(items)} results in {_time.monotonic() - t0:.2f}s"
+                    )
                     if items:
                         fallback_strategy = f"simplified to '{simple_query}'"
 
                 # Strategy 2: Author surname only (first non-numeric word)
                 if not _check_cascade_timeout() and not items and len(words) >= 2:
-                    author_only = next((w for w in words if not re.match(r'^\d+$', w)), words[0])
+                    author_only = next((w for w in words if not re.match(r"^\d+$", w)), words[0])
                     t0 = _time.monotonic()
                     ctx.info(f"Retry with author only: '{author_only}'")
-                    items = _search_with_variants(zot, author_only, qmode, limit,
-                                                  item_type=item_type, tag=tag,
-                                                  cascade_start=_cascade_start,
-                                                  cascade_timeout=CASCADE_TIMEOUT)
-                    _search_logger.debug(f"[CASCADE] strategy 2 (author only): {len(items)} results in {_time.monotonic() - t0:.2f}s")
+                    items = _search_with_variants(
+                        zot,
+                        author_only,
+                        qmode,
+                        limit,
+                        item_type=item_type,
+                        tag=tag,
+                        cascade_start=_cascade_start,
+                        cascade_timeout=CASCADE_TIMEOUT,
+                    )
+                    _search_logger.debug(
+                        f"[CASCADE] strategy 2 (author only): {len(items)} results in {_time.monotonic() - t0:.2f}s"
+                    )
                     if items:
                         fallback_strategy = f"author only '{author_only}'"
 
@@ -259,11 +295,19 @@ def search_items(
                 if not _check_cascade_timeout() and not items and qmode != "everything":
                     t0 = _time.monotonic()
                     ctx.info(f"Retry with qmode='everything': '{query}'")
-                    items = _search_with_variants(zot, query, "everything", limit,
-                                                  item_type=item_type, tag=tag,
-                                                  cascade_start=_cascade_start,
-                                                  cascade_timeout=CASCADE_TIMEOUT)
-                    _search_logger.debug(f"[CASCADE] strategy 3 (everything): {len(items)} results in {_time.monotonic() - t0:.2f}s")
+                    items = _search_with_variants(
+                        zot,
+                        query,
+                        "everything",
+                        limit,
+                        item_type=item_type,
+                        tag=tag,
+                        cascade_start=_cascade_start,
+                        cascade_timeout=CASCADE_TIMEOUT,
+                    )
+                    _search_logger.debug(
+                        f"[CASCADE] strategy 3 (everything): {len(items)} results in {_time.monotonic() - t0:.2f}s"
+                    )
                     if items:
                         fallback_strategy = "full-text search"
 
@@ -271,6 +315,7 @@ def search_items(
                 if not _check_cascade_timeout() and not items:
                     try:
                         from zotero_mcp.semantic_search import create_semantic_search
+
                         config_path = Path.home() / ".config" / "zotero-mcp" / "config.json"
                         if config_path.exists():
                             ctx.info(f"Retry with semantic search: '{query}'")
@@ -296,7 +341,9 @@ def search_items(
                         _search_logger.debug(f"[CASCADE] semantic failed: {e}")
                         ctx.info(f"Semantic search fallback failed: {e}")
 
-            _search_logger.debug(f"[CASCADE] total: {_time.monotonic() - _cascade_start:.2f}s, fallback={fallback_strategy}")
+            _search_logger.debug(
+                f"[CASCADE] total: {_time.monotonic() - _cascade_start:.2f}s, fallback={fallback_strategy}"
+            )
 
         # --- No results after all strategies ---
         if not items:
@@ -334,6 +381,7 @@ def search_items(
         ctx.error(f"Error searching Zotero: {str(e)}")
         return f"Error searching Zotero: {str(e)}"
 
+
 @mcp.tool(
     name="zotero_search_by_tag",
     description=(
@@ -351,7 +399,7 @@ def search_items(
         "free-text content search, use zotero_search_items or "
         "zotero_semantic_search instead. "
         "Example: zotero_search_by_tag(tag=['to-read'], limit=20)."
-    )
+    ),
 )
 @with_zotero_api_lock
 def search_by_tag(
@@ -360,7 +408,7 @@ def search_by_tag(
     limit: int | str | None = 10,
     collection_key: str | None = None,
     *,
-    ctx: Context
+    ctx: Context,
 ) -> str:
     """
     Search for items in your Zotero library by tag.
@@ -404,8 +452,11 @@ def search_by_tag(
             if not _col or _col.get("key") != collection_key:
                 return f"Collection not found: '{collection_key}'. Use zotero_get_collections or zotero_search_collections to find valid collection keys."
             results = _helpers._paginate(
-                zot.collection_items, collection_key,
-                tag=tag, itemType=item_type, max_items=limit,
+                zot.collection_items,
+                collection_key,
+                tag=tag,
+                itemType=item_type,
+                max_items=limit,
             )
         else:
             zot.add_parameters(q="", tag=tag, itemType=item_type, limit=limit)
@@ -445,14 +496,10 @@ def search_by_tag(
         "For partial-key or free-text lookup, use zotero_search_items. "
         "Example: zotero_search_by_citation_key(citekey='hasan2026mcp') → "
         "metadata for that single item."
-    )
+    ),
 )
 @with_zotero_api_lock
-def search_by_citation_key(
-    citekey: str,
-    *,
-    ctx: Context
-) -> str:
+def search_by_citation_key(citekey: str, *, ctx: Context) -> str:
     """
     Look up a Zotero item by its BetterBibTeX citation key.
 
@@ -520,7 +567,7 @@ def search_by_citation_key(
         "'operation': 'is', 'value': 'preprint'}, {'field': 'dateAdded', "
         "'operation': 'isAfter', 'value': '2026-03-22'}], "
         "join_mode='all')."
-    )
+    ),
 )
 @with_zotero_api_lock
 def advanced_search(
@@ -530,7 +577,7 @@ def advanced_search(
     sort_direction: Literal["asc", "desc"] = "asc",
     limit: int | str = 50,
     *,
-    ctx: Context
+    ctx: Context,
 ) -> str:
     """
     Perform an advanced search with multiple criteria.
@@ -554,10 +601,7 @@ def advanced_search(
             try:
                 conditions = json.loads(conditions)
             except json.JSONDecodeError as parse_error:
-                return (
-                    "Error: conditions must be valid JSON when provided as a string "
-                    f"({parse_error})"
-                )
+                return f"Error: conditions must be valid JSON when provided as a string ({parse_error})"
 
         if not isinstance(conditions, list) or not conditions:
             return "Error: No search conditions provided"
@@ -588,10 +632,7 @@ def advanced_search(
             if not isinstance(condition, dict):
                 return f"Error: Condition {i} must be an object"
             if "field" not in condition or "operation" not in condition or "value" not in condition:
-                return (
-                    f"Error: Condition {i} is missing required fields "
-                    "(field, operation, value)"
-                )
+                return f"Error: Condition {i} is missing required fields (field, operation, value)"
 
             field = str(condition["field"]).strip()
             operation = str(condition["operation"]).strip()
@@ -605,9 +646,7 @@ def advanced_search(
             if not field:
                 return f"Error: Condition {i} has an empty field"
 
-            parsed_conditions.append(
-                {"field": field, "operation": operation, "value": value}
-            )
+            parsed_conditions.append({"field": field, "operation": operation, "value": value})
 
         def _extract_values(data: dict[str, object], field: str) -> list[str]:
             field_lower = field.lower()
@@ -757,9 +796,7 @@ def advanced_search(
         output.append("## Search Criteria")
         output.append(f"Join mode: {join_mode.upper()}")
         for i, condition in enumerate(parsed_conditions, 1):
-            output.append(
-                f"{i}. {condition['field']} {condition['operation']} \"{condition['value']}\""
-            )
+            output.append(f'{i}. {condition["field"]} {condition["operation"]} "{condition["value"]}"')
         output.append("")
         output.append("## Results")
 
@@ -794,16 +831,10 @@ def advanced_search(
         "installed (pip install zotero-mcp-server[semantic]). "
         "Example: zotero_semantic_search(query='mindfulness-based "
         "cognitive therapy for depression', limit=5)."
-    )
+    ),
 )
 @with_zotero_api_lock
-def semantic_search(
-    query: str,
-    limit: int = 10,
-    filters: dict[str, str] | str | None = None,
-    *,
-    ctx: Context
-) -> str:
+def semantic_search(query: str, limit: int = 10, filters: dict[str, str] | str | None = None, *, ctx: Context) -> str:
     """
     Perform semantic search over your Zotero library.
 
@@ -832,7 +863,7 @@ def semantic_search(
 
             # Validate it's a dictionary
             if not isinstance(filters, dict):
-                return "Error: filters parameter must be a dictionary or JSON string. Example: {\"item_type\": \"note\"}"
+                return 'Error: filters parameter must be a dictionary or JSON string. Example: {"item_type": "note"}'
 
             # Automatically translate common field names
             if "itemType" in filters:
@@ -953,15 +984,11 @@ def semantic_search(
         "zotero_get_search_database_status. "
         "Example: zotero_update_search_database() after adding a batch of "
         "papers."
-    )
+    ),
 )
 @with_zotero_api_lock
 def update_search_database(
-    force_rebuild: bool = False,
-    limit: int | None = None,
-    reindex_keys: list[str] | None = None,
-    *,
-    ctx: Context
+    force_rebuild: bool = False, limit: int | None = None, reindex_keys: list[str] | None = None, *, ctx: Context
 ) -> str:
     """
     Update the semantic search database.
@@ -1019,9 +1046,9 @@ def update_search_database(
             output.append(f"**Errors:** {stats.get('errors', 0)}")
             output.append(f"**Duration:** {stats.get('duration', 'Unknown')}")
 
-            if stats.get('start_time'):
+            if stats.get("start_time"):
                 output.append(f"**Started:** {stats['start_time']}")
-            if stats.get('end_time'):
+            if stats.get("end_time"):
                 output.append(f"**Completed:** {stats['end_time']}")
 
         return "\n".join(output)
@@ -1045,7 +1072,7 @@ def update_search_database(
         "are not installed, returns an install hint instead of stats. "
         "Example: zotero_get_search_database_status() → count, last sync, "
         "provider summary."
-    )
+    ),
 )
 def get_search_database_status(*, ctx: Context) -> str:
     """
@@ -1098,7 +1125,7 @@ def get_search_database_status(*, ctx: Context) -> str:
 
         if collection_info.get("initialized") is False and not collection_info.get("error"):
             output.append("**Status:** Not initialized — run zotero_update_search_database first.")
-        if collection_info.get('error'):
+        if collection_info.get("error"):
             output.append(f"**Error:** {collection_info['error']}")
 
         output.append("")
@@ -1109,8 +1136,8 @@ def get_search_database_status(*, ctx: Context) -> str:
         output.append(f"**Last Update:** {update_config.get('last_update', 'Never')}")
         output.append(f"**Should Update Now:** {should_update(update_config)}")
 
-        frequency = update_config.get('update_frequency', 'manual')
-        if frequency.startswith('every_') and update_config.get('update_days'):
+        frequency = update_config.get("update_frequency", "manual")
+        if frequency.startswith("every_") and update_config.get("update_days"):
             output.append(f"**Update Interval:** Every {update_config['update_days']} days")
 
         return "\n".join(output)

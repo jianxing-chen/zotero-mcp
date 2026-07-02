@@ -38,10 +38,7 @@ def test_build_embedding_request_uses_batch_embeddings_shape():
 
 
 def test_split_embedding_records_respects_request_limit():
-    records = [
-        {"id": f"ID{i}", "document": f"text {i}", "metadata": {}}
-        for i in range(3)
-    ]
+    records = [{"id": f"ID{i}", "document": f"text {i}", "metadata": {}} for i in range(3)]
 
     chunks = openai_batch.split_embedding_records(
         records,
@@ -58,19 +55,25 @@ def test_split_embedding_records_respects_request_limit():
 def test_parse_embedding_output_uses_custom_ids_and_keeps_failures():
     output = "\n".join(
         [
-            json.dumps({
-                "custom_id": "B",
-                "response": {"status_code": 200, "body": {"data": [{"embedding": [0.2, 0.3]}]}},
-            }),
-            json.dumps({
-                "custom_id": "A",
-                "response": {"status_code": 200, "body": {"data": [{"embedding": [0.1, 0.2]}]}},
-            }),
-            json.dumps({
-                "custom_id": "C",
-                "response": {"status_code": 429, "body": {}},
-                "error": {"message": "rate limited"},
-            }),
+            json.dumps(
+                {
+                    "custom_id": "B",
+                    "response": {"status_code": 200, "body": {"data": [{"embedding": [0.2, 0.3]}]}},
+                }
+            ),
+            json.dumps(
+                {
+                    "custom_id": "A",
+                    "response": {"status_code": 200, "body": {"data": [{"embedding": [0.1, 0.2]}]}},
+                }
+            ),
+            json.dumps(
+                {
+                    "custom_id": "C",
+                    "response": {"status_code": 429, "body": {}},
+                    "error": {"message": "rate limited"},
+                }
+            ),
         ]
     )
 
@@ -116,15 +119,17 @@ def test_submit_embedding_batches_writes_manifest_and_jsonl(tmp_path):
 
 
 def test_setup_openai_new_config_defaults_to_batch(monkeypatch):
-    answers = iter([
-        "2",  # OpenAI
-        "1",  # text-embedding-3-small
-        "",  # default base URL
-        "",  # default batch choice: yes for new configs
-        "1",  # manual updates
-        "",  # default PDF max pages
-        "",  # auto-detect DB path
-    ])
+    answers = iter(
+        [
+            "2",  # OpenAI
+            "1",  # text-embedding-3-small
+            "",  # default base URL
+            "",  # default batch choice: yes for new configs
+            "1",  # manual updates
+            "",  # default PDF max pages
+            "",  # auto-detect DB path
+        ]
+    )
     monkeypatch.setattr(builtins, "input", lambda *args: next(answers))
     monkeypatch.setattr(setup_helper.getpass, "getpass", lambda *args: "sk-test")
 
@@ -218,11 +223,13 @@ def test_batch_and_realtime_indexing_share_prepared_payload(monkeypatch):
             self.upserts = []
 
         def upsert_documents(self, documents, metadatas, ids):
-            self.upserts.append({
-                "documents": list(documents),
-                "metadatas": list(metadatas),
-                "ids": list(ids),
-            })
+            self.upserts.append(
+                {
+                    "documents": list(documents),
+                    "metadatas": list(metadatas),
+                    "ids": list(ids),
+                }
+            )
 
     item = {
         "key": "ITEM1",
@@ -272,11 +279,13 @@ def test_batch_and_realtime_indexing_share_prepared_payload(monkeypatch):
     )
 
     realtime_payload = realtime_client.upserts[0]
-    assert captured["records"] == [{
-        "id": realtime_payload["ids"][0],
-        "document": realtime_payload["documents"][0],
-        "metadata": realtime_payload["metadatas"][0],
-    }]
+    assert captured["records"] == [
+        {
+            "id": realtime_payload["ids"][0],
+            "document": realtime_payload["documents"][0],
+            "metadata": realtime_payload["metadatas"][0],
+        }
+    ]
     assert "Full text must be included" in captured["records"][0]["document"]
     assert captured["records"][0]["metadata"]["has_fulltext"] is True
 
@@ -331,10 +340,13 @@ def test_import_openai_batch_reports_records_missing_from_output(tmp_path, monke
     )
     output_path = tmp_path / "batch-001-records-output.jsonl"
     output_path.write_text(
-        json.dumps({
-            "custom_id": "A",
-            "response": {"status_code": 200, "body": {"data": [{"embedding": [0.1, 0.2]}]}},
-        }) + "\n",
+        json.dumps(
+            {
+                "custom_id": "A",
+                "response": {"status_code": 200, "body": {"data": [{"embedding": [0.1, 0.2]}]}},
+            }
+        )
+        + "\n",
         encoding="utf-8",
     )
     manifest = {

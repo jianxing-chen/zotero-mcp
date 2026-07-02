@@ -50,8 +50,7 @@ def test_custom_embedding_functions_are_registered(name, cls_attr):
     incompatible built-in and breaks reload/upsert of an existing collection.
     """
     assert name in known_embedding_functions, (
-        f"{name!r} not registered; ChromaDB cannot rebuild the embedding "
-        "function from a persisted collection's config."
+        f"{name!r} not registered; ChromaDB cannot rebuild the embedding function from a persisted collection's config."
     )
     assert known_embedding_functions[name] is getattr(chroma_client, cls_attr)
 

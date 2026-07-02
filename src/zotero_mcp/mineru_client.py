@@ -175,12 +175,18 @@ def _call_mineru_cli(
     """
     cmd = [
         executable,
-        "-p", str(pdf_path),
-        "-o", str(out_dir),
-        "-b", backend,
-        "-m", "auto",       # auto-detect scanned vs native text
-        "-f", "true",       # formula recognition
-        "-t", "true",       # table recognition
+        "-p",
+        str(pdf_path),
+        "-o",
+        str(out_dir),
+        "-b",
+        backend,
+        "-m",
+        "auto",  # auto-detect scanned vs native text
+        "-f",
+        "true",  # formula recognition
+        "-t",
+        "true",  # table recognition
     ]
     if start_page_0 >= 0:
         cmd += ["-s", str(start_page_0)]
@@ -218,9 +224,7 @@ def _call_mineru_cli(
     # The CLI may place it in an auto subdir; search for the first .md.
     md_files = list(out_dir.rglob("*.md"))
     # Prefer the one matching the input stem, else the largest.
-    md_files.sort(
-        key=lambda p: (p.stem != pdf_path.stem, -p.stat().st_size)
-    )
+    md_files.sort(key=lambda p: (p.stem != pdf_path.stem, -p.stat().st_size))
     md_text = None
     for md in md_files:
         try:
@@ -283,8 +287,7 @@ def _normalize_backend(raw: str | None) -> str:
 
 def _is_gpu_backend(backend: str) -> bool:
     """True for backends that need GPU/MLX and may OOM (worth a pipeline retry)."""
-    return backend in ("hybrid-auto-engine", "hybrid", "hybrid-engine",
-                       "vlm-auto-engine", "vlm", "vlm-engine")
+    return backend in ("hybrid-auto-engine", "hybrid", "hybrid-engine", "vlm-auto-engine", "vlm", "vlm-engine")
 
 
 def _call_cli_with_fallback(
@@ -373,8 +376,7 @@ def _url_is_public(url: str) -> bool:
     return True
 
 
-def _guarded_download(url: str, timeout: int, method: str = "GET",
-                      files=None, data=None, stream: bool = False):
+def _guarded_download(url: str, timeout: int, method: str = "GET", files=None, data=None, stream: bool = False):
     """Fetch ``url`` with SSRF protection and manual redirect re-validation.
 
     Returns the final ``requests`` response, or ``None`` if any URL in the
@@ -468,9 +470,12 @@ def _call_mineru_api(
     endpoint = f"{api_url.rstrip('/')}/file_parse"
     with open(pdf_path, "rb") as fh:
         resp = _guarded_download(
-            endpoint, timeout, method="POST",
+            endpoint,
+            timeout,
+            method="POST",
             files={"files": (pdf_path.name, fh, "application/pdf")},
-            data=data, stream=True,
+            data=data,
+            stream=True,
         )
 
     if resp is None:
@@ -514,9 +519,7 @@ def _cloud_request(method: str, path: str, token: str, **kwargs) -> dict | None:
     headers = kwargs.pop("headers", {})
     headers["Authorization"] = f"Bearer {token}"
     try:
-        resp = requests.request(
-            method, f"{_MINERU_CLOUD_BASE}{path}", headers=headers, timeout=30, **kwargs
-        )
+        resp = requests.request(method, f"{_MINERU_CLOUD_BASE}{path}", headers=headers, timeout=30, **kwargs)
     except Exception as e:
         logger.warning(f"MinerU cloud {method} {path} failed: {e}")
         return None
@@ -789,12 +792,14 @@ def _write_cache(
     try:
         pages_json = json.dumps(pages, ensure_ascii=False)
         stat = pdf_path.stat()
-        meta = json.dumps({
-            "pdf_mtime": stat.st_mtime,
-            "pdf_size": stat.st_size,
-            "mineru_source": source,
-            "created_at": _now_iso(),
-        })
+        meta = json.dumps(
+            {
+                "pdf_mtime": stat.st_mtime,
+                "pdf_size": stat.st_size,
+                "mineru_source": source,
+                "created_at": _now_iso(),
+            }
+        )
 
         def _atomic(path: Path, content: str) -> None:
             tmp = path.with_suffix(path.suffix + ".tmp")
@@ -895,9 +900,7 @@ def _dispatch_parse(
     cloud_token = config.get("cloud_token") or os.getenv("MINERU_API_TOKEN")
     if cloud_token and backend == "cloud":
         cloud_model = config.get("cloud_model", "vlm")
-        result = _call_mineru_cloud(
-            pdf_path, start_page_0, end_page_0, cloud_token, cloud_model, timeout
-        )
+        result = _call_mineru_cloud(pdf_path, start_page_0, end_page_0, cloud_token, cloud_model, timeout)
         if result is not None:
             return result
         logger.info("MinerU cloud failed; falling back to local CLI.")

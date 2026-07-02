@@ -25,6 +25,7 @@ from zotero_mcp.better_bibtex_client import (
 # _inject_citekey helper
 # ---------------------------------------------------------------------------
 
+
 class TestInjectCitekey:
     def test_inserts_into_empty_atline(self):
         out = _inject_citekey("@article{\n  title = {{X}}\n}", "fooBar2020")
@@ -43,9 +44,7 @@ class TestInjectCitekey:
         """Only the first @-line that needs a citekey gets one — never
         overwrite an entry that already has its own key."""
         src = (
-            "@article{firstKey,\n  title = {{A}}\n}\n"
-            "@book{,\n  title = {{B}}\n}\n"
-            "@inproceedings{,\n  title = {{C}}\n}"
+            "@article{firstKey,\n  title = {{A}}\n}\n@book{,\n  title = {{B}}\n}\n@inproceedings{,\n  title = {{C}}\n}"
         )
         out = _inject_citekey(src, "newKey")
         # First entry's key preserved; first MATCH (the @book) gets the key;
@@ -62,6 +61,7 @@ class TestInjectCitekey:
 # ---------------------------------------------------------------------------
 # export_bibtex JSON-RPC contract
 # ---------------------------------------------------------------------------
+
 
 class _FakeResponse:
     def __init__(self, payload):
@@ -93,10 +93,12 @@ class TestExportBibtex:
         """``item.citationkey`` must receive ``{"item_keys": ["KEY"]}`` with the
         bare item key, NOT positional ``[[\"library:KEY\"]]`` (#293 Bug 1)."""
         captured: list[dict] = []
-        results = iter([
-            {"jsonrpc": "2.0", "id": 1, "result": {"LLLGRWNR": "fergueneSavoirfaire2001"}},
-            {"jsonrpc": "2.0", "id": 1, "result": "@article{\n  title = {{T}}\n}"},
-        ])
+        results = iter(
+            [
+                {"jsonrpc": "2.0", "id": 1, "result": {"LLLGRWNR": "fergueneSavoirfaire2001"}},
+                {"jsonrpc": "2.0", "id": 1, "result": "@article{\n  title = {{T}}\n}"},
+            ]
+        )
         client = ZoteroBetterBibTexAPI()
         with patch("requests.post", side_effect=_capture_post(captured, results)):
             out = client.export_bibtex("LLLGRWNR", library_id=1)
@@ -113,10 +115,12 @@ class TestExportBibtex:
 
     def test_export_payload_string_is_returned_with_citekey(self):
         captured: list[dict] = []
-        results = iter([
-            {"result": {"KEY1": "myCite2024"}},
-            {"result": "@article{\n  title = {{T}}\n}"},
-        ])
+        results = iter(
+            [
+                {"result": {"KEY1": "myCite2024"}},
+                {"result": "@article{\n  title = {{T}}\n}"},
+            ]
+        )
         client = ZoteroBetterBibTexAPI()
         with patch("requests.post", side_effect=_capture_post(captured, results)):
             out = client.export_bibtex("KEY1")
@@ -125,10 +129,12 @@ class TestExportBibtex:
     def test_export_payload_list_form_is_returned_with_citekey(self):
         """Some BBT versions wrap the BibTeX in a list."""
         captured: list[dict] = []
-        results = iter([
-            {"result": {"KEY1": "myCite2024"}},
-            {"result": ["@article{\n  title = {{T}}\n}"]},
-        ])
+        results = iter(
+            [
+                {"result": {"KEY1": "myCite2024"}},
+                {"result": ["@article{\n  title = {{T}}\n}"]},
+            ]
+        )
         client = ZoteroBetterBibTexAPI()
         with patch("requests.post", side_effect=_capture_post(captured, results)):
             out = client.export_bibtex("KEY1")
@@ -150,6 +156,7 @@ class TestExportBibtex:
 # ---------------------------------------------------------------------------
 # get_item_by_citekey no longer calls the nonexistent item.search
 # ---------------------------------------------------------------------------
+
 
 class TestGetItemByCitekey:
     def test_does_not_call_item_search(self):

@@ -50,9 +50,7 @@ def ctx():
 
 def _patch_web_only(monkeypatch, fake_zot):
     monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake_zot)
-    monkeypatch.setattr(
-        "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
-    )
+    monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot))
 
 
 def _patch_local_only(monkeypatch, fake_zot):
@@ -74,9 +72,7 @@ class TestRename:
         """new_name changes the collection name."""
         _patch_web_only(monkeypatch, fake_zot)
 
-        result = server.update_collection(
-            collection_key="COLAAAAA", new_name="ML Papers", ctx=ctx
-        )
+        result = server.update_collection(collection_key="COLAAAAA", new_name="ML Papers", ctx=ctx)
 
         assert "Updated collection" in result
         assert "ML Papers" in result
@@ -90,9 +86,7 @@ class TestRename:
         """Renaming a subcollection must not change its parent."""
         _patch_web_only(monkeypatch, fake_zot)
 
-        server.update_collection(
-            collection_key="COLBBBBB", new_name="Deep Nets", ctx=ctx
-        )
+        server.update_collection(collection_key="COLBBBBB", new_name="Deep Nets", ctx=ctx)
 
         payload = fake_zot.updated_collections[0]
         assert payload["data"]["name"] == "Deep Nets"
@@ -110,9 +104,7 @@ class TestMove:
         """new_parent='root' moves the collection to the top level."""
         _patch_web_only(monkeypatch, fake_zot)
 
-        result = server.update_collection(
-            collection_key="COLBBBBB", new_parent="root", ctx=ctx
-        )
+        result = server.update_collection(collection_key="COLBBBBB", new_parent="root", ctx=ctx)
 
         assert "Updated collection" in result
         assert "top level" in result.lower()
@@ -123,9 +115,7 @@ class TestMove:
         """new_parent='' also moves to top level."""
         _patch_web_only(monkeypatch, fake_zot)
 
-        result = server.update_collection(
-            collection_key="COLBBBBB", new_parent="", ctx=ctx
-        )
+        result = server.update_collection(collection_key="COLBBBBB", new_parent="", ctx=ctx)
 
         assert "Updated collection" in result
         payload = fake_zot.updated_collections[0]
@@ -135,9 +125,7 @@ class TestMove:
         """new_parent as a collection key moves under that parent."""
         _patch_web_only(monkeypatch, fake_zot)
 
-        result = server.update_collection(
-            collection_key="COLCCCCC", new_parent="COLAAAAA", ctx=ctx
-        )
+        result = server.update_collection(collection_key="COLCCCCC", new_parent="COLAAAAA", ctx=ctx)
 
         assert "Updated collection" in result
         payload = fake_zot.updated_collections[0]
@@ -147,9 +135,7 @@ class TestMove:
         """new_parent as a name is resolved to a key."""
         _patch_web_only(monkeypatch, fake_zot)
 
-        result = server.update_collection(
-            collection_key="COLCCCCC", new_parent="Machine Learning", ctx=ctx
-        )
+        result = server.update_collection(collection_key="COLCCCCC", new_parent="Machine Learning", ctx=ctx)
 
         assert "Updated collection" in result
         payload = fake_zot.updated_collections[0]
@@ -159,9 +145,7 @@ class TestMove:
         """Moving must not change the collection name."""
         _patch_web_only(monkeypatch, fake_zot)
 
-        server.update_collection(
-            collection_key="COLCCCCC", new_parent="COLAAAAA", ctx=ctx
-        )
+        server.update_collection(collection_key="COLCCCCC", new_parent="COLAAAAA", ctx=ctx)
 
         payload = fake_zot.updated_collections[0]
         assert payload["data"]["name"] == "NLP Papers"
@@ -197,9 +181,7 @@ class TestRenameAndMove:
         """Moving a top-level collection to root is a no-op, not an error."""
         _patch_web_only(monkeypatch, fake_zot)
 
-        result = server.update_collection(
-            collection_key="COLAAAAA", new_parent="root", ctx=ctx
-        )
+        result = server.update_collection(collection_key="COLAAAAA", new_parent="root", ctx=ctx)
 
         assert "No changes needed" in result
 
@@ -214,9 +196,7 @@ class TestValidation:
         """Neither new_name nor new_parent → clear error."""
         _patch_web_only(monkeypatch, fake_zot)
 
-        result = server.update_collection(
-            collection_key="COLAAAAA", ctx=ctx
-        )
+        result = server.update_collection(collection_key="COLAAAAA", ctx=ctx)
 
         assert "Nothing to update" in result
         assert len(fake_zot.updated_collections) == 0
@@ -225,9 +205,7 @@ class TestValidation:
         """Unknown collection key → error, no update attempted."""
         _patch_web_only(monkeypatch, fake_zot)
 
-        result = server.update_collection(
-            collection_key="NOPE0000", new_name="Whatever", ctx=ctx
-        )
+        result = server.update_collection(collection_key="NOPE0000", new_name="Whatever", ctx=ctx)
 
         assert "not found" in result.lower()
         assert len(fake_zot.updated_collections) == 0
@@ -236,9 +214,7 @@ class TestValidation:
         """A collection cannot be moved under itself."""
         _patch_web_only(monkeypatch, fake_zot)
 
-        result = server.update_collection(
-            collection_key="COLAAAAA", new_parent="COLAAAAA", ctx=ctx
-        )
+        result = server.update_collection(collection_key="COLAAAAA", new_parent="COLAAAAA", ctx=ctx)
 
         assert "its own parent" in result
         assert len(fake_zot.updated_collections) == 0
@@ -247,9 +223,7 @@ class TestValidation:
         """Unresolvable parent name → error, no update."""
         _patch_web_only(monkeypatch, fake_zot)
 
-        result = server.update_collection(
-            collection_key="COLCCCCC", new_parent="Nonexistent Folder", ctx=ctx
-        )
+        result = server.update_collection(collection_key="COLCCCCC", new_parent="Nonexistent Folder", ctx=ctx)
 
         assert "Error" in result
         assert "Nonexistent Folder" in result
@@ -259,9 +233,7 @@ class TestValidation:
         """In local-only mode (no API key), write tools should refuse."""
         _patch_local_only(monkeypatch, fake_zot)
 
-        result = server.update_collection(
-            collection_key="COLAAAAA", new_name="New Name", ctx=ctx
-        )
+        result = server.update_collection(collection_key="COLAAAAA", new_name="New Name", ctx=ctx)
 
         assert "local-only" in result
         assert len(fake_zot.updated_collections) == 0

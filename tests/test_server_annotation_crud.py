@@ -77,9 +77,7 @@ def test_update_annotation_updates_text_comment_color(monkeypatch):
 
 
 def test_update_annotation_replaces_tags(monkeypatch):
-    fake = FakeZoteroForAnnotationUpdate(
-        {"ANNO0001": _annotation_item("ANNO0001", tags=["old1", "old2"])}
-    )
+    fake = FakeZoteroForAnnotationUpdate({"ANNO0001": _annotation_item("ANNO0001", tags=["old1", "old2"])})
     _patch_client(monkeypatch, fake)
 
     result = server.update_annotation(
@@ -93,9 +91,7 @@ def test_update_annotation_replaces_tags(monkeypatch):
 
 
 def test_update_annotation_adds_and_removes_tags(monkeypatch):
-    fake = FakeZoteroForAnnotationUpdate(
-        {"ANNO0001": _annotation_item("ANNO0001", tags=["keep", "drop"])}
-    )
+    fake = FakeZoteroForAnnotationUpdate({"ANNO0001": _annotation_item("ANNO0001", tags=["keep", "drop"])})
     _patch_client(monkeypatch, fake)
 
     result = server.update_annotation(
@@ -130,9 +126,7 @@ def test_update_annotation_no_changes(monkeypatch):
     fake = FakeZoteroForAnnotationUpdate({"ANNO0001": _annotation_item("ANNO0001")})
     _patch_client(monkeypatch, fake)
 
-    result = server.update_annotation(
-        annotation_key="ANNO0001", ctx=DummyContext()
-    )
+    result = server.update_annotation(annotation_key="ANNO0001", ctx=DummyContext())
 
     assert "No changes" in result
     assert fake.updated == []
@@ -147,9 +141,7 @@ def test_update_annotation_rejects_non_annotation(monkeypatch):
     fake = FakeZoteroForAnnotationUpdate({"NOTE0001": note})
     _patch_client(monkeypatch, fake)
 
-    result = server.update_annotation(
-        annotation_key="NOTE0001", text="x", ctx=DummyContext()
-    )
+    result = server.update_annotation(annotation_key="NOTE0001", text="x", ctx=DummyContext())
 
     assert "is not an annotation" in result
     assert fake.updated == []
@@ -159,9 +151,7 @@ def test_update_annotation_missing_key(monkeypatch):
     fake = FakeZoteroForAnnotationUpdate({})
     _patch_client(monkeypatch, fake)
 
-    result = server.update_annotation(
-        annotation_key="ZZZZZZZZ", text="x", ctx=DummyContext()
-    )
+    result = server.update_annotation(annotation_key="ZZZZZZZZ", text="x", ctx=DummyContext())
 
     assert "No item found" in result
     assert fake.updated == []
@@ -199,16 +189,12 @@ class FakeZoteroForAnnotationDelete:
 
 
 def test_delete_annotation_trashes_via_patch(monkeypatch):
-    fake = FakeZoteroForAnnotationDelete(
-        {"ANNO0001": _annotation_item("ANNO0001")}
-    )
+    fake = FakeZoteroForAnnotationDelete({"ANNO0001": _annotation_item("ANNO0001")})
     # Version lives at item top level in the delete path.
     fake._items["ANNO0001"]["version"] = 42
     _patch_client(monkeypatch, fake)
 
-    result = server.delete_annotation(
-        annotation_key="ANNO0001", ctx=DummyContext()
-    )
+    result = server.delete_annotation(annotation_key="ANNO0001", ctx=DummyContext())
 
     assert "Successfully trashed" in result
     assert len(fake.client.calls) == 1
@@ -227,9 +213,7 @@ def test_delete_annotation_rejects_non_annotation(monkeypatch):
     fake = FakeZoteroForAnnotationDelete({"NOTE0001": note})
     _patch_client(monkeypatch, fake)
 
-    result = server.delete_annotation(
-        annotation_key="NOTE0001", ctx=DummyContext()
-    )
+    result = server.delete_annotation(annotation_key="NOTE0001", ctx=DummyContext())
 
     assert "is not an annotation" in result
     assert fake.client.calls == []
@@ -239,25 +223,19 @@ def test_delete_annotation_missing_key(monkeypatch):
     fake = FakeZoteroForAnnotationDelete({})
     _patch_client(monkeypatch, fake)
 
-    result = server.delete_annotation(
-        annotation_key="ZZZZZZZZ", ctx=DummyContext()
-    )
+    result = server.delete_annotation(annotation_key="ZZZZZZZZ", ctx=DummyContext())
 
     assert "No item found" in result
     assert fake.client.calls == []
 
 
 def test_delete_annotation_http_error(monkeypatch):
-    fake = FakeZoteroForAnnotationDelete(
-        {"ANNO0001": _annotation_item("ANNO0001")}, patch_status=412
-    )
+    fake = FakeZoteroForAnnotationDelete({"ANNO0001": _annotation_item("ANNO0001")}, patch_status=412)
     fake._items["ANNO0001"]["version"] = 5
     fake.client._text = "Precondition failed"
     _patch_client(monkeypatch, fake)
 
-    result = server.delete_annotation(
-        annotation_key="ANNO0001", ctx=DummyContext()
-    )
+    result = server.delete_annotation(annotation_key="ANNO0001", ctx=DummyContext())
 
     assert "Failed to trash" in result
     assert "412" in result

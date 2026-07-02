@@ -26,9 +26,7 @@ def _cleanup_path(file_path: str) -> None:
         pass
 
 
-def _continue_reading_footer(
-    item_key: str, actual_end: int, total_pages: int
-) -> str:
+def _continue_reading_footer(item_key: str, actual_end: int, total_pages: int) -> str:
     """A tail prompt nudging the agent to read remaining pages.
 
     Returns an empty string when ``actual_end`` already covers the whole PDF,
@@ -174,8 +172,10 @@ def read_pdf_pages(
         if total_pages is None:
             # PyMuPDF unavailable. MinerU may still be usable, but we lose
             # range validation. Surface a clear error to avoid unsafe slicing.
-            return ("PyMuPDF is required for PDF page reading (to validate page ranges). "
-                    "Install it with: pip install zotero-mcp-server[pdf]")
+            return (
+                "PyMuPDF is required for PDF page reading (to validate page ranges). "
+                "Install it with: pip install zotero-mcp-server[pdf]"
+            )
 
         actual_end = end_page if end_page is not None else start_page
         if start_page < 1 or start_page > total_pages:
@@ -191,9 +191,7 @@ def read_pdf_pages(
             return f"Requested {page_count} pages (max 50). Please narrow your page range."
 
         # --- MinerU preferred path (structured: formulas as LaTeX, tables as HTML) ---
-        mineru_output = _try_mineru(
-            attachment_key, pdf_path, start_page, actual_end, total_pages, title, item_key, ctx
-        )
+        mineru_output = _try_mineru(attachment_key, pdf_path, start_page, actual_end, total_pages, title, item_key, ctx)
         if mineru_output is not None:
             _cleanup_path(pdf_path)
             return mineru_output
@@ -272,8 +270,7 @@ def _try_mineru(
     ]
     if single_page_caveat:
         output.append(
-            f"**Note:** page-level split unavailable; showing full document for pages "
-            f"{start_page}-{actual_end}."
+            f"**Note:** page-level split unavailable; showing full document for pages {start_page}-{actual_end}."
         )
     output.append("")
 

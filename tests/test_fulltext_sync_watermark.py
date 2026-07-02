@@ -18,9 +18,7 @@ from zotero_mcp.semantic_search import ZoteroSemanticSearch
 def make_zotero_db(path, keys):
     """Create a minimal zotero.sqlite with the given item keys."""
     conn = sqlite3.connect(path)
-    conn.execute(
-        "CREATE TABLE itemTypes (itemTypeID INTEGER PRIMARY KEY, typeName TEXT)"
-    )
+    conn.execute("CREATE TABLE itemTypes (itemTypeID INTEGER PRIMARY KEY, typeName TEXT)")
     conn.execute("INSERT INTO itemTypes VALUES (1, 'journalArticle')")
     conn.execute(
         """CREATE TABLE items (
@@ -37,23 +35,12 @@ def make_zotero_db(path, keys):
         )
     # Empty side tables referenced by get_items_with_text / get_item_count
     conn.execute("CREATE TABLE deletedItems (itemID INTEGER PRIMARY KEY)")
-    conn.execute(
-        "CREATE TABLE itemData (itemID INT, fieldID INT, valueID INT)"
-    )
-    conn.execute(
-        "CREATE TABLE itemDataValues (valueID INTEGER PRIMARY KEY, value TEXT)"
-    )
-    conn.execute(
-        "CREATE TABLE fields (fieldID INTEGER PRIMARY KEY, fieldName TEXT)"
-    )
-    conn.execute(
-        "CREATE TABLE itemNotes (itemID INT, parentItemID INT, note TEXT)"
-    )
+    conn.execute("CREATE TABLE itemData (itemID INT, fieldID INT, valueID INT)")
+    conn.execute("CREATE TABLE itemDataValues (valueID INTEGER PRIMARY KEY, value TEXT)")
+    conn.execute("CREATE TABLE fields (fieldID INTEGER PRIMARY KEY, fieldName TEXT)")
+    conn.execute("CREATE TABLE itemNotes (itemID INT, parentItemID INT, note TEXT)")
     conn.execute("CREATE TABLE itemCreators (itemID INT, creatorID INT)")
-    conn.execute(
-        "CREATE TABLE creators (creatorID INTEGER PRIMARY KEY, "
-        "firstName TEXT, lastName TEXT)"
-    )
+    conn.execute("CREATE TABLE creators (creatorID INTEGER PRIMARY KEY, firstName TEXT, lastName TEXT)")
     conn.commit()
     conn.close()
 
@@ -115,18 +102,14 @@ def test_watermark_held_back_when_api_sees_unseen_item(tmp_path):
     (e.g. still in the WAL) must block watermark promotion."""
     db = tmp_path / "zotero.sqlite"
     make_zotero_db(db, ["AAAA1111"])
-    s = make_search(
-        db, FakeVersionsZotero({"AAAA1111": 5, "WALHIDDEN1": 12})
-    )
+    s = make_search(db, FakeVersionsZotero({"AAAA1111": 5, "WALHIDDEN1": 12}))
     assert s._verify_local_snapshot_version(42) is None
 
 
 def test_watermark_held_back_on_api_error(tmp_path):
     db = tmp_path / "zotero.sqlite"
     make_zotero_db(db, ["AAAA1111"])
-    s = make_search(
-        db, FakeVersionsZotero({}, error=RuntimeError("api down"))
-    )
+    s = make_search(db, FakeVersionsZotero({}, error=RuntimeError("api down")))
     assert s._verify_local_snapshot_version(42) is None
 
 
@@ -138,9 +121,7 @@ def test_watermark_uses_scan_time_snapshot_keys(tmp_path):
     db = tmp_path / "zotero.sqlite"
     # Disk state AFTER the mid-scan checkpoint: WALHIDDEN1 is now visible
     make_zotero_db(db, ["AAAA1111", "WALHIDDEN1"])
-    s = make_search(
-        db, FakeVersionsZotero({"AAAA1111": 5, "WALHIDDEN1": 12})
-    )
+    s = make_search(db, FakeVersionsZotero({"AAAA1111": 5, "WALHIDDEN1": 12}))
     # ...but the scan only ever saw AAAA1111
     s._last_scan_snapshot_keys = {"AAAA1111"}
     assert s._verify_local_snapshot_version(42) is None
@@ -172,9 +153,7 @@ def _write_config(path, last_sync_version):
     )
 
 
-def test_update_database_holds_watermark_when_snapshot_stale(
-    tmp_path, monkeypatch
-):
+def test_update_database_holds_watermark_when_snapshot_stale(tmp_path, monkeypatch):
     """End-to-end through update_database: a WAL-hidden item must keep
     last_sync_version at its previous value."""
     db = tmp_path / "zotero.sqlite"
@@ -184,9 +163,7 @@ def test_update_database_holds_watermark_when_snapshot_stale(
 
     s = make_search(
         db,
-        FakeVersionsZotero(
-            {"AAAA1111": 5, "WALHIDDEN1": 12}, library_version=12
-        ),
+        FakeVersionsZotero({"AAAA1111": 5, "WALHIDDEN1": 12}, library_version=12),
         config_path=config,
     )
     monkeypatch.setattr(s, "_get_items_from_source", lambda **kw: [])
@@ -197,9 +174,7 @@ def test_update_database_holds_watermark_when_snapshot_stale(
     assert saved["semantic_search"]["last_sync_version"] == 10
 
 
-def test_update_database_promotes_watermark_when_snapshot_complete(
-    tmp_path, monkeypatch
-):
+def test_update_database_promotes_watermark_when_snapshot_complete(tmp_path, monkeypatch):
     db = tmp_path / "zotero.sqlite"
     make_zotero_db(db, ["AAAA1111"])
     config = tmp_path / "config.json"

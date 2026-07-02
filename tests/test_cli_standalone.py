@@ -20,6 +20,7 @@ from zotero_mcp.cli_standalone import (
 # CLIContext
 # ---------------------------------------------------------------------------
 
+
 class TestCLIContext:
     def test_info_silent_by_default(self, capsys):
         ctx = CLIContext(verbose=False)
@@ -46,6 +47,7 @@ class TestCLIContext:
 # _context.py stub / passthrough
 # ---------------------------------------------------------------------------
 
+
 class TestContextModule:
     def test_context_is_importable(self):
         assert Context is not None
@@ -60,6 +62,7 @@ class TestContextModule:
 # ---------------------------------------------------------------------------
 # Parser structure
 # ---------------------------------------------------------------------------
+
 
 class TestParser:
     def setup_method(self):
@@ -129,10 +132,18 @@ class TestParser:
         assert args.subcommand == "search"
 
     def test_add_file_flags(self):
-        args = self.parser.parse_args([
-            "add", "file", "--filepath", "/tmp/x.pdf",
-            "--title", "Override", "--item-type", "book",
-        ])
+        args = self.parser.parse_args(
+            [
+                "add",
+                "file",
+                "--filepath",
+                "/tmp/x.pdf",
+                "--title",
+                "Override",
+                "--item-type",
+                "book",
+            ]
+        )
         assert args.subcommand == "file"
         assert args.filepath == "/tmp/x.pdf"
         assert args.title == "Override"
@@ -147,9 +158,16 @@ class TestParser:
         # --parent-key never mapped to a real add_from_file parameter and made
         # every `add file` invocation raise TypeError; it must stay removed.
         with pytest.raises(SystemExit):
-            self.parser.parse_args([
-                "add", "file", "--filepath", "/tmp/x.pdf", "--parent-key", "ABC12345",
-            ])
+            self.parser.parse_args(
+                [
+                    "add",
+                    "file",
+                    "--filepath",
+                    "/tmp/x.pdf",
+                    "--parent-key",
+                    "ABC12345",
+                ]
+            )
 
     def test_add_doi_if_exists_defaults_to_file(self):
         args = self.parser.parse_args(["add", "doi", "10.1234/x"])
@@ -158,20 +176,26 @@ class TestParser:
         assert args.collection is None
 
     def test_add_doi_if_exists_choices(self):
-        args = self.parser.parse_args(
-            ["add", "doi", "10.1234/x", "--if-exists", "duplicate"]
-        )
+        args = self.parser.parse_args(["add", "doi", "10.1234/x", "--if-exists", "duplicate"])
         assert args.if_exists == "duplicate"
         with pytest.raises(SystemExit):
             self.parser.parse_args(["add", "doi", "10.1234/x", "--if-exists", "bogus"])
 
     def test_add_doi_repeatable_collection_flag(self):
-        args = self.parser.parse_args([
-            "add", "doi", "10.1234/x",
-            "-c", "Reading List", "-c", "_project/topic",
-            "--collections", "KEY00001",
-            "--create-collections",
-        ])
+        args = self.parser.parse_args(
+            [
+                "add",
+                "doi",
+                "10.1234/x",
+                "-c",
+                "Reading List",
+                "-c",
+                "_project/topic",
+                "--collections",
+                "KEY00001",
+                "--create-collections",
+            ]
+        )
         assert args.collection == ["Reading List", "_project/topic"]
         assert args.collections == "KEY00001"
         assert args.create_collections is True
@@ -186,26 +210,20 @@ class TestParser:
             assert args.if_exists == "skip"
 
     def test_add_isbn_subcommand(self):
-        args = self.parser.parse_args(
-            ["add", "isbn", "9780262046305", "-c", "Books"]
-        )
+        args = self.parser.parse_args(["add", "isbn", "9780262046305", "-c", "Books"])
         assert args.subcommand == "isbn"
         assert args.isbn == "9780262046305"
         assert args.collection == ["Books"]
         assert args.if_exists == "file"
 
     def test_add_bibtex_subcommand(self):
-        args = self.parser.parse_args(
-            ["add", "bibtex", "--file", "/tmp/refs.bib", "-c", "Topic"]
-        )
+        args = self.parser.parse_args(["add", "bibtex", "--file", "/tmp/refs.bib", "-c", "Topic"])
         assert args.subcommand == "bibtex"
         assert args.file == "/tmp/refs.bib"
         assert args.bibtex is None
 
     def test_add_csl_json_subcommand(self):
-        args = self.parser.parse_args(
-            ["add", "csl-json", "--json", "-", "--if-exists", "duplicate"]
-        )
+        args = self.parser.parse_args(["add", "csl-json", "--json", "-", "--if-exists", "duplicate"])
         assert args.subcommand == "csl-json"
         assert args.json == "-"
         assert args.if_exists == "duplicate"
@@ -214,6 +232,7 @@ class TestParser:
 # ---------------------------------------------------------------------------
 # main() dispatch
 # ---------------------------------------------------------------------------
+
 
 class TestMain:
     def test_no_command_prints_help_and_exits_0(self, capsys):
@@ -253,12 +272,21 @@ class TestMain:
 # cmd_search
 # ---------------------------------------------------------------------------
 
+
 class TestCmdSearch:
     def _args(self, **kwargs):
         defaults = dict(
-            verbose=False, mode="items", query="test", qmode="titleCreatorYear",
-            limit=10, collection=None, conditions=None, join_mode="all",
-            sort_by=None, sort_direction="asc", filters=None,
+            verbose=False,
+            mode="items",
+            query="test",
+            qmode="titleCreatorYear",
+            limit=10,
+            collection=None,
+            conditions=None,
+            join_mode="all",
+            sort_by=None,
+            sort_direction="asc",
+            filters=None,
         )
         defaults.update(kwargs)
         return MagicMock(**defaults)
@@ -269,8 +297,10 @@ class TestCmdSearch:
         mock_search.search_items.return_value = "# Results"
 
         with patch("zotero_mcp.cli_standalone.setup_zotero_environment"):
-            with patch("zotero_mcp.cli_standalone._import_tools",
-                       return_value=(mock_search, MagicMock(), MagicMock(), MagicMock(), MagicMock())):
+            with patch(
+                "zotero_mcp.cli_standalone._import_tools",
+                return_value=(mock_search, MagicMock(), MagicMock(), MagicMock(), MagicMock()),
+            ):
                 cmd_search(args)
 
         mock_search.search_items.assert_called_once()
@@ -284,8 +314,10 @@ class TestCmdSearch:
         mock_search.search_by_tag.return_value = "tagged results"
 
         with patch("zotero_mcp.cli_standalone.setup_zotero_environment"):
-            with patch("zotero_mcp.cli_standalone._import_tools",
-                       return_value=(mock_search, MagicMock(), MagicMock(), MagicMock(), MagicMock())):
+            with patch(
+                "zotero_mcp.cli_standalone._import_tools",
+                return_value=(mock_search, MagicMock(), MagicMock(), MagicMock(), MagicMock()),
+            ):
                 cmd_search(args)
 
         mock_search.search_by_tag.assert_called_once()
@@ -295,8 +327,10 @@ class TestCmdSearch:
     def test_search_advanced_invalid_json_exits(self):
         args = self._args(mode="advanced", conditions="not-json")
         with patch("zotero_mcp.cli_standalone.setup_zotero_environment"):
-            with patch("zotero_mcp.cli_standalone._import_tools",
-                       return_value=(MagicMock(), MagicMock(), MagicMock(), MagicMock(), MagicMock())):
+            with patch(
+                "zotero_mcp.cli_standalone._import_tools",
+                return_value=(MagicMock(), MagicMock(), MagicMock(), MagicMock(), MagicMock()),
+            ):
                 with pytest.raises(SystemExit) as exc:
                     cmd_search(args)
         assert exc.value.code == 1
@@ -304,8 +338,10 @@ class TestCmdSearch:
     def test_search_semantic_invalid_filters_exits(self):
         args = self._args(mode="semantic", filters="bad-json")
         with patch("zotero_mcp.cli_standalone.setup_zotero_environment"):
-            with patch("zotero_mcp.cli_standalone._import_tools",
-                       return_value=(MagicMock(), MagicMock(), MagicMock(), MagicMock(), MagicMock())):
+            with patch(
+                "zotero_mcp.cli_standalone._import_tools",
+                return_value=(MagicMock(), MagicMock(), MagicMock(), MagicMock(), MagicMock()),
+            ):
                 with pytest.raises(SystemExit) as exc:
                     cmd_search(args)
         assert exc.value.code == 1
@@ -315,41 +351,45 @@ class TestCmdSearch:
 # cmd_notes
 # ---------------------------------------------------------------------------
 
+
 class TestCmdNotes:
     def test_create_empty_text_exits(self, monkeypatch):
-        args = MagicMock(subcommand="create", item_key="KEY1", text="",
-                         title="Note", tags=None, verbose=False)
+        args = MagicMock(subcommand="create", item_key="KEY1", text="", title="Note", tags=None, verbose=False)
         with patch("zotero_mcp.cli_standalone.setup_zotero_environment"):
-            with patch("zotero_mcp.cli_standalone._import_tools",
-                       return_value=(MagicMock(), MagicMock(), MagicMock(), MagicMock(), MagicMock())):
+            with patch(
+                "zotero_mcp.cli_standalone._import_tools",
+                return_value=(MagicMock(), MagicMock(), MagicMock(), MagicMock(), MagicMock()),
+            ):
                 with pytest.raises(SystemExit) as exc:
                     cmd_notes(args)
         assert exc.value.code == 1
 
     def test_create_reads_stdin_when_dash(self, monkeypatch):
         monkeypatch.setattr("sys.stdin", MagicMock(read=lambda: "note from stdin"))
-        args = MagicMock(subcommand="create", item_key="KEY1", text="-",
-                         title="T", tags=None, verbose=False)
+        args = MagicMock(subcommand="create", item_key="KEY1", text="-", title="T", tags=None, verbose=False)
         mock_annotations = MagicMock()
         mock_annotations.create_note.return_value = "created"
 
         with patch("zotero_mcp.cli_standalone.setup_zotero_environment"):
-            with patch("zotero_mcp.cli_standalone._import_tools",
-                       return_value=(MagicMock(), MagicMock(), mock_annotations, MagicMock(), MagicMock())):
+            with patch(
+                "zotero_mcp.cli_standalone._import_tools",
+                return_value=(MagicMock(), MagicMock(), mock_annotations, MagicMock(), MagicMock()),
+            ):
                 cmd_notes(args)
 
         call_kwargs = mock_annotations.create_note.call_args.kwargs
         assert call_kwargs["note_text"] == "note from stdin"
 
     def test_create_splits_tags(self, capsys):
-        args = MagicMock(subcommand="create", item_key="KEY1", text="hello",
-                         title="T", tags="a,b,c", verbose=False)
+        args = MagicMock(subcommand="create", item_key="KEY1", text="hello", title="T", tags="a,b,c", verbose=False)
         mock_annotations = MagicMock()
         mock_annotations.create_note.return_value = "ok"
 
         with patch("zotero_mcp.cli_standalone.setup_zotero_environment"):
-            with patch("zotero_mcp.cli_standalone._import_tools",
-                       return_value=(MagicMock(), MagicMock(), mock_annotations, MagicMock(), MagicMock())):
+            with patch(
+                "zotero_mcp.cli_standalone._import_tools",
+                return_value=(MagicMock(), MagicMock(), mock_annotations, MagicMock(), MagicMock()),
+            ):
                 cmd_notes(args)
 
         call_kwargs = mock_annotations.create_note.call_args.kwargs
@@ -360,15 +400,34 @@ class TestCmdNotes:
 # cmd_edit
 # ---------------------------------------------------------------------------
 
+
 class TestCmdEdit:
     def _args(self, item_key="KEY1", creators=None, **kwargs):
         defaults = dict(
-            verbose=False, title=None, creators=creators, date=None,
-            publication_title=None, abstract=None, tags=None, add_tags=None,
-            remove_tags=None, collections=None, collection_names=None,
-            doi=None, url=None, extra=None, volume=None, issue=None,
-            pages=None, publisher=None, issn=None, language=None,
-            short_title=None, edition=None, isbn=None, book_title=None,
+            verbose=False,
+            title=None,
+            creators=creators,
+            date=None,
+            publication_title=None,
+            abstract=None,
+            tags=None,
+            add_tags=None,
+            remove_tags=None,
+            collections=None,
+            collection_names=None,
+            doi=None,
+            url=None,
+            extra=None,
+            volume=None,
+            issue=None,
+            pages=None,
+            publisher=None,
+            issn=None,
+            language=None,
+            short_title=None,
+            edition=None,
+            isbn=None,
+            book_title=None,
         )
         defaults.update(kwargs)
         return MagicMock(item_key=item_key, **defaults)
@@ -379,8 +438,10 @@ class TestCmdEdit:
         mock_write.update_item.return_value = "updated"
 
         with patch("zotero_mcp.cli_standalone.setup_zotero_environment"):
-            with patch("zotero_mcp.cli_standalone._import_tools",
-                       return_value=(MagicMock(), MagicMock(), MagicMock(), mock_write, MagicMock())):
+            with patch(
+                "zotero_mcp.cli_standalone._import_tools",
+                return_value=(MagicMock(), MagicMock(), MagicMock(), mock_write, MagicMock()),
+            ):
                 cmd_edit(args)
 
         mock_write.update_item.assert_called_once()
@@ -389,8 +450,10 @@ class TestCmdEdit:
     def test_edit_invalid_creators_json_exits(self):
         args = self._args(creators="not-valid-json")
         with patch("zotero_mcp.cli_standalone.setup_zotero_environment"):
-            with patch("zotero_mcp.cli_standalone._import_tools",
-                       return_value=(MagicMock(), MagicMock(), MagicMock(), MagicMock(), MagicMock())):
+            with patch(
+                "zotero_mcp.cli_standalone._import_tools",
+                return_value=(MagicMock(), MagicMock(), MagicMock(), MagicMock(), MagicMock()),
+            ):
                 with pytest.raises(SystemExit) as exc:
                     cmd_edit(args)
         assert exc.value.code == 1
@@ -402,8 +465,10 @@ class TestCmdEdit:
         mock_write.update_item.return_value = "ok"
 
         with patch("zotero_mcp.cli_standalone.setup_zotero_environment"):
-            with patch("zotero_mcp.cli_standalone._import_tools",
-                       return_value=(MagicMock(), MagicMock(), MagicMock(), mock_write, MagicMock())):
+            with patch(
+                "zotero_mcp.cli_standalone._import_tools",
+                return_value=(MagicMock(), MagicMock(), MagicMock(), mock_write, MagicMock()),
+            ):
                 cmd_edit(args)
 
         call_kwargs = mock_write.update_item.call_args.kwargs
@@ -416,8 +481,10 @@ class TestCmdEdit:
         mock_write.update_item.return_value = "ok"
 
         with patch("zotero_mcp.cli_standalone.setup_zotero_environment"):
-            with patch("zotero_mcp.cli_standalone._import_tools",
-                       return_value=(MagicMock(), MagicMock(), MagicMock(), mock_write, MagicMock())):
+            with patch(
+                "zotero_mcp.cli_standalone._import_tools",
+                return_value=(MagicMock(), MagicMock(), MagicMock(), mock_write, MagicMock()),
+            ):
                 cmd_edit(args)
 
         call_kwargs = mock_write.update_item.call_args.kwargs
@@ -427,6 +494,7 @@ class TestCmdEdit:
 # ---------------------------------------------------------------------------
 # cmd_add
 # ---------------------------------------------------------------------------
+
 
 class TestCmdAdd:
     """cmd_add must call the write tools with kwargs their real signatures accept.
@@ -438,29 +506,31 @@ class TestCmdAdd:
 
     def _args(self, **kwargs):
         defaults = dict(
-            verbose=False, collections=None, collection=None, tags=None,
-            if_exists="file", create_collections=False,
+            verbose=False,
+            collections=None,
+            collection=None,
+            tags=None,
+            if_exists="file",
+            create_collections=False,
         )
         defaults.update(kwargs)
         return MagicMock(**defaults)
 
     def _run(self, args):
         mock_write = MagicMock()
-        for fn in ("add_by_doi", "add_by_url", "add_from_file",
-                   "add_by_isbn", "add_by_bibtex", "add_by_csl_json"):
-            setattr(mock_write, fn,
-                    create_autospec(getattr(write_tools, fn), return_value="ok"))
+        for fn in ("add_by_doi", "add_by_url", "add_from_file", "add_by_isbn", "add_by_bibtex", "add_by_csl_json"):
+            setattr(mock_write, fn, create_autospec(getattr(write_tools, fn), return_value="ok"))
         with patch("zotero_mcp.cli_standalone.setup_zotero_environment"):
-            with patch("zotero_mcp.cli_standalone._import_tools",
-                       return_value=(MagicMock(), MagicMock(), MagicMock(),
-                                     mock_write, MagicMock())):
+            with patch(
+                "zotero_mcp.cli_standalone._import_tools",
+                return_value=(MagicMock(), MagicMock(), MagicMock(), mock_write, MagicMock()),
+            ):
                 cmd_add(args)
         return mock_write
 
     def test_add_file_matches_real_signature(self, capsys):
         # Regression: would raise TypeError while parent_key= was passed.
-        args = self._args(subcommand="file", filepath="/tmp/paper.pdf",
-                          title=None, item_type="document")
+        args = self._args(subcommand="file", filepath="/tmp/paper.pdf", title=None, item_type="document")
         mock_write = self._run(args)
 
         mock_write.add_from_file.assert_called_once()
@@ -471,9 +541,14 @@ class TestCmdAdd:
         assert "ok" in capsys.readouterr().out
 
     def test_add_file_forwards_title_and_item_type(self):
-        args = self._args(subcommand="file", filepath="/tmp/book.epub",
-                          title="My Book", item_type="book",
-                          collections="ABCD1234,EFGH5678", tags="a,b")
+        args = self._args(
+            subcommand="file",
+            filepath="/tmp/book.epub",
+            title="My Book",
+            item_type="book",
+            collections="ABCD1234,EFGH5678",
+            tags="a,b",
+        )
         mock_write = self._run(args)
 
         call_kwargs = mock_write.add_from_file.call_args.kwargs
@@ -483,8 +558,7 @@ class TestCmdAdd:
         assert call_kwargs["tags"] == ["a", "b"]
 
     def test_add_doi_matches_real_signature(self):
-        args = self._args(subcommand="doi", doi="10.1234/test",
-                          attach_mode="auto", collections="ABCD1234")
+        args = self._args(subcommand="doi", doi="10.1234/test", attach_mode="auto", collections="ABCD1234")
         mock_write = self._run(args)
 
         mock_write.add_by_doi.assert_called_once()
@@ -493,20 +567,16 @@ class TestCmdAdd:
         assert call_kwargs["collections"] == ["ABCD1234"]
 
     def test_add_url_matches_real_signature(self):
-        args = self._args(subcommand="url",
-                          url="https://arxiv.org/abs/2301.00001",
-                          attach_mode="auto")
+        args = self._args(subcommand="url", url="https://arxiv.org/abs/2301.00001", attach_mode="auto")
         mock_write = self._run(args)
 
         mock_write.add_by_url.assert_called_once()
-        assert mock_write.add_by_url.call_args.kwargs["url"] == (
-            "https://arxiv.org/abs/2301.00001"
-        )
+        assert mock_write.add_by_url.call_args.kwargs["url"] == ("https://arxiv.org/abs/2301.00001")
 
     def test_add_doi_forwards_if_exists_and_create_flags(self):
-        args = self._args(subcommand="doi", doi="10.1234/test",
-                          attach_mode="auto", if_exists="skip",
-                          create_collections=True)
+        args = self._args(
+            subcommand="doi", doi="10.1234/test", attach_mode="auto", if_exists="skip", create_collections=True
+        )
         mock_write = self._run(args)
 
         call_kwargs = mock_write.add_by_doi.call_args.kwargs
@@ -515,8 +585,7 @@ class TestCmdAdd:
 
     def test_add_doi_default_if_exists_is_file(self):
         """The CLI defaults to convergent behavior; MCP keeps 'duplicate'."""
-        args = self._args(subcommand="doi", doi="10.1234/test",
-                          attach_mode="auto")
+        args = self._args(subcommand="doi", doi="10.1234/test", attach_mode="auto")
         mock_write = self._run(args)
 
         assert mock_write.add_by_doi.call_args.kwargs["if_exists"] == "file"
@@ -524,19 +593,24 @@ class TestCmdAdd:
     def test_repeatable_collection_flag_merges_without_splitting(self):
         # -c values are single specs (never comma-split — names may contain
         # commas); --collections is comma-split; both merge in order.
-        args = self._args(subcommand="doi", doi="10.1234/test",
-                          attach_mode="auto",
-                          collections="KEY00001,Reading List",
-                          collection=["_project/a, b topic", "Other"])
+        args = self._args(
+            subcommand="doi",
+            doi="10.1234/test",
+            attach_mode="auto",
+            collections="KEY00001,Reading List",
+            collection=["_project/a, b topic", "Other"],
+        )
         mock_write = self._run(args)
 
         assert mock_write.add_by_doi.call_args.kwargs["collections"] == [
-            "KEY00001", "Reading List", "_project/a, b topic", "Other",
+            "KEY00001",
+            "Reading List",
+            "_project/a, b topic",
+            "Other",
         ]
 
     def test_add_isbn_matches_real_signature(self):
-        args = self._args(subcommand="isbn", isbn="9780262046305",
-                          collections="Books")
+        args = self._args(subcommand="isbn", isbn="9780262046305", collections="Books")
         mock_write = self._run(args)
 
         mock_write.add_by_isbn.assert_called_once()
@@ -546,8 +620,7 @@ class TestCmdAdd:
         assert call_kwargs["if_exists"] == "file"
 
     def test_add_bibtex_inline_matches_real_signature(self):
-        args = self._args(subcommand="bibtex", bibtex="@article{x, title={T}}",
-                          file=None, attach_mode="auto")
+        args = self._args(subcommand="bibtex", bibtex="@article{x, title={T}}", file=None, attach_mode="auto")
         mock_write = self._run(args)
 
         mock_write.add_by_bibtex.assert_called_once()
@@ -556,19 +629,14 @@ class TestCmdAdd:
         assert call_kwargs["file_path"] is None
 
     def test_add_bibtex_reads_stdin_when_dash(self, monkeypatch):
-        monkeypatch.setattr("sys.stdin",
-                            MagicMock(read=lambda: "@book{y, title={Y}}"))
-        args = self._args(subcommand="bibtex", bibtex="-", file=None,
-                          attach_mode="auto")
+        monkeypatch.setattr("sys.stdin", MagicMock(read=lambda: "@book{y, title={Y}}"))
+        args = self._args(subcommand="bibtex", bibtex="-", file=None, attach_mode="auto")
         mock_write = self._run(args)
 
-        assert mock_write.add_by_bibtex.call_args.kwargs["bibtex"] == (
-            "@book{y, title={Y}}"
-        )
+        assert mock_write.add_by_bibtex.call_args.kwargs["bibtex"] == ("@book{y, title={Y}}")
 
     def test_add_csl_json_file_matches_real_signature(self):
-        args = self._args(subcommand="csl-json", json=None,
-                          file="/tmp/refs.json", attach_mode="auto")
+        args = self._args(subcommand="csl-json", json=None, file="/tmp/refs.json", attach_mode="auto")
         mock_write = self._run(args)
 
         mock_write.add_by_csl_json.assert_called_once()

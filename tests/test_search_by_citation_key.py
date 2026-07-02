@@ -16,6 +16,7 @@ from zotero_mcp.server import (
 # _extra_has_citekey unit tests
 # ---------------------------------------------------------------------------
 
+
 class TestExtraHasCitekey:
     def test_standard_format(self):
         assert _extra_has_citekey("Citation Key: Smith2024", "Smith2024") is True
@@ -41,6 +42,7 @@ class TestExtraHasCitekey:
 # ---------------------------------------------------------------------------
 # Helpers for building fake items
 # ---------------------------------------------------------------------------
+
 
 def _make_item(key="ABC123", title="Test Paper", extra="", citekey=None, **kwargs):
     """Build a minimal Zotero item dict."""
@@ -74,6 +76,7 @@ class _CitekeyFakeZotero(FakeZotero):
 # ---------------------------------------------------------------------------
 # search_by_citation_key – web/API mode (Strategy B)
 # ---------------------------------------------------------------------------
+
 
 class TestSearchByCitationKeyWebMode:
     """Tests where BBT is not available (non-local mode)."""
@@ -127,6 +130,7 @@ class TestSearchByCitationKeyWebMode:
 # search_by_citation_key – local mode
 # ---------------------------------------------------------------------------
 
+
 class TestSearchByCitationKeyLocalMode:
     """In local mode the tool now uses the same Extra-field path as web mode.
 
@@ -150,8 +154,7 @@ class TestSearchByCitationKeyLocalMode:
         ) as MockBBT:
             result = search_by_citation_key("Smith2024", ctx=DummyContext())
             assert MockBBT.call_count == 0, (
-                "search_by_citation_key must not call BBT — item.search is "
-                "broken in all reported BBT versions (#293)."
+                "search_by_citation_key must not call BBT — item.search is broken in all reported BBT versions (#293)."
             )
 
         assert "Citation Key: Smith2024" in result
@@ -162,6 +165,7 @@ class TestSearchByCitationKeyLocalMode:
 # ---------------------------------------------------------------------------
 # Edge cases
 # ---------------------------------------------------------------------------
+
 
 class TestSearchByCitationKeyEdgeCases:
     def test_empty_citekey(self):

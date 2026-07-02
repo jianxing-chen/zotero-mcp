@@ -23,7 +23,7 @@ class _FakeResponse:
 
     def iter_content(self, chunk_size=8192):
         for start in range(0, len(self.content), chunk_size):
-            yield self.content[start:start + chunk_size]
+            yield self.content[start : start + chunk_size]
 
 
 class _FakeSession:
@@ -178,6 +178,7 @@ def test_upload_attachment_puts_zip_then_prop(tmp_path, monkeypatch):
 
     # return values match what we'll write to the Zotero attachment item
     import hashlib
+
     expected_md5 = hashlib.md5(b"%PDF-1.4 hello").hexdigest()  # noqa: S324
     assert md5_hex == expected_md5
     assert mtime_ms == int(src.stat().st_mtime * 1000)
@@ -200,6 +201,7 @@ def test_upload_attachment_zip_contains_file_under_basename(tmp_path, monkeypatc
     webdav.upload_attachment_to_webdav("ABCD1234", src)
 
     import io
+
     _zip_url, zip_data, _ = session.calls[0]
     with ZipFile(io.BytesIO(zip_data)) as zf:
         names = zf.namelist()

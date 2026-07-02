@@ -139,9 +139,9 @@ def expand_from_paper(identifier: str) -> str:
 @mcp.prompt(
     name="zotero_read_paper",
     description="Read a paper in full (all pages) and produce a structured "
-                "summary with page references. Drives page-by-page extraction so "
-                "nothing is missed — unlike a single read_pdf_pages call which "
-                "may stop after the first batch.",
+    "summary with page references. Drives page-by-page extraction so "
+    "nothing is missed — unlike a single read_pdf_pages call which "
+    "may stop after the first batch.",
 )
 def read_paper(item_key: str, focus: str = "") -> str:
     """Read an entire paper and summarize it.
@@ -159,8 +159,7 @@ def read_paper(item_key: str, focus: str = "") -> str:
             "",
             "Follow these steps:",
             "",
-            f"1. `zotero_get_item_metadata(item_key='{item_key}')` — "
-            "get the title, authors, year, DOI for context.",
+            f"1. `zotero_get_item_metadata(item_key='{item_key}')` — get the title, authors, year, DOI for context.",
             "",
             f"2. `zotero_get_pdf_outline(item_key='{item_key}')` — "
             "get the table of contents. If it returns 'no outline', proceed "

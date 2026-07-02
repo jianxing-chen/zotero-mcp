@@ -63,9 +63,7 @@ class TestConfig:
 class TestCliFallback:
     def _make_completed(self, returncode=0, stdout="", stderr="", md_content=""):
         """Build a CompletedProcess plus a side_effect that also writes the .md."""
-        result = subprocess.CompletedProcess(
-            args=[], returncode=returncode, stdout=stdout, stderr=stderr
-        )
+        result = subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr=stderr)
 
         def _run_side_effect(cmd, **kwargs):
             # Simulate MinerU writing its .md into the -o output dir.
@@ -87,7 +85,8 @@ class TestCliFallback:
         config = {"enabled": True, "backend": "hybrid", "timeout": 30}
         monkeypatch.setattr(M.shutil, "which", lambda _n: "/usr/local/bin/mineru")
         monkeypatch.setattr(
-            M.subprocess, "run",
+            M.subprocess,
+            "run",
             self._make_completed(md_content="# Page\n\n$$x^2$$ content"),
         )
 
@@ -135,7 +134,8 @@ class TestCliFallback:
         config = {"enabled": True, "backend": "hybrid", "timeout": 30}
         monkeypatch.setattr(M.shutil, "which", lambda _n: "/usr/local/bin/mineru")
         monkeypatch.setattr(
-            M.subprocess, "run",
+            M.subprocess,
+            "run",
             lambda cmd, **k: subprocess.CompletedProcess(cmd, returncode=1, stderr="dead"),
         )
 
@@ -180,12 +180,22 @@ class TestCache:
         (cache_dir / "fulltext.md").write_text("cached markdown", encoding="utf-8")
         (cache_dir / "pages.json").write_text(json.dumps(["p1", "p2"]), encoding="utf-8")
         stat = pdf.stat()
-        (cache_dir / "meta.json").write_text(json.dumps({
-            "pdf_mtime": stat.st_mtime, "pdf_size": stat.st_size,
-        }), encoding="utf-8")
+        (cache_dir / "meta.json").write_text(
+            json.dumps(
+                {
+                    "pdf_mtime": stat.st_mtime,
+                    "pdf_size": stat.st_size,
+                }
+            ),
+            encoding="utf-8",
+        )
 
         parse_called = {"n": 0}
-        monkeypatch.setattr(M, "_dispatch_parse", lambda *a, **k: parse_called.__setitem__("n", parse_called["n"] + 1) or ("md", None, "mineru:pipeline"))
+        monkeypatch.setattr(
+            M,
+            "_dispatch_parse",
+            lambda *a, **k: parse_called.__setitem__("n", parse_called["n"] + 1) or ("md", None, "mineru:pipeline"),
+        )
 
         parsed = M.read_cached_or_parse("ATTKEY", pdf, config)
         assert parsed is not None
@@ -204,9 +214,15 @@ class TestCache:
         (cache_dir / "fulltext.md").write_text("stale", encoding="utf-8")
         (cache_dir / "pages.json").write_text(json.dumps(["stale"]), encoding="utf-8")
         # Stale meta: wrong size triggers rebuild.
-        (cache_dir / "meta.json").write_text(json.dumps({
-            "pdf_mtime": 1.0, "pdf_size": 99999,
-        }), encoding="utf-8")
+        (cache_dir / "meta.json").write_text(
+            json.dumps(
+                {
+                    "pdf_mtime": 1.0,
+                    "pdf_size": 99999,
+                }
+            ),
+            encoding="utf-8",
+        )
 
         monkeypatch.setattr(M, "_dispatch_parse", lambda *a, **k: ("fresh markdown", None, "mineru:hybrid"))
 
@@ -227,9 +243,15 @@ class TestCache:
         (cache_dir / "fulltext.md").write_text("cached", encoding="utf-8")
         (cache_dir / "pages.json").write_text(json.dumps(["cached"]), encoding="utf-8")
         stat = pdf.stat()
-        (cache_dir / "meta.json").write_text(json.dumps({
-            "pdf_mtime": stat.st_mtime, "pdf_size": stat.st_size,
-        }), encoding="utf-8")
+        (cache_dir / "meta.json").write_text(
+            json.dumps(
+                {
+                    "pdf_mtime": stat.st_mtime,
+                    "pdf_size": stat.st_size,
+                }
+            ),
+            encoding="utf-8",
+        )
 
         monkeypatch.setattr(M, "_dispatch_parse", lambda *a, **k: ("rebuilt", None, "mineru:pipeline"))
 
@@ -379,6 +401,7 @@ class TestMineruSSRFGuard:
                 pass
 
         import requests
+
         monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResp())
         result = M._cloud_download_zip("https://mineru.net/result.zip")
         assert result is None

@@ -116,12 +116,10 @@ def _ads_request(
     last_err: str | None = None
     for attempt in range(_MAX_RETRIES):
         try:
-            resp = requests.request(
-                method, url, headers=headers, params=params, json=body, timeout=timeout
-            )
+            resp = requests.request(method, url, headers=headers, params=params, json=body, timeout=timeout)
         except Exception as e:
             last_err = f"request error: {e}"
-            time.sleep(2 ** attempt)
+            time.sleep(2**attempt)
             continue
 
         if resp.status_code == 200:
@@ -146,7 +144,7 @@ def _ads_request(
         if resp.status_code in _RETRY_STATUSES:
             # Respect rate-limit reset if advertised, else exponential backoff.
             reset = resp.headers.get("X-RateLimit-Reset")
-            wait = 2 ** attempt
+            wait = 2**attempt
             if reset:
                 try:
                     wait = max(wait, min(float(reset) - time.time(), 60.0))
@@ -158,10 +156,7 @@ def _ads_request(
 
         # Non-retryable error.
         last_error = "unavailable"
-        logger.warning(
-            f"ADS {method} {path} failed: HTTP {resp.status_code}: "
-            f"{resp.text[:200]}"
-        )
+        logger.warning(f"ADS {method} {path} failed: HTTP {resp.status_code}: {resp.text[:200]}")
         return None
 
     last_error = "unavailable"
@@ -256,8 +251,18 @@ def get_pdf_url(bibcode: str, prefer: str = "eprint") -> str | None:
 # --------------------------------------------------------------------------- #
 # Formats accepted by the ADS /export/<format> endpoint.
 SUPPORTED_EXPORT_FORMATS = (
-    "bibtex", "bibtexabs", "aastex", "mnras", "icarus", "soph",
-    "ris", "endnote", "ads", "procite", "refworks", "votable",
+    "bibtex",
+    "bibtexabs",
+    "aastex",
+    "mnras",
+    "icarus",
+    "soph",
+    "ris",
+    "endnote",
+    "ads",
+    "procite",
+    "refworks",
+    "votable",
 )
 
 
@@ -333,9 +338,7 @@ def doc_to_csl_json(doc: dict) -> dict:
     item's ``extra`` (via citation_import's note→extra mapping), enabling
     later ``_bibcode_in_library`` dedup.
     """
-    csl: dict[str, Any] = {"type": _DOCTYPE_TO_CSL.get(
-        doc.get("doctype", "article"), "article-journal"
-    )}
+    csl: dict[str, Any] = {"type": _DOCTYPE_TO_CSL.get(doc.get("doctype", "article"), "article-journal")}
 
     title = doc.get("title")
     if isinstance(title, list) and title:

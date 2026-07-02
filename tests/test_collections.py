@@ -18,12 +18,13 @@ from zotero_mcp import server
 # Extended FakeZotero for collection tests
 # ---------------------------------------------------------------------------
 
+
 class FakeZoteroCollections(FakeZotero):
     """FakeZotero with tracking for collection write operations."""
 
     def __init__(self):
         super().__init__()
-        self.added_to_collections = []   # (collection_key, items)
+        self.added_to_collections = []  # (collection_key, items)
         self.removed_from_collections = []  # (collection_key, item)
         self.created_collections = []
         self.deleted_collections = []
@@ -65,6 +66,7 @@ class _FakeResponse:
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def fake_zot():
@@ -113,17 +115,13 @@ def ctx():
 
 def _patch_hybrid(monkeypatch, read_zot, write_zot):
     """Patch _get_write_client to return the given read/write pair."""
-    monkeypatch.setattr(
-        "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (read_zot, write_zot)
-    )
+    monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (read_zot, write_zot))
 
 
 def _patch_web_only(monkeypatch, fake_zot):
     """Patch for web-only mode: same client for read and write."""
     monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake_zot)
-    monkeypatch.setattr(
-        "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
-    )
+    monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot))
 
 
 def _patch_local_only(monkeypatch, fake_zot):

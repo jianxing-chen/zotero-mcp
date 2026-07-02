@@ -61,16 +61,12 @@ class TestIsExtractableAttachment:
         )
 
     def test_video_rejected(self):
-        assert not LocalZoteroReader._is_extractable_attachment(
-            Path("talk.mp4"), "video/mp4"
-        )
+        assert not LocalZoteroReader._is_extractable_attachment(Path("talk.mp4"), "video/mp4")
 
     def test_pdf_returns_true_via_extension_set(self):
         """PDFs are not in _TEXTUAL_SUFFIXES — the PDF path is handled
         before this classifier ever runs. False here is correct."""
-        assert not LocalZoteroReader._is_extractable_attachment(
-            Path("a.pdf"), "application/pdf"
-        )
+        assert not LocalZoteroReader._is_extractable_attachment(Path("a.pdf"), "application/pdf")
 
 
 # ---------------------------------------------------------------------------
@@ -81,9 +77,7 @@ class TestIsExtractableAttachment:
 def test_extract_fulltext_uses_vtt_when_only_attachment(tmp_path):
     """A solo .vtt attachment must yield fulltext (#265 main repro)."""
     vtt = tmp_path / "lecture.vtt"
-    vtt.write_text(
-        "WEBVTT\n\n00:00:00.000 --> 00:00:05.000\nIntroduction to the topic.\n"
-    )
+    vtt.write_text("WEBVTT\n\n00:00:00.000 --> 00:00:05.000\nIntroduction to the topic.\n")
     reader = _Reader(
         attachments=[("ATTKEY01", "storage:lecture.vtt", "text/vtt")],
         fake_path_for={"ATTKEY01": vtt},

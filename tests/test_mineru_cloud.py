@@ -79,9 +79,10 @@ class TestCloudParseFlow:
                 call_state["polls"] += 1
                 if call_state["polls"] < 2:
                     return {"code": 0, "data": {"extract_result": [{"state": "running"}]}}
-                return {"code": 0, "data": {"extract_result": [
-                    {"state": "done", "full_zip_url": "https://cdn/result.zip"}
-                ]}}
+                return {
+                    "code": 0,
+                    "data": {"extract_result": [{"state": "done", "full_zip_url": "https://cdn/result.zip"}]},
+                }
             return None
 
         monkeypatch.setattr(M, "_cloud_request", fake_cloud_request)
@@ -116,9 +117,7 @@ class TestCloudParseFlow:
                     return {"code": -1, "msg": "vlm error"}
                 return {"code": 0, "data": {"batch_id": "b2", "file_urls": ["https://upload/x"]}}
             if "/extract-results/batch/" in path:
-                return {"code": 0, "data": {"extract_result": [
-                    {"state": "done", "full_zip_url": "https://cdn/r.zip"}
-                ]}}
+                return {"code": 0, "data": {"extract_result": [{"state": "done", "full_zip_url": "https://cdn/r.zip"}]}}
             return None
 
         monkeypatch.setattr(M, "_cloud_request", fake_cloud_request)
@@ -141,9 +140,7 @@ class TestCloudParseFlow:
             if "/file-urls/batch" in path:
                 return {"code": 0, "data": {"batch_id": "b", "file_urls": ["https://u"]}}
             if "/extract-results/batch/" in path:
-                return {"code": 0, "data": {"extract_result": [
-                    {"state": "failed", "err_msg": "too many pages"}
-                ]}}
+                return {"code": 0, "data": {"extract_result": [{"state": "failed", "err_msg": "too many pages"}]}}
             return None
 
         monkeypatch.setattr(M, "_cloud_request", fake_cloud_request)
@@ -192,9 +189,7 @@ class TestCloudPageRanges:
                 captured["body"] = kwargs.get("json")
                 return {"code": 0, "data": {"batch_id": "b", "file_urls": ["https://u"]}}
             if "/extract-results/batch/" in path:
-                return {"code": 0, "data": {"extract_result": [
-                    {"state": "done", "full_zip_url": "https://r.zip"}
-                ]}}
+                return {"code": 0, "data": {"extract_result": [{"state": "done", "full_zip_url": "https://r.zip"}]}}
             return None
 
         monkeypatch.setattr(M, "_cloud_request", fake_cloud_request)

@@ -74,6 +74,7 @@ ARXIV_OLD_FORMAT_XML = """\
 # Helper: mock requests.get for arXiv API
 # ---------------------------------------------------------------------------
 
+
 def _make_arxiv_response(xml_text, status_code=200):
     """Create a mock requests.Response for arXiv API."""
     resp = MagicMock()
@@ -90,6 +91,7 @@ def _make_arxiv_response(xml_text, status_code=200):
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def fake_zot_url():
     """FakeZotero extended for add_by_url tests."""
@@ -100,15 +102,14 @@ def fake_zot_url():
 @pytest.fixture
 def patch_write_client(fake_zot_url):
     """Patch _get_write_client to return (fake_zot, fake_zot) for web-only mode."""
-    with patch(
-        "zotero_mcp.tools._helpers._get_write_client", return_value=(fake_zot_url, fake_zot_url)
-    ):
+    with patch("zotero_mcp.tools._helpers._get_write_client", return_value=(fake_zot_url, fake_zot_url)):
         yield fake_zot_url
 
 
 # ---------------------------------------------------------------------------
 # DOI URL routing
 # ---------------------------------------------------------------------------
+
 
 class TestDoiUrlRouting:
     """DOI URLs should delegate to add_by_doi logic."""
@@ -140,6 +141,7 @@ class TestDoiUrlRouting:
 # ---------------------------------------------------------------------------
 # arXiv URL handling
 # ---------------------------------------------------------------------------
+
 
 class TestArxivUrl:
     """arXiv URLs should parse the arXiv API and create preprint items."""
@@ -224,9 +226,7 @@ class TestArxivUrl:
         creators = item.get("creators", [])
         assert len(creators) == 2
         # Check that author names are present (exact format depends on implementation)
-        creator_names = [
-            c.get("lastName", "") or c.get("name", "") for c in creators
-        ]
+        creator_names = [c.get("lastName", "") or c.get("name", "") for c in creators]
         assert any("Smith" in n for n in creator_names)
         assert any("Jones" in n for n in creator_names)
 
@@ -268,6 +268,7 @@ class TestArxivUrl:
 # Generic URL -> webpage item
 # ---------------------------------------------------------------------------
 
+
 class TestGenericUrl:
     """Non-DOI, non-arXiv URLs should create a webpage item."""
 
@@ -291,6 +292,7 @@ class TestGenericUrl:
 # ---------------------------------------------------------------------------
 # arXiv API error handling
 # ---------------------------------------------------------------------------
+
 
 class TestArxivErrors:
     """Error handling for arXiv API responses."""
@@ -316,12 +318,16 @@ class TestArxivErrors:
 
         # arXiv times out on every attempt; the CrossRef fallback (which goes
         # through add_by_doi) also can't resolve. Patch sleep so retries are fast.
-        with patch("zotero_mcp.tools.write._time.sleep"), patch(
-            "zotero_mcp.tools.write.requests.get",
-            side_effect=req_lib.exceptions.Timeout("Connection timed out"),
-        ), patch(
-            "zotero_mcp.tools.write.add_by_doi",
-            return_value="DOI not found on CrossRef: 10.48550/arXiv.2401.00001",
+        with (
+            patch("zotero_mcp.tools.write._time.sleep"),
+            patch(
+                "zotero_mcp.tools.write.requests.get",
+                side_effect=req_lib.exceptions.Timeout("Connection timed out"),
+            ),
+            patch(
+                "zotero_mcp.tools.write.add_by_doi",
+                return_value="DOI not found on CrossRef: 10.48550/arXiv.2401.00001",
+            ),
         ):
             result = server.add_by_url(
                 url="https://arxiv.org/abs/2401.00001",
@@ -347,13 +353,17 @@ class TestArxivCrossrefFallback:
         fake_zot._collections = [
             {"key": "ABC12345", "data": {"name": "Preprints", "parentCollection": False}},
         ]
-        with patch("zotero_mcp.tools.write._time.sleep"), patch(
-            "zotero_mcp.tools.write.requests.get",
-            side_effect=req_lib.exceptions.Timeout("timed out"),
-        ), patch(
-            "zotero_mcp.tools.write.add_by_doi",
-            return_value="Successfully added: **Attention Is All You Need**",
-        ) as mock_doi:
+        with (
+            patch("zotero_mcp.tools.write._time.sleep"),
+            patch(
+                "zotero_mcp.tools.write.requests.get",
+                side_effect=req_lib.exceptions.Timeout("timed out"),
+            ),
+            patch(
+                "zotero_mcp.tools.write.add_by_doi",
+                return_value="Successfully added: **Attention Is All You Need**",
+            ) as mock_doi,
+        ):
             result = server.add_by_url(
                 url="https://arxiv.org/abs/2401.00001",
                 collections=["ABC12345"],
@@ -375,12 +385,14 @@ class TestArxivCrossrefFallback:
         """A persistent 5xx from arXiv should also trigger the CrossRef fallback."""
         mock_resp = _make_arxiv_response("", status_code=503)
 
-        with patch("zotero_mcp.tools.write._time.sleep"), patch(
-            "zotero_mcp.tools.write.requests.get", return_value=mock_resp
-        ), patch(
-            "zotero_mcp.tools.write.add_by_doi",
-            return_value="Successfully added: **Paper**",
-        ) as mock_doi:
+        with (
+            patch("zotero_mcp.tools.write._time.sleep"),
+            patch("zotero_mcp.tools.write.requests.get", return_value=mock_resp),
+            patch(
+                "zotero_mcp.tools.write.add_by_doi",
+                return_value="Successfully added: **Paper**",
+            ) as mock_doi,
+        ):
             result = server.add_by_url(
                 url="https://arxiv.org/abs/2401.00001",
                 ctx=dummy_ctx,
@@ -394,12 +406,16 @@ class TestArxivCrossrefFallback:
         """arXiv down AND CrossRef miss → a clear retry message, nothing created, no raise."""
         import requests as req_lib
 
-        with patch("zotero_mcp.tools.write._time.sleep"), patch(
-            "zotero_mcp.tools.write.requests.get",
-            side_effect=req_lib.exceptions.ConnectionError("conn refused"),
-        ), patch(
-            "zotero_mcp.tools.write.add_by_doi",
-            return_value="DOI not found on CrossRef: 10.48550/arXiv.2401.00001",
+        with (
+            patch("zotero_mcp.tools.write._time.sleep"),
+            patch(
+                "zotero_mcp.tools.write.requests.get",
+                side_effect=req_lib.exceptions.ConnectionError("conn refused"),
+            ),
+            patch(
+                "zotero_mcp.tools.write.add_by_doi",
+                return_value="DOI not found on CrossRef: 10.48550/arXiv.2401.00001",
+            ),
         ):
             result = server.add_by_url(
                 url="https://arxiv.org/abs/2401.00001",
@@ -414,12 +430,16 @@ class TestArxivCrossrefFallback:
         """If the fallback itself raises, _add_by_arxiv must not propagate it."""
         import requests as req_lib
 
-        with patch("zotero_mcp.tools.write._time.sleep"), patch(
-            "zotero_mcp.tools.write.requests.get",
-            side_effect=req_lib.exceptions.Timeout("timed out"),
-        ), patch(
-            "zotero_mcp.tools.write.add_by_doi",
-            side_effect=RuntimeError("crossref blew up"),
+        with (
+            patch("zotero_mcp.tools.write._time.sleep"),
+            patch(
+                "zotero_mcp.tools.write.requests.get",
+                side_effect=req_lib.exceptions.Timeout("timed out"),
+            ),
+            patch(
+                "zotero_mcp.tools.write.add_by_doi",
+                side_effect=RuntimeError("crossref blew up"),
+            ),
         ):
             result = server.add_by_url(
                 url="https://arxiv.org/abs/2401.00001",
@@ -433,6 +453,7 @@ class TestArxivCrossrefFallback:
 # ---------------------------------------------------------------------------
 # arXiv XML namespace handling
 # ---------------------------------------------------------------------------
+
 
 class TestArxivXmlNamespace:
     """Verify correct XML namespace handling for arXiv Atom feed."""
@@ -475,6 +496,7 @@ class TestArxivXmlNamespace:
 # HTTPS enforcement for arXiv API
 # ---------------------------------------------------------------------------
 
+
 class TestArxivHttps:
     """The arXiv API should always be called over HTTPS."""
 
@@ -485,9 +507,7 @@ class TestArxivHttps:
         with patch("zotero_mcp.tools.write.requests.get", return_value=mock_resp) as mock_get:
             server.add_by_url(url="https://arxiv.org/abs/2401.00001", ctx=dummy_ctx)
             call_url = mock_get.call_args[0][0]
-            assert call_url.startswith("https://"), (
-                f"arXiv API URL should use HTTPS, got: {call_url}"
-            )
+            assert call_url.startswith("https://"), f"arXiv API URL should use HTTPS, got: {call_url}"
 
     def test_timeout_parameter_set(self, dummy_ctx, patch_write_client):
         """requests.get for arXiv should include a timeout parameter."""
@@ -503,6 +523,7 @@ class TestArxivHttps:
 # ---------------------------------------------------------------------------
 # Hybrid mode / local-only rejection
 # ---------------------------------------------------------------------------
+
 
 class TestHybridMode:
     """Write operations require hybrid mode (web credentials)."""
@@ -530,9 +551,7 @@ class TestHybridMode:
 
         mock_resp = _make_arxiv_response(ARXIV_ATOM_XML)
 
-        with patch(
-            "zotero_mcp.tools._helpers._get_write_client", return_value=(read_zot, write_zot)
-        ):
+        with patch("zotero_mcp.tools._helpers._get_write_client", return_value=(read_zot, write_zot)):
             with patch("zotero_mcp.tools.write.requests.get", return_value=mock_resp):
                 server.add_by_url(
                     url="https://arxiv.org/abs/2401.00001",
@@ -547,6 +566,7 @@ class TestHybridMode:
 # ---------------------------------------------------------------------------
 # Tags and collections applied
 # ---------------------------------------------------------------------------
+
 
 class TestTagsAndCollections:
     """Tags and collections should be applied to created items."""
@@ -672,11 +692,13 @@ class TestArxivAttachMode:
         fake_zot.attachment_both = MagicMock()
 
         mock_resp = _make_arxiv_response(ARXIV_ATOM_XML)
-        with patch("zotero_mcp.tools.write.requests.get", return_value=mock_resp) as mock_get, \
-             patch(
-                 "zotero_mcp.tools._helpers._attach_pdf_linked_url",
-                 return_value=True,
-             ) as mock_linked:
+        with (
+            patch("zotero_mcp.tools.write.requests.get", return_value=mock_resp) as mock_get,
+            patch(
+                "zotero_mcp.tools._helpers._attach_pdf_linked_url",
+                return_value=True,
+            ) as mock_linked,
+        ):
             result = server.add_by_url(
                 url="https://arxiv.org/abs/2401.00001",
                 attach_mode="linked_url",
@@ -695,8 +717,7 @@ class TestArxivAttachMode:
         assert "export.arxiv.org" in first_call_url
         for call in mock_get.call_args_list:
             url_arg = call[0][0] if call[0] else call.kwargs.get("url", "")
-            assert "arxiv.org/pdf/" not in url_arg, \
-                f"PDF URL was fetched in linked_url mode: {url_arg}"
+            assert "arxiv.org/pdf/" not in url_arg, f"PDF URL was fetched in linked_url mode: {url_arg}"
 
         # Binary upload path must NOT be invoked
         fake_zot.attachment_both.assert_not_called()
@@ -710,10 +731,12 @@ class TestArxivAttachMode:
         fake_zot.attachment_both = MagicMock()
 
         mock_resp = _make_arxiv_response(ARXIV_ATOM_XML)
-        with patch("zotero_mcp.tools.write.requests.get", return_value=mock_resp), \
-             patch(
-                 "zotero_mcp.tools._helpers._attach_pdf_linked_url",
-             ) as mock_linked:
+        with (
+            patch("zotero_mcp.tools.write.requests.get", return_value=mock_resp),
+            patch(
+                "zotero_mcp.tools._helpers._attach_pdf_linked_url",
+            ) as mock_linked,
+        ):
             server.add_by_url(
                 url="https://arxiv.org/abs/2401.00001",
                 ctx=dummy_ctx,

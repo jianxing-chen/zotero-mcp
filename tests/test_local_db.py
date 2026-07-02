@@ -112,9 +112,7 @@ class TestResolveAttachmentPath:
         base_dir.mkdir()
         # Write a prefs.js with baseAttachmentPath
         prefs = tmp_path / "prefs.js"
-        prefs.write_text(
-            f'user_pref("extensions.zotero.baseAttachmentPath", "{base_dir}");\n'
-        )
+        prefs.write_text(f'user_pref("extensions.zotero.baseAttachmentPath", "{base_dir}");\n')
         result = reader._resolve_attachment_path("X", "attachments:subfolder/paper.pdf")
         assert result == base_dir / "subfolder" / "paper.pdf"
 
@@ -173,10 +171,13 @@ class TestGetAttachmentPaths:
         assert reader.get_attachment_paths("MISSING") == []
 
     def test_multiple_attachments(self, tmp_path):
-        reader = self._make_reader(tmp_path, [
-            ("A", "storage:a.pdf", "application/pdf"),
-            ("B", "storage:b.html", "text/html"),
-        ])
+        reader = self._make_reader(
+            tmp_path,
+            [
+                ("A", "storage:a.pdf", "application/pdf"),
+                ("B", "storage:b.html", "text/html"),
+            ],
+        )
         result = reader.get_attachment_paths("PARENT")
         assert [a["key"] for a in result] == ["A", "B"]
 
@@ -260,9 +261,7 @@ def _create_feed_db(db_path: Path) -> None:
         VALUES (100, 'FEEDKEY1', 7, 10, '2026-06-01 10:00:00')
         """
     )
-    conn.execute(
-        "INSERT INTO feedItems (itemID, readTime, translatedTime) VALUES (100, NULL, NULL)"
-    )
+    conn.execute("INSERT INTO feedItems (itemID, readTime, translatedTime) VALUES (100, NULL, NULL)")
     conn.executemany(
         "INSERT INTO itemDataValues (valueID, value) VALUES (?, ?)",
         [
@@ -283,9 +282,7 @@ def _create_feed_db(db_path: Path) -> None:
             (26, 1005),
         ],
     )
-    conn.execute(
-        "INSERT INTO creators (creatorID, firstName, lastName) VALUES (1, 'Ada', 'Lovelace')"
-    )
+    conn.execute("INSERT INTO creators (creatorID, firstName, lastName) VALUES (1, 'Ada', 'Lovelace')")
     conn.execute("INSERT INTO itemCreators (itemID, creatorID) VALUES (100, 1)")
     conn.commit()
     conn.close()

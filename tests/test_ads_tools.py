@@ -5,7 +5,6 @@ in-library tagging, citation network direction handling, bibcode dedup,
 and graceful degradation.
 """
 
-
 import pytest
 from conftest import FakeZotero
 
@@ -13,9 +12,14 @@ from zotero_mcp import ads_client, server
 
 
 class _FakeCtx:
-    def info(self, *a, **k): pass
-    def warning(self, *a, **k): pass
-    def error(self, *a, **k): pass
+    def info(self, *a, **k):
+        pass
+
+    def warning(self, *a, **k):
+        pass
+
+    def error(self, *a, **k):
+        pass
 
 
 @pytest.fixture
@@ -40,9 +44,20 @@ class TestSearchAds:
 
     def test_search_renders_results(self, ctx, monkeypatch):
         monkeypatch.setenv("ADS_API_TOKEN", "tok")
-        monkeypatch.setattr(ads_client, "search", lambda *a, **k: [
-            {"bibcode": "2003ApJ...589L..21B", "title": ["Dark Energy"], "author": ["Riess, A."], "year": 2003, "doi": ["10.1086/374884"], "citation_count": 5000}
-        ])
+        monkeypatch.setattr(
+            ads_client,
+            "search",
+            lambda *a, **k: [
+                {
+                    "bibcode": "2003ApJ...589L..21B",
+                    "title": ["Dark Energy"],
+                    "author": ["Riess, A."],
+                    "year": 2003,
+                    "doi": ["10.1086/374884"],
+                    "citation_count": 5000,
+                }
+            ],
+        )
         # Patch at the module path the tool actually imports (_client.get_zotero_client).
         monkeypatch.setattr("zotero_mcp.tools.ads._client.get_zotero_client", lambda: FakeZotero())
         out = server.search_ads(query="dark energy", ctx=ctx)
@@ -75,15 +90,29 @@ class TestCitationNetwork:
 
     def test_both_directions(self, ctx, monkeypatch):
         monkeypatch.setenv("ADS_API_TOKEN", "tok")
-        refs = [{"bibcode": "1998AJ....116.1009R", "title": ["Ref Paper"], "author": ["X"], "year": 1998, "citation_count": 100}]
-        cits = [{"bibcode": "2010MNRAS.401..123Y", "title": ["Citing Paper"], "author": ["Y"], "year": 2010, "citation_count": 50}]
+        refs = [
+            {
+                "bibcode": "1998AJ....116.1009R",
+                "title": ["Ref Paper"],
+                "author": ["X"],
+                "year": 1998,
+                "citation_count": 100,
+            }
+        ]
+        cits = [
+            {
+                "bibcode": "2010MNRAS.401..123Y",
+                "title": ["Citing Paper"],
+                "author": ["Y"],
+                "year": 2010,
+                "citation_count": 50,
+            }
+        ]
         monkeypatch.setattr(ads_client, "get_references", lambda bc, rows=50: refs)
         monkeypatch.setattr(ads_client, "get_citations", lambda bc, rows=50: cits)
         monkeypatch.setattr("zotero_mcp.tools.ads._client.get_zotero_client", lambda: FakeZotero())
 
-        out = server.ads_citation_network(
-            identifier="2003ApJ...589L..21B", direction="both", ctx=ctx
-        )
+        out = server.ads_citation_network(identifier="2003ApJ...589L..21B", direction="both", ctx=ctx)
         assert "References" in out
         assert "Citations" in out
         assert "Ref Paper" in out
@@ -91,14 +120,20 @@ class TestCitationNetwork:
 
     def test_references_only(self, ctx, monkeypatch):
         monkeypatch.setenv("ADS_API_TOKEN", "tok")
-        refs = [{"bibcode": "1998AJ....116.1009R", "title": ["Only Ref"], "author": ["X"], "year": 1998, "citation_count": 1}]
+        refs = [
+            {
+                "bibcode": "1998AJ....116.1009R",
+                "title": ["Only Ref"],
+                "author": ["X"],
+                "year": 1998,
+                "citation_count": 1,
+            }
+        ]
         monkeypatch.setattr(ads_client, "get_references", lambda bc, rows=50: refs)
         monkeypatch.setattr(ads_client, "get_citations", lambda bc, rows=50: [])
         monkeypatch.setattr("zotero_mcp.tools.ads._client.get_zotero_client", lambda: FakeZotero())
 
-        out = server.ads_citation_network(
-            identifier="2003ApJ...589L..21B", direction="references", ctx=ctx
-        )
+        out = server.ads_citation_network(identifier="2003ApJ...589L..21B", direction="references", ctx=ctx)
         assert "Only Ref" in out
         # No Citations section heading (summary line still mentions "Citations: 0").
         assert "## Citations" not in out
@@ -143,9 +178,13 @@ class TestAddByBibcode:
             lambda c: (fake_zot, fake_zot),
         )
         doc = {
-            "bibcode": "2003ApJ...589L..21B", "title": ["Test Paper"],
-            "author": ["Smith, J."], "year": 2003, "doi": ["10.1086/374884"],
-            "pub": "ApJ", "doctype": "article",
+            "bibcode": "2003ApJ...589L..21B",
+            "title": ["Test Paper"],
+            "author": ["Smith, J."],
+            "year": 2003,
+            "doi": ["10.1086/374884"],
+            "pub": "ApJ",
+            "doctype": "article",
         }
         monkeypatch.setattr(ads_client, "fetch_record", lambda bc: doc)
         monkeypatch.setattr(ads_client, "get_pdf_url", lambda bc: None)

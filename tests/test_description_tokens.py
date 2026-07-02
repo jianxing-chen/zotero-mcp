@@ -28,27 +28,27 @@ tiktoken = pytest.importorskip("tiktoken")
 # why in the PR — that's an active choice, not an accident.
 TOOL_BUDGETS = {
     # tools/annotations.py
-    "zotero_get_annotations":          (110, 245),
-    "zotero_get_notes":                (100, 230),
-    "zotero_search_notes":             ( 90, 205),
-    "zotero_create_note":              (100, 225),
-    "zotero_update_note":              (100, 225),
-    "zotero_delete_note":              ( 90, 205),
-    "zotero_create_annotation":        (130, 295),
-    "zotero_create_area_annotation":   (175, 390),
+    "zotero_get_annotations": (110, 245),
+    "zotero_get_notes": (100, 230),
+    "zotero_search_notes": (90, 205),
+    "zotero_create_note": (100, 225),
+    "zotero_update_note": (100, 225),
+    "zotero_delete_note": (90, 205),
+    "zotero_create_annotation": (130, 295),
+    "zotero_create_area_annotation": (175, 390),
     # tools/retrieval.py
-    "zotero_get_tags":                 ( 85, 195),
+    "zotero_get_tags": (85, 195),
     # tools/write.py
-    "zotero_batch_update_tags":        (155, 350),
-    "zotero_batch_update_extra":       (165, 370),
+    "zotero_batch_update_tags": (155, 350),
+    "zotero_batch_update_extra": (165, 370),
     # tools/search.py
-    "zotero_search_items":             (175, 400),
-    "zotero_search_by_tag":            (115, 265),
-    "zotero_search_by_citation_key":   (125, 280),
-    "zotero_advanced_search":          (175, 400),
-    "zotero_semantic_search":          (130, 295),
-    "zotero_update_search_database":   (130, 295),
-    "zotero_get_search_database_status": ( 75, 170),
+    "zotero_search_items": (175, 400),
+    "zotero_search_by_tag": (115, 265),
+    "zotero_search_by_citation_key": (125, 280),
+    "zotero_advanced_search": (175, 400),
+    "zotero_semantic_search": (130, 295),
+    "zotero_update_search_database": (130, 295),
+    "zotero_get_search_database_status": (75, 170),
 }
 
 # Global ceiling: even rubric-rich descriptions shouldn't exceed this.
@@ -72,7 +72,9 @@ def _collect_tool_descriptions():
     root = Path(__file__).resolve().parents[1] / "src" / "zotero_mcp" / "tools"
     files = sorted(root.glob("*.py"))
 
-    block_re = re.compile(r"@mcp\.tool\(\s*(.*?)\n\s*\)(?:\s*\n@[\w.]+(?:\([^)]*\))?)*\s*\n(?:async\s+)?def ", re.DOTALL)
+    block_re = re.compile(
+        r"@mcp\.tool\(\s*(.*?)\n\s*\)(?:\s*\n@[\w.]+(?:\([^)]*\))?)*\s*\n(?:async\s+)?def ", re.DOTALL
+    )
     name_re = re.compile(r'name="([^"]+)"')
 
     descriptions: dict[str, str] = {}
@@ -87,7 +89,7 @@ def _collect_tool_descriptions():
             desc_idx = block.find("description=")
             if desc_idx == -1:
                 continue
-            desc_text = block[desc_idx + len("description="):].strip()
+            desc_text = block[desc_idx + len("description=") :].strip()
             if desc_text.endswith(","):
                 desc_text = desc_text[:-1].strip()
             try:
@@ -165,10 +167,7 @@ class TestRubricFloor:
             n = len(enc.encode(desc))
             if n < 30:
                 trivial.append((name, n))
-        assert not trivial, (
-            f"Regression — covered tools now < 30 tokens (likely one-liners): "
-            f"{trivial}."
-        )
+        assert not trivial, f"Regression — covered tools now < 30 tokens (likely one-liners): {trivial}."
 
     def test_known_smelly_tools_are_tracked(self, enc, descriptions):
         """Catalog which *other* tools are still smelly so contributors see
@@ -183,6 +182,5 @@ class TestRubricFloor:
                 remaining.append((name, n))
         if remaining:
             print(
-                f"\n[info] {len(remaining)} tool(s) still below 30-token floor "
-                f"(not yet in TOOL_BUDGETS): {remaining}"
+                f"\n[info] {len(remaining)} tool(s) still below 30-token floor (not yet in TOOL_BUDGETS): {remaining}"
             )

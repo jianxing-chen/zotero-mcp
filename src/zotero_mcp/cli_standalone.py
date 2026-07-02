@@ -33,6 +33,7 @@ from zotero_mcp.cli import (
 # Context
 # ---------------------------------------------------------------------------
 
+
 class CLIContext:
     """Drop-in replacement for fastmcp.Context that writes to stderr."""
 
@@ -54,10 +55,12 @@ class CLIContext:
 # Lazy tool imports
 # ---------------------------------------------------------------------------
 
+
 def _import_tools():
     """Import tool modules lazily to avoid heavy startup cost."""
     from zotero_mcp import client as _client
     from zotero_mcp.tools import annotations, retrieval, search, write
+
     return search, retrieval, annotations, write, _client
 
 
@@ -69,12 +72,13 @@ def _ctx(args) -> CLIContext:
 # Command handlers
 # ---------------------------------------------------------------------------
 
+
 def cmd_config(args):
     import os
+
     setup_zotero_environment()
     config = {
-        k: v for k, v in os.environ.items()
-        if k.startswith("ZOTERO_") or k in ("OPENAI_API_KEY", "GOOGLE_API_KEY")
+        k: v for k, v in os.environ.items() if k.startswith("ZOTERO_") or k in ("OPENAI_API_KEY", "GOOGLE_API_KEY")
     }
     if not getattr(args, "show_secrets", False):
         config = obfuscate_config_for_display(config)
@@ -90,8 +94,10 @@ def cmd_search(args):
 
     if args.mode == "tag":
         result = search_mod.search_by_tag(
-            tag=args.query.split(","), limit=args.limit,
-            collection_key=getattr(args, "collection", None), ctx=ctx,
+            tag=args.query.split(","),
+            limit=args.limit,
+            collection_key=getattr(args, "collection", None),
+            ctx=ctx,
         )
     elif args.mode == "citekey":
         result = search_mod.search_by_citation_key(citekey=args.query, ctx=ctx)
@@ -102,9 +108,12 @@ def cmd_search(args):
             print(f"Error: invalid JSON in --conditions: {e}", file=sys.stderr)
             sys.exit(1)
         result = search_mod.advanced_search(
-            conditions=conditions, join_mode=args.join_mode,
-            sort_by=args.sort_by, sort_direction=args.sort_direction,
-            limit=args.limit, ctx=ctx,
+            conditions=conditions,
+            join_mode=args.join_mode,
+            sort_by=args.sort_by,
+            sort_direction=args.sort_direction,
+            limit=args.limit,
+            ctx=ctx,
         )
     elif args.mode == "semantic":
         filters = None
@@ -115,14 +124,20 @@ def cmd_search(args):
                 print(f"Error: invalid JSON in --filters: {e}", file=sys.stderr)
                 sys.exit(1)
         result = search_mod.semantic_search(
-            query=args.query, limit=args.limit, filters=filters, ctx=ctx,
+            query=args.query,
+            limit=args.limit,
+            filters=filters,
+            ctx=ctx,
         )
     elif args.mode == "notes":
         result = annotations.search_notes(query=args.query, limit=args.limit, ctx=ctx)
     else:
         result = search_mod.search_items(
-            query=args.query, qmode=args.qmode, limit=args.limit,
-            collection_key=getattr(args, "collection", None), ctx=ctx,
+            query=args.query,
+            qmode=args.qmode,
+            limit=args.limit,
+            collection_key=getattr(args, "collection", None),
+            ctx=ctx,
         )
     print(result)
 
@@ -134,10 +149,14 @@ def cmd_get(args):
     sub = args.subcommand
 
     if sub == "metadata":
-        print(retrieval.get_item_metadata(
-            item_key=args.item_key, include_abstract=not args.no_abstract,
-            format=args.output_format, ctx=ctx,
-        ))
+        print(
+            retrieval.get_item_metadata(
+                item_key=args.item_key,
+                include_abstract=not args.no_abstract,
+                format=args.output_format,
+                ctx=ctx,
+            )
+        )
     elif sub == "fulltext":
         print(retrieval.get_item_fulltext(item_key=args.item_key, ctx=ctx))
     elif sub == "bibtex":
@@ -145,9 +164,14 @@ def cmd_get(args):
     elif sub == "collections":
         print(retrieval.get_collections(limit=args.limit, ctx=ctx))
     elif sub == "collection-items":
-        print(retrieval.get_collection_items(
-            collection_key=args.collection_key, detail=args.detail, limit=args.limit, ctx=ctx,
-        ))
+        print(
+            retrieval.get_collection_items(
+                collection_key=args.collection_key,
+                detail=args.detail,
+                limit=args.limit,
+                ctx=ctx,
+            )
+        )
     elif sub == "children":
         if getattr(args, "item_keys", None):
             print(retrieval.get_items_children(item_keys=args.item_keys, ctx=ctx))
@@ -156,9 +180,13 @@ def cmd_get(args):
     elif sub == "tags":
         print(retrieval.get_tags(limit=args.limit, ctx=ctx))
     elif sub == "recent":
-        print(retrieval.get_recent(
-            limit=args.limit, collection_key=getattr(args, "collection", None), ctx=ctx,
-        ))
+        print(
+            retrieval.get_recent(
+                limit=args.limit,
+                collection_key=getattr(args, "collection", None),
+                ctx=ctx,
+            )
+        )
     elif sub == "libraries":
         print(retrieval.list_libraries(ctx=ctx))
     elif sub == "feeds":
@@ -176,17 +204,25 @@ def cmd_annotations(args):
     ctx = _ctx(args)
 
     if args.subcommand == "list":
-        print(annotations.get_annotations(
-            item_key=getattr(args, "item_key", None),
-            use_pdf_extraction=args.pdf_extraction,
-            limit=args.limit, ctx=ctx,
-        ))
+        print(
+            annotations.get_annotations(
+                item_key=getattr(args, "item_key", None),
+                use_pdf_extraction=args.pdf_extraction,
+                limit=args.limit,
+                ctx=ctx,
+            )
+        )
     elif args.subcommand == "create":
-        print(annotations.create_annotation(
-            attachment_key=args.attachment_key, page=args.page,
-            text=args.text, comment=getattr(args, "comment", None),
-            color=args.color, ctx=ctx,
-        ))
+        print(
+            annotations.create_annotation(
+                attachment_key=args.attachment_key,
+                page=args.page,
+                text=args.text,
+                comment=getattr(args, "comment", None),
+                color=args.color,
+                ctx=ctx,
+            )
+        )
     else:
         print(f"Unknown 'annotations' subcommand: {args.subcommand}", file=sys.stderr)
         sys.exit(1)
@@ -198,21 +234,30 @@ def cmd_notes(args):
     ctx = _ctx(args)
 
     if args.subcommand == "list":
-        print(annotations.get_notes(
-            item_key=getattr(args, "item_key", None), limit=args.limit,
-            truncate=not args.full, raw_html=args.raw_html, ctx=ctx,
-        ))
+        print(
+            annotations.get_notes(
+                item_key=getattr(args, "item_key", None),
+                limit=args.limit,
+                truncate=not args.full,
+                raw_html=args.raw_html,
+                ctx=ctx,
+            )
+        )
     elif args.subcommand == "create":
         note_text = sys.stdin.read() if args.text == "-" else (args.text or "")
         if not note_text:
-            print("Error: provide note text via --text TEXT or --text - (reads stdin)",
-                  file=sys.stderr)
+            print("Error: provide note text via --text TEXT or --text - (reads stdin)", file=sys.stderr)
             sys.exit(1)
         tags = args.tags.split(",") if args.tags else []
-        print(annotations.create_note(
-            item_key=args.item_key, note_title=args.title or "CLI Note",
-            note_text=note_text, tags=tags, ctx=ctx,
-        ))
+        print(
+            annotations.create_note(
+                item_key=args.item_key,
+                note_title=args.title or "CLI Note",
+                note_text=note_text,
+                tags=tags,
+                ctx=ctx,
+            )
+        )
     elif args.subcommand == "update":
         note_text = sys.stdin.read() if args.text == "-" else args.text
         print(annotations.update_note(item_key=args.item_key, note_text=note_text, ctx=ctx))
@@ -248,46 +293,81 @@ def cmd_add(args):
     create_missing = getattr(args, "create_collections", False)
 
     if args.subcommand == "doi":
-        print(write_mod.add_by_doi(
-            doi=args.doi, collections=collections, tags=tags,
-            attach_mode=args.attach_mode, if_exists=if_exists,
-            create_missing_collections=create_missing, ctx=ctx,
-        ))
+        print(
+            write_mod.add_by_doi(
+                doi=args.doi,
+                collections=collections,
+                tags=tags,
+                attach_mode=args.attach_mode,
+                if_exists=if_exists,
+                create_missing_collections=create_missing,
+                ctx=ctx,
+            )
+        )
     elif args.subcommand == "url":
-        print(write_mod.add_by_url(
-            url=args.url, collections=collections, tags=tags,
-            attach_mode=args.attach_mode, if_exists=if_exists,
-            create_missing_collections=create_missing, ctx=ctx,
-        ))
+        print(
+            write_mod.add_by_url(
+                url=args.url,
+                collections=collections,
+                tags=tags,
+                attach_mode=args.attach_mode,
+                if_exists=if_exists,
+                create_missing_collections=create_missing,
+                ctx=ctx,
+            )
+        )
     elif args.subcommand == "file":
-        print(write_mod.add_from_file(
-            file_path=args.filepath, title=getattr(args, "title", None),
-            item_type=getattr(args, "item_type", "document"),
-            collections=collections, tags=tags, if_exists=if_exists,
-            create_missing_collections=create_missing, ctx=ctx,
-        ))
+        print(
+            write_mod.add_from_file(
+                file_path=args.filepath,
+                title=getattr(args, "title", None),
+                item_type=getattr(args, "item_type", "document"),
+                collections=collections,
+                tags=tags,
+                if_exists=if_exists,
+                create_missing_collections=create_missing,
+                ctx=ctx,
+            )
+        )
     elif args.subcommand == "isbn":
-        print(write_mod.add_by_isbn(
-            isbn=args.isbn, collections=collections, tags=tags,
-            if_exists=if_exists, create_missing_collections=create_missing,
-            ctx=ctx,
-        ))
+        print(
+            write_mod.add_by_isbn(
+                isbn=args.isbn,
+                collections=collections,
+                tags=tags,
+                if_exists=if_exists,
+                create_missing_collections=create_missing,
+                ctx=ctx,
+            )
+        )
     elif args.subcommand == "bibtex":
         bibtex = sys.stdin.read() if args.bibtex == "-" else args.bibtex
-        print(write_mod.add_by_bibtex(
-            bibtex=bibtex, file_path=getattr(args, "file", None),
-            collections=collections, tags=tags,
-            attach_mode=args.attach_mode, if_exists=if_exists,
-            create_missing_collections=create_missing, ctx=ctx,
-        ))
+        print(
+            write_mod.add_by_bibtex(
+                bibtex=bibtex,
+                file_path=getattr(args, "file", None),
+                collections=collections,
+                tags=tags,
+                attach_mode=args.attach_mode,
+                if_exists=if_exists,
+                create_missing_collections=create_missing,
+                ctx=ctx,
+            )
+        )
     elif args.subcommand == "csl-json":
         csl_json = sys.stdin.read() if args.json == "-" else args.json
-        print(write_mod.add_by_csl_json(
-            csl_json=csl_json, file_path=getattr(args, "file", None),
-            collections=collections, tags=tags,
-            attach_mode=args.attach_mode, if_exists=if_exists,
-            create_missing_collections=create_missing, ctx=ctx,
-        ))
+        print(
+            write_mod.add_by_csl_json(
+                csl_json=csl_json,
+                file_path=getattr(args, "file", None),
+                collections=collections,
+                tags=tags,
+                attach_mode=args.attach_mode,
+                if_exists=if_exists,
+                create_missing_collections=create_missing,
+                ctx=ctx,
+            )
+        )
     else:
         print(f"Unknown 'add' subcommand: {args.subcommand}", file=sys.stderr)
         sys.exit(1)
@@ -299,18 +379,24 @@ def cmd_collections(args):
     ctx = _ctx(args)
 
     if args.subcommand == "create":
-        print(write_mod.create_collection(
-            name=args.name, parent_collection=getattr(args, "parent", None), ctx=ctx,
-        ))
+        print(
+            write_mod.create_collection(
+                name=args.name,
+                parent_collection=getattr(args, "parent", None),
+                ctx=ctx,
+            )
+        )
     elif args.subcommand == "search":
         print(write_mod.search_collections(query=args.query, ctx=ctx))
     elif args.subcommand == "manage":
-        print(write_mod.manage_collections(
-            item_keys=args.item_keys.split(","),
-            add_to=args.add_to.split(",") if args.add_to else None,
-            remove_from=args.remove_from.split(",") if args.remove_from else None,
-            ctx=ctx,
-        ))
+        print(
+            write_mod.manage_collections(
+                item_keys=args.item_keys.split(","),
+                add_to=args.add_to.split(",") if args.add_to else None,
+                remove_from=args.remove_from.split(",") if args.remove_from else None,
+                ctx=ctx,
+            )
+        )
     else:
         print(f"Unknown 'collections' subcommand: {args.subcommand}", file=sys.stderr)
         sys.exit(1)
@@ -320,14 +406,16 @@ def cmd_tags(args):
     setup_zotero_environment()
     search_mod, retrieval, annotations, write_mod, _client = _import_tools()
     ctx = _ctx(args)
-    print(write_mod.batch_update_tags(
-        query=args.query or "",
-        add_tags=args.add.split(",") if args.add else None,
-        remove_tags=args.remove.split(",") if args.remove else None,
-        tag=args.tag.split(",") if args.tag else None,
-        limit=args.limit,
-        ctx=ctx,
-    ))
+    print(
+        write_mod.batch_update_tags(
+            query=args.query or "",
+            add_tags=args.add.split(",") if args.add else None,
+            remove_tags=args.remove.split(",") if args.remove else None,
+            tag=args.tag.split(",") if args.tag else None,
+            limit=args.limit,
+            ctx=ctx,
+        )
+    )
 
 
 def cmd_edit(args):
@@ -344,33 +432,35 @@ def cmd_edit(args):
             print(f"Error: invalid JSON in --creators: {e}", file=sys.stderr)
             sys.exit(1)
 
-    print(write_mod.update_item(
-        item_key=args.item_key,
-        title=args.title,
-        creators=creators,
-        date=args.date,
-        publication_title=args.publication_title,
-        abstract=args.abstract,
-        tags=args.tags.split(",") if args.tags else None,
-        add_tags=args.add_tags.split(",") if args.add_tags else None,
-        remove_tags=args.remove_tags.split(",") if args.remove_tags else None,
-        collections=args.collections.split(",") if args.collections else None,
-        collection_names=args.collection_names.split(",") if args.collection_names else None,
-        doi=args.doi,
-        url=args.url,
-        extra=args.extra,
-        volume=args.volume,
-        issue=args.issue,
-        pages=args.pages,
-        publisher=args.publisher,
-        issn=args.issn,
-        language=args.language,
-        short_title=args.short_title,
-        edition=args.edition,
-        isbn=args.isbn,
-        book_title=args.book_title,
-        ctx=ctx,
-    ))
+    print(
+        write_mod.update_item(
+            item_key=args.item_key,
+            title=args.title,
+            creators=creators,
+            date=args.date,
+            publication_title=args.publication_title,
+            abstract=args.abstract,
+            tags=args.tags.split(",") if args.tags else None,
+            add_tags=args.add_tags.split(",") if args.add_tags else None,
+            remove_tags=args.remove_tags.split(",") if args.remove_tags else None,
+            collections=args.collections.split(",") if args.collections else None,
+            collection_names=args.collection_names.split(",") if args.collection_names else None,
+            doi=args.doi,
+            url=args.url,
+            extra=args.extra,
+            volume=args.volume,
+            issue=args.issue,
+            pages=args.pages,
+            publisher=args.publisher,
+            issn=args.issn,
+            language=args.language,
+            short_title=args.short_title,
+            edition=args.edition,
+            isbn=args.isbn,
+            book_title=args.book_title,
+            ctx=ctx,
+        )
+    )
 
 
 def cmd_duplicates(args):
@@ -379,16 +469,23 @@ def cmd_duplicates(args):
     ctx = _ctx(args)
 
     if args.subcommand == "find":
-        print(write_mod.find_duplicates(
-            method=args.method, collection_key=getattr(args, "collection", None),
-            limit=args.limit, ctx=ctx,
-        ))
+        print(
+            write_mod.find_duplicates(
+                method=args.method,
+                collection_key=getattr(args, "collection", None),
+                limit=args.limit,
+                ctx=ctx,
+            )
+        )
     elif args.subcommand == "merge":
-        print(write_mod.merge_duplicates(
-            keeper_key=args.keeper_key,
-            duplicate_keys=args.duplicate_keys.split(","),
-            confirm=not args.dry_run, ctx=ctx,
-        ))
+        print(
+            write_mod.merge_duplicates(
+                keeper_key=args.keeper_key,
+                duplicate_keys=args.duplicate_keys.split(","),
+                confirm=not args.dry_run,
+                ctx=ctx,
+            )
+        )
     else:
         print(f"Unknown 'duplicates' subcommand: {args.subcommand}", file=sys.stderr)
         sys.exit(1)
@@ -397,15 +494,13 @@ def cmd_duplicates(args):
 def cmd_db(args):
     """Manage the semantic search database."""
     from pathlib import Path
+
     setup_zotero_environment()
     from zotero_mcp.cli import _save_zotero_db_path_to_config
     from zotero_mcp.semantic_search import create_semantic_search
 
     config_path_arg = getattr(args, "config_path", None)
-    config_path = (
-        Path(config_path_arg) if config_path_arg
-        else Path.home() / ".config" / "zotero-mcp" / "config.json"
-    )
+    config_path = Path(config_path_arg) if config_path_arg else Path.home() / ".config" / "zotero-mcp" / "config.json"
 
     if args.subcommand == "update":
         db_path = getattr(args, "db_path", None)
@@ -421,6 +516,7 @@ def cmd_db(args):
             reindex_keys = [k.strip() for k in args.reindex_keys.split(",") if k.strip()]
         if fulltext or reindex_keys:
             from zotero_mcp.utils import is_local_mode
+
             if not is_local_mode():
                 print("Error: --fulltext/--reindex-keys requires local mode (ZOTERO_LOCAL=true).", file=sys.stderr)
                 sys.exit(1)
@@ -468,6 +564,7 @@ def cmd_db(args):
 
     elif args.subcommand == "inspect":
         from collections import Counter
+
         search = create_semantic_search(str(config_path))
         client = search.chroma_client
         col = client.collection
@@ -545,9 +642,13 @@ def cmd_library(args):
     ctx = _ctx(args)
 
     if args.action == "switch":
-        print(retrieval.switch_library(
-            library_id=args.library_id, library_type=args.library_type, ctx=ctx,
-        ))
+        print(
+            retrieval.switch_library(
+                library_id=args.library_id,
+                library_type=args.library_type,
+                ctx=ctx,
+            )
+        )
     elif args.action == "list":
         print(retrieval.list_libraries(ctx=ctx))
     elif args.action == "reset":
@@ -568,6 +669,7 @@ def cmd_outline(args):
 # Argument parser
 # ---------------------------------------------------------------------------
 
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Zotero CLI — standalone library access without an MCP server.",
@@ -583,7 +685,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  zotero-cli annotations list --item-key ITEM_KEY\n"
             "  zotero-cli notes create --item-key ITEM_KEY --text -\n"
             "  zotero-cli add doi 10.1234/example\n"
-            "  zotero-cli edit ITEM_KEY --title \"New Title\" --add-tags reviewed\n"
+            '  zotero-cli edit ITEM_KEY --title "New Title" --add-tags reviewed\n'
             "  zotero-cli db status\n"
         ),
     )
@@ -598,17 +700,20 @@ def build_parser() -> argparse.ArgumentParser:
     # search
     s_p = sub.add_parser("search", help="Search your Zotero library", aliases=["s"])
     s_p.add_argument("query", nargs="?", default="", help="Search query")
-    s_p.add_argument("--mode", choices=["items", "tag", "citekey", "advanced", "semantic", "notes"],
-                     default="items", help="Search mode (default: items)")
-    s_p.add_argument("--qmode", choices=["titleCreatorYear", "everything"],
-                     default="titleCreatorYear")
+    s_p.add_argument(
+        "--mode",
+        choices=["items", "tag", "citekey", "advanced", "semantic", "notes"],
+        default="items",
+        help="Search mode (default: items)",
+    )
+    s_p.add_argument("--qmode", choices=["titleCreatorYear", "everything"], default="titleCreatorYear")
     s_p.add_argument("--collection", help="Scope to a collection key")
     s_p.add_argument("--limit", type=int, default=10)
-    s_p.add_argument("--conditions", help='JSON conditions for advanced mode')
+    s_p.add_argument("--conditions", help="JSON conditions for advanced mode")
     s_p.add_argument("--join-mode", choices=["all", "any"], default="all")
     s_p.add_argument("--sort-by")
     s_p.add_argument("--sort-direction", choices=["asc", "desc"], default="asc")
-    s_p.add_argument("--filters", help='JSON filters for semantic mode')
+    s_p.add_argument("--filters", help="JSON filters for semantic mode")
 
     # get
     g_p = sub.add_parser("get", help="Get items, collections, tags, etc.", aliases=["g"])
@@ -680,23 +785,31 @@ def build_parser() -> argparse.ArgumentParser:
 
     def _add_common_flags(p):
         """Collection/idempotency flags shared by every `add` subcommand."""
-        p.add_argument("--collections",
-                       help="Comma-separated collection keys, names, or paths")
-        p.add_argument("-c", "--collection", action="append", metavar="SPEC",
-                       help="Collection key, name, or parent/child path "
-                            "(repeatable; not comma-split, so names with "
-                            "commas work)")
+        p.add_argument("--collections", help="Comma-separated collection keys, names, or paths")
+        p.add_argument(
+            "-c",
+            "--collection",
+            action="append",
+            metavar="SPEC",
+            help="Collection key, name, or parent/child path (repeatable; not comma-split, so names with commas work)",
+        )
         p.add_argument("--tags", help="Comma-separated tags")
-        p.add_argument("--if-exists", dest="if_exists",
-                       choices=["file", "skip", "duplicate"], default="file",
-                       help="When the item already exists: 'file' (default) "
-                            "reuses it and adds missing collections/tags; "
-                            "'skip' leaves it untouched; 'duplicate' creates "
-                            "a new item anyway")
-        p.add_argument("--create-collections", dest="create_collections",
-                       action="store_true",
-                       help="Create collections that don't exist yet "
-                            "(including parent/child paths)")
+        p.add_argument(
+            "--if-exists",
+            dest="if_exists",
+            choices=["file", "skip", "duplicate"],
+            default="file",
+            help="When the item already exists: 'file' (default) "
+            "reuses it and adds missing collections/tags; "
+            "'skip' leaves it untouched; 'duplicate' creates "
+            "a new item anyway",
+        )
+        p.add_argument(
+            "--create-collections",
+            dest="create_collections",
+            action="store_true",
+            help="Create collections that don't exist yet (including parent/child paths)",
+        )
 
     adoi = add_sub.add_parser("doi", help="Add item by DOI")
     adoi.add_argument("doi")
@@ -709,26 +822,21 @@ def build_parser() -> argparse.ArgumentParser:
     afil = add_sub.add_parser("file", help="Add item from local file (.pdf/.epub)")
     afil.add_argument("--filepath", required=True)
     afil.add_argument("--title", help="Override title if metadata extraction misses")
-    afil.add_argument("--item-type", default="document",
-                      help="Zotero item type for the new item (default: document)")
+    afil.add_argument("--item-type", default="document", help="Zotero item type for the new item (default: document)")
     _add_common_flags(afil)
     aisbn = add_sub.add_parser("isbn", help="Add book by ISBN")
     aisbn.add_argument("isbn")
     _add_common_flags(aisbn)
     abib = add_sub.add_parser("bibtex", help="Add items from BibTeX")
-    abib.add_argument("--bibtex",
-                      help="Inline BibTeX (use - to read from stdin)")
+    abib.add_argument("--bibtex", help="Inline BibTeX (use - to read from stdin)")
     abib.add_argument("--file", help="Path to a .bib/.bibtex file")
     _add_common_flags(abib)
-    abib.add_argument("--attach-mode", choices=["auto", "linked_url", "import_file"],
-                      default="auto")
+    abib.add_argument("--attach-mode", choices=["auto", "linked_url", "import_file"], default="auto")
     acsl = add_sub.add_parser("csl-json", help="Add items from CSL JSON")
-    acsl.add_argument("--json", dest="json",
-                      help="Inline CSL JSON (use - to read from stdin)")
+    acsl.add_argument("--json", dest="json", help="Inline CSL JSON (use - to read from stdin)")
     acsl.add_argument("--file", help="Path to a .json/.csljson file")
     _add_common_flags(acsl)
-    acsl.add_argument("--attach-mode", choices=["auto", "linked_url", "import_file"],
-                      default="auto")
+    acsl.add_argument("--attach-mode", choices=["auto", "linked_url", "import_file"], default="auto")
 
     # collections
     col_p = sub.add_parser("collections", help="Manage collections", aliases=["coll"])
@@ -842,12 +950,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 _CMD_MAP = {
     "config": cmd_config,
-    "search": cmd_search, "s": cmd_search,
-    "get": cmd_get, "g": cmd_get,
-    "annotations": cmd_annotations, "ann": cmd_annotations,
-    "notes": cmd_notes, "n": cmd_notes,
+    "search": cmd_search,
+    "s": cmd_search,
+    "get": cmd_get,
+    "g": cmd_get,
+    "annotations": cmd_annotations,
+    "ann": cmd_annotations,
+    "notes": cmd_notes,
+    "n": cmd_notes,
     "add": cmd_add,
-    "collections": cmd_collections, "coll": cmd_collections,
+    "collections": cmd_collections,
+    "coll": cmd_collections,
     "tags": cmd_tags,
     "edit": cmd_edit,
     "duplicates": cmd_duplicates,
@@ -878,8 +991,10 @@ def main():
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         import os
+
         if os.environ.get("ZOTERO_CLI_DEBUG"):
             import traceback
+
             traceback.print_exc()
         sys.exit(1)
 

@@ -23,6 +23,7 @@ from zotero_mcp.pdf_layout import (
 # Synthetic PDF builders (real PyMuPDF)
 # ---------------------------------------------------------------------------
 
+
 def _new_letter_page(doc):
     import fitz  # noqa: F401
 
@@ -47,6 +48,7 @@ def _save_pdf(doc, tmpdir, name="test.pdf"):
 # ---------------------------------------------------------------------------
 # Caption parsing
 # ---------------------------------------------------------------------------
+
 
 class TestParseCaptionBlock:
     def test_figure_caption_with_colon(self):
@@ -110,6 +112,7 @@ class TestParseCaptionBlock:
 # Bounding box IoU
 # ---------------------------------------------------------------------------
 
+
 class TestBboxIou:
     def test_identical_boxes(self):
         box = [0.1, 0.2, 0.5, 0.3]
@@ -121,20 +124,17 @@ class TestBboxIou:
     def test_partial_overlap(self):
         # [0,0,0.4,0.4] and [0.2,0.2,0.4,0.4]: intersection 0.2*0.2=0.04,
         # union 0.16+0.16-0.04=0.28
-        assert _bbox_iou([0.0, 0.0, 0.4, 0.4], [0.2, 0.2, 0.4, 0.4]) == pytest.approx(
-            0.04 / 0.28
-        )
+        assert _bbox_iou([0.0, 0.0, 0.4, 0.4], [0.2, 0.2, 0.4, 0.4]) == pytest.approx(0.04 / 0.28)
 
     def test_contained_box(self):
         # Small box fully inside large box: intersection = small area
-        assert _bbox_iou([0.0, 0.0, 1.0, 1.0], [0.4, 0.4, 0.2, 0.2]) == pytest.approx(
-            0.04 / 1.0
-        )
+        assert _bbox_iou([0.0, 0.0, 1.0, 1.0], [0.4, 0.4, 0.2, 0.2]) == pytest.approx(0.04 / 1.0)
 
 
 # ---------------------------------------------------------------------------
 # Region filtering / merging / de-duplication
 # ---------------------------------------------------------------------------
+
 
 def _region(source, x, y, w, h):
     return {"source": source, "bbox": [x, y, w, h]}
@@ -144,7 +144,7 @@ class TestMergeCandidateRegions:
     def test_drops_tiny_regions(self):
         # A 0.5%-of-page logo should be filtered out
         regions = [
-            _region("image", 0.1, 0.1, 0.5, 0.4),   # real figure (20%)
+            _region("image", 0.1, 0.1, 0.5, 0.4),  # real figure (20%)
             _region("image", 0.9, 0.02, 0.05, 0.05),  # tiny logo (0.25%)
         ]
         merged = _merge_candidate_regions(regions)
@@ -211,6 +211,7 @@ class TestMergeCandidateRegions:
 # ---------------------------------------------------------------------------
 # Caption <-> region association
 # ---------------------------------------------------------------------------
+
 
 def _caption(label, kind, text, x, y, w, h):
     return {"label": label, "kind": kind, "text": text, "bbox": [x, y, w, h]}
@@ -301,6 +302,7 @@ class TestAssociateCaptionsWithRegions:
 # detect_page_regions (real PyMuPDF on synthetic PDFs)
 # ---------------------------------------------------------------------------
 
+
 class TestDetectPageRegions:
     """Integration tests that build synthetic PDFs with real PyMuPDF.
 
@@ -320,9 +322,7 @@ class TestDetectPageRegions:
             doc = fitz.open()
             page = _new_letter_page(doc)
             page.insert_image(fitz.Rect(100, 150, 400, 380), stream=_gray_image_bytes())
-            page.insert_text(
-                fitz.Point(100, 400), "Figure 1: Synthetic test figure.", fontsize=10
-            )
+            page.insert_text(fitz.Point(100, 400), "Figure 1: Synthetic test figure.", fontsize=10)
             path = _save_pdf(doc, tmpdir)
 
             result = detect_page_regions(path, 1)
@@ -350,12 +350,8 @@ class TestDetectPageRegions:
         with tempfile.TemporaryDirectory() as tmpdir:
             doc = fitz.open()
             page = _new_letter_page(doc)
-            page.draw_rect(
-                fitz.Rect(100, 450, 300, 560), color=(0, 0, 1), fill=(0.8, 0.8, 0.9)
-            )
-            page.draw_line(
-                fitz.Point(110, 470), fitz.Point(290, 470), color=(1, 0, 0)
-            )
+            page.draw_rect(fitz.Rect(100, 450, 300, 560), color=(0, 0, 1), fill=(0.8, 0.8, 0.9))
+            page.draw_line(fitz.Point(110, 470), fitz.Point(290, 470), color=(1, 0, 0))
             path = _save_pdf(doc, tmpdir)
 
             result = detect_page_regions(path, 1)
@@ -381,12 +377,8 @@ class TestDetectPageRegions:
                 page.draw_line(fitz.Point(grid_x, ys[0]), fitz.Point(grid_x, ys[-1]))
             for row, grid_y in enumerate(ys[:-1]):
                 for col, grid_x in enumerate(xs[:-1]):
-                    page.insert_text(
-                        fitz.Point(grid_x + 5, grid_y + 20), f"R{row}C{col}", fontsize=8
-                    )
-            page.insert_text(
-                fitz.Point(400, 440), "Table 1: Synthetic table.", fontsize=10
-            )
+                    page.insert_text(fitz.Point(grid_x + 5, grid_y + 20), f"R{row}C{col}", fontsize=8)
+            page.insert_text(fitz.Point(400, 440), "Table 1: Synthetic table.", fontsize=10)
             path = _save_pdf(doc, tmpdir)
 
             result = detect_page_regions(path, 1)
@@ -523,9 +515,7 @@ class TestDetectPageRegions:
             doc = fitz.open()
             page = _new_letter_page(doc)
             page.insert_image(fitz.Rect(100, 150, 400, 380), stream=_gray_image_bytes())
-            page.insert_text(
-                fitz.Point(100, 400), "Figure 1: Cropped page figure.", fontsize=10
-            )
+            page.insert_text(fitz.Point(100, 400), "Figure 1: Cropped page figure.", fontsize=10)
             page.set_cropbox(fitz.Rect(50, 50, 562, 742))
             path = _save_pdf(doc, tmpdir)
 
@@ -560,6 +550,7 @@ class TestDetectPageRegions:
 # MCP tool: zotero_get_page_layout
 # ---------------------------------------------------------------------------
 
+
 def _pdf_attachment(key="ATTACH01", item_type="attachment", content_type="application/pdf"):
     return {
         "key": key,
@@ -582,8 +573,7 @@ def _layout_result(regions, warnings=None, page_index=6, page_label="7"):
     }
 
 
-def _layout_region(region_id=1, source="image", bbox=None, caption_label=None,
-                   caption_text=None, confidence="low"):
+def _layout_region(region_id=1, source="image", bbox=None, caption_label=None, caption_text=None, confidence="low"):
     return {
         "region_id": region_id,
         "source": source,
@@ -609,28 +599,31 @@ class TestGetPageLayoutTool:
 
     def test_happy_path_renders_regions_table(self, monkeypatch, fake_zot):
         self._setup_clients(monkeypatch, fake_zot)
-        self._patch_detection(monkeypatch, _layout_result([
-            _layout_region(
-                region_id=1,
-                source="image",
-                bbox=[0.1012, 0.2034, 0.6011, 0.3498],
-                caption_label="Figure 3",
-                caption_text="Figure 3: Mean completion rates.",
-                confidence="high",
+        self._patch_detection(
+            monkeypatch,
+            _layout_result(
+                [
+                    _layout_region(
+                        region_id=1,
+                        source="image",
+                        bbox=[0.1012, 0.2034, 0.6011, 0.3498],
+                        caption_label="Figure 3",
+                        caption_text="Figure 3: Mean completion rates.",
+                        confidence="high",
+                    ),
+                    _layout_region(
+                        region_id=2,
+                        source="table",
+                        bbox=[0.1003, 0.6201, 0.8014, 0.2005],
+                        caption_label="Table 1",
+                        caption_text="Table 1: Hyperparameters.",
+                        confidence="high",
+                    ),
+                ]
             ),
-            _layout_region(
-                region_id=2,
-                source="table",
-                bbox=[0.1003, 0.6201, 0.8014, 0.2005],
-                caption_label="Table 1",
-                caption_text="Table 1: Hyperparameters.",
-                confidence="high",
-            ),
-        ]))
-
-        result = server.get_page_layout(
-            attachment_key="ATTACH01", page=7, ctx=DummyContext()
         )
+
+        result = server.get_page_layout(attachment_key="ATTACH01", page=7, ctx=DummyContext())
 
         assert "Error" not in result
         assert "2 region" in result
@@ -648,24 +641,22 @@ class TestGetPageLayoutTool:
         self._setup_clients(monkeypatch, fake_zot)
         self._patch_detection(monkeypatch, _layout_result([]))
 
-        result = server.get_page_layout(
-            attachment_key="ATTACH01", page=3, ctx=DummyContext()
-        )
+        result = server.get_page_layout(attachment_key="ATTACH01", page=3, ctx=DummyContext())
 
         assert "No figure/table regions detected" in result
         assert "explicit coordinates" in result
 
     def test_warnings_are_included(self, monkeypatch, fake_zot):
         self._setup_clients(monkeypatch, fake_zot)
-        self._patch_detection(monkeypatch, _layout_result(
-            [],
-            warnings=["Page appears to be a full-page scan — region detection "
-                      "and captions are unavailable."],
-        ))
-
-        result = server.get_page_layout(
-            attachment_key="ATTACH01", page=1, ctx=DummyContext()
+        self._patch_detection(
+            monkeypatch,
+            _layout_result(
+                [],
+                warnings=["Page appears to be a full-page scan — region detection and captions are unavailable."],
+            ),
         )
+
+        result = server.get_page_layout(attachment_key="ATTACH01", page=1, ctx=DummyContext())
 
         assert "full-page scan" in result
 
@@ -673,41 +664,29 @@ class TestGetPageLayoutTool:
         self._setup_clients(monkeypatch, fake_zot)
         self._patch_detection(monkeypatch, {"error": "Page 99 out of range (PDF has 12 pages)"})
 
-        result = server.get_page_layout(
-            attachment_key="ATTACH01", page=99, ctx=DummyContext()
-        )
+        result = server.get_page_layout(attachment_key="ATTACH01", page=99, ctx=DummyContext())
 
         assert "Error" in result
         assert "out of range" in result
 
     def test_rejects_non_pdf_attachment(self, monkeypatch, fake_zot):
-        self._setup_clients(
-            monkeypatch, fake_zot, items=[_pdf_attachment(content_type="text/html")]
-        )
+        self._setup_clients(monkeypatch, fake_zot, items=[_pdf_attachment(content_type="text/html")])
 
-        result = server.get_page_layout(
-            attachment_key="ATTACH01", page=1, ctx=DummyContext()
-        )
+        result = server.get_page_layout(attachment_key="ATTACH01", page=1, ctx=DummyContext())
 
         assert "not a PDF attachment" in result
 
     def test_rejects_non_attachment_item(self, monkeypatch, fake_zot):
-        self._setup_clients(
-            monkeypatch, fake_zot, items=[_pdf_attachment(item_type="journalArticle")]
-        )
+        self._setup_clients(monkeypatch, fake_zot, items=[_pdf_attachment(item_type="journalArticle")])
 
-        result = server.get_page_layout(
-            attachment_key="ATTACH01", page=1, ctx=DummyContext()
-        )
+        result = server.get_page_layout(attachment_key="ATTACH01", page=1, ctx=DummyContext())
 
         assert "not an attachment" in result
 
     def test_rejects_invalid_page_number(self, monkeypatch, fake_zot):
         self._setup_clients(monkeypatch, fake_zot)
 
-        result = server.get_page_layout(
-            attachment_key="ATTACH01", page=0, ctx=DummyContext()
-        )
+        result = server.get_page_layout(attachment_key="ATTACH01", page=0, ctx=DummyContext())
 
         assert "Error" in result
         assert "page" in result.lower()
@@ -716,9 +695,7 @@ class TestGetPageLayoutTool:
         monkeypatch.setattr("zotero_mcp.client.get_web_zotero_client", lambda: None)
         monkeypatch.setattr("zotero_mcp.client.get_local_zotero_client", lambda: None)
 
-        result = server.get_page_layout(
-            attachment_key="ATTACH01", page=1, ctx=DummyContext()
-        )
+        result = server.get_page_layout(attachment_key="ATTACH01", page=1, ctx=DummyContext())
 
         assert "Error" in result
 
@@ -729,19 +706,22 @@ class TestGetPageLayoutTool:
         monkeypatch.setattr("zotero_mcp.client.get_web_zotero_client", lambda: None)
         monkeypatch.setattr("zotero_mcp.client.get_local_zotero_client", lambda: fake_zot)
         monkeypatch.setattr("zotero_mcp.client.get_active_library", lambda: None)
-        self._patch_detection(monkeypatch, _layout_result([
-            _layout_region(
-                region_id=1,
-                source="image",
-                caption_label="Figure 1",
-                caption_text="Figure 1: Local mode figure.",
-                confidence="high",
+        self._patch_detection(
+            monkeypatch,
+            _layout_result(
+                [
+                    _layout_region(
+                        region_id=1,
+                        source="image",
+                        caption_label="Figure 1",
+                        caption_text="Figure 1: Local mode figure.",
+                        confidence="high",
+                    ),
+                ]
             ),
-        ]))
-
-        result = server.get_page_layout(
-            attachment_key="ATTACH01", page=2, ctx=DummyContext()
         )
+
+        result = server.get_page_layout(attachment_key="ATTACH01", page=2, ctx=DummyContext())
 
         assert "Error" not in result
         assert "1 region" in result

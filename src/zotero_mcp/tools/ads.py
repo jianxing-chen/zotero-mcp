@@ -258,9 +258,7 @@ def search_ads(
             lines.append("")
 
         if in_library_count < len(docs):
-            lines.append(
-                "_To import a paper, use zotero_add_by_bibcode with its bibcode._"
-            )
+            lines.append("_To import a paper, use zotero_add_by_bibcode with its bibcode._")
         return "\n".join(lines)
 
     except Exception as e:
@@ -362,9 +360,7 @@ def ads_citation_network(
             lines += _render_related(cit_summaries, "Citations")
 
         if total_in_lib < (len(refs) + len(cits)):
-            lines.append(
-                "_To import a missing paper, use zotero_add_by_bibcode with its bibcode._"
-            )
+            lines.append("_To import a missing paper, use zotero_add_by_bibcode with its bibcode._")
         return "\n".join(lines)
 
     except Exception as e:
@@ -390,26 +386,33 @@ def ads_citation_network(
         "Requires an ADS API token. "
         "Example: zotero_export_ads(bibcodes='2024ApJ...968L..12A', "
         "format='bibtex') → returns @article{...} BibTeX entry."
-    )
+    ),
 )
 @with_zotero_api_lock
 def export_ads(
     bibcodes: str | list[str],
     format: Literal[
-        "bibtex", "bibtexabs", "aastex", "mnras", "icarus", "soph",
-        "ris", "endnote", "ads", "procite", "refworks", "votable",
+        "bibtex",
+        "bibtexabs",
+        "aastex",
+        "mnras",
+        "icarus",
+        "soph",
+        "ris",
+        "endnote",
+        "ads",
+        "procite",
+        "refworks",
+        "votable",
     ] = "bibtex",
     sort: str | None = None,
     *,
-    ctx: Context
+    ctx: Context,
 ) -> str:
     """Export papers from ADS in a citation format (BibTeX, AASTeX, etc.)."""
     try:
         if not ads_client.is_available():
-            return (
-                "Error: ADS API token is not configured. "
-                "Run 'zotero-mcp setup' to add it, or set ADS_API_TOKEN."
-            )
+            return "Error: ADS API token is not configured. Run 'zotero-mcp setup' to add it, or set ADS_API_TOKEN."
 
         # Normalize input to a list of strings.
         raw_list = _helpers._normalize_str_list_input(bibcodes, "bibcodes")

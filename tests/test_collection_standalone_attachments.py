@@ -19,7 +19,7 @@ class FakeZoteroForCollection(FakeZotero):
 
     def collection_items(self, key, start=0, limit=100, **kwargs):
         # Mirror the Zotero API: returns parents AND children mixed together.
-        return self._items[start:start + limit]
+        return self._items[start : start + limit]
 
 
 def _make_zot(monkeypatch, items):
@@ -30,6 +30,7 @@ def _make_zot(monkeypatch, items):
 
 
 # Item fixtures ------------------------------------------------------------
+
 
 def _paper(key="PAPER1"):
     return {
@@ -66,12 +67,11 @@ def _standalone_pdf(key="STANDALONE1", filename="why-language-models-hallucinate
 
 # Tests --------------------------------------------------------------------
 
+
 def test_standalone_pdf_appears_in_collection(monkeypatch):
     _make_zot(monkeypatch, [_paper(), _child_pdf(), _standalone_pdf()])
 
-    result = server.get_collection_items(
-        collection_key="COLL1", detail="keys_only", ctx=DummyContext()
-    )
+    result = server.get_collection_items(collection_key="COLL1", detail="keys_only", ctx=DummyContext())
 
     assert "STANDALONE1" in result
     assert "why-language-models-hallucinate.pdf" in result
@@ -81,9 +81,7 @@ def test_child_attachment_not_listed_as_top_level(monkeypatch):
     # The child PDF belongs under PAPER1 and must NOT appear as its own item
     _make_zot(monkeypatch, [_paper(), _child_pdf(), _standalone_pdf()])
 
-    result = server.get_collection_items(
-        collection_key="COLL1", detail="keys_only", ctx=DummyContext()
-    )
+    result = server.get_collection_items(collection_key="COLL1", detail="keys_only", ctx=DummyContext())
 
     assert "CHILD1" not in result
 
@@ -92,9 +90,7 @@ def test_collection_count_includes_standalone(monkeypatch):
     # 1 paper + 1 standalone = 2 top-level items (child excluded)
     _make_zot(monkeypatch, [_paper(), _child_pdf(), _standalone_pdf()])
 
-    result = server.get_collection_items(
-        collection_key="COLL1", detail="keys_only", ctx=DummyContext()
-    )
+    result = server.get_collection_items(collection_key="COLL1", detail="keys_only", ctx=DummyContext())
 
     assert "(2 items)" in result
 
@@ -102,9 +98,7 @@ def test_collection_count_includes_standalone(monkeypatch):
 def test_standalone_pdf_flagged_as_pdf(monkeypatch):
     _make_zot(monkeypatch, [_standalone_pdf()])
 
-    result = server.get_collection_items(
-        collection_key="COLL1", detail="keys_only", ctx=DummyContext()
-    )
+    result = server.get_collection_items(collection_key="COLL1", detail="keys_only", ctx=DummyContext())
 
     assert "[PDF]" in result
 
@@ -120,9 +114,7 @@ def test_standalone_pdf_uses_filename_when_no_title(monkeypatch):
     }
     _make_zot(monkeypatch, [no_title])
 
-    result = server.get_collection_items(
-        collection_key="COLL1", detail="keys_only", ctx=DummyContext()
-    )
+    result = server.get_collection_items(collection_key="COLL1", detail="keys_only", ctx=DummyContext())
 
     assert "raw-dump.pdf" in result
     assert "Untitled" not in result
@@ -132,9 +124,7 @@ def test_normal_papers_still_listed(monkeypatch):
     # Regression guard: ordinary parent items keep working
     _make_zot(monkeypatch, [_paper("PAPER1"), _paper("PAPER2")])
 
-    result = server.get_collection_items(
-        collection_key="COLL1", detail="keys_only", ctx=DummyContext()
-    )
+    result = server.get_collection_items(collection_key="COLL1", detail="keys_only", ctx=DummyContext())
 
     assert "PAPER1" in result
     assert "PAPER2" in result
@@ -156,9 +146,7 @@ def _standalone_pdf_no_title(key="STANDALONE_NT", filename="raw-dump.pdf"):
 def test_standalone_pdf_shown_in_summary_detail(monkeypatch):
     _make_zot(monkeypatch, [_standalone_pdf_no_title()])
 
-    result = server.get_collection_items(
-        collection_key="COLL1", detail="summary", ctx=DummyContext()
-    )
+    result = server.get_collection_items(collection_key="COLL1", detail="summary", ctx=DummyContext())
 
     assert "raw-dump.pdf" in result
     assert "Untitled" not in result
@@ -167,9 +155,7 @@ def test_standalone_pdf_shown_in_summary_detail(monkeypatch):
 def test_standalone_pdf_shown_in_full_detail(monkeypatch):
     _make_zot(monkeypatch, [_standalone_pdf_no_title()])
 
-    result = server.get_collection_items(
-        collection_key="COLL1", detail="full", ctx=DummyContext()
-    )
+    result = server.get_collection_items(collection_key="COLL1", detail="full", ctx=DummyContext())
 
     assert "raw-dump.pdf" in result
     assert "Untitled" not in result
@@ -179,9 +165,7 @@ def test_standalone_pdf_flagged_as_pdf_in_summary(monkeypatch):
     # The PDF indicator must show in the default detail level too, not only keys_only
     _make_zot(monkeypatch, [_standalone_pdf()])
 
-    result = server.get_collection_items(
-        collection_key="COLL1", detail="summary", ctx=DummyContext()
-    )
+    result = server.get_collection_items(collection_key="COLL1", detail="summary", ctx=DummyContext())
 
     assert "PDF" in result
 
@@ -195,9 +179,7 @@ def test_standalone_note_not_listed(monkeypatch):
     }
     _make_zot(monkeypatch, [_paper(), standalone_note])
 
-    result = server.get_collection_items(
-        collection_key="COLL1", detail="keys_only", ctx=DummyContext()
-    )
+    result = server.get_collection_items(collection_key="COLL1", detail="keys_only", ctx=DummyContext())
 
     assert "NOTE1" not in result
     assert "(1 items)" in result

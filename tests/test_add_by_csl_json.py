@@ -51,6 +51,7 @@ SAMPLE_ARTICLE = {
 # Happy paths
 # ---------------------------------------------------------------------------
 
+
 class TestHappyPath:
     def test_single_dict_input(self, monkeypatch, dummy_ctx):
         fake = _patch_hybrid(monkeypatch)
@@ -72,7 +73,8 @@ class TestHappyPath:
         _disable_oa_pdf(monkeypatch)
 
         result = server.add_by_csl_json(
-            csl_json=json.dumps(SAMPLE_ARTICLE), ctx=dummy_ctx,
+            csl_json=json.dumps(SAMPLE_ARTICLE),
+            ctx=dummy_ctx,
         )
 
         assert len(fake.created) == 1
@@ -83,8 +85,7 @@ class TestHappyPath:
         fake = _patch_hybrid(monkeypatch)
         _disable_oa_pdf(monkeypatch)
 
-        entries = [SAMPLE_ARTICLE, {"type": "book", "title": "B",
-                                     "author": [{"family": "A"}]}]
+        entries = [SAMPLE_ARTICLE, {"type": "book", "title": "B", "author": [{"family": "A"}]}]
         result = server.add_by_csl_json(csl_json=entries, ctx=dummy_ctx)
 
         assert len(fake.created) == 2
@@ -108,6 +109,7 @@ class TestHappyPath:
 # Tags and collections
 # ---------------------------------------------------------------------------
 
+
 class TestTagsAndCollections:
     def test_caller_tags_merged(self, monkeypatch, dummy_ctx):
         fake = _patch_hybrid(monkeypatch)
@@ -117,7 +119,9 @@ class TestTagsAndCollections:
         csl["keyword"] = ["source1", "source2"]
 
         server.add_by_csl_json(
-            csl_json=csl, tags=["caller1", "source1"], ctx=dummy_ctx,
+            csl_json=csl,
+            tags=["caller1", "source1"],
+            ctx=dummy_ctx,
         )
 
         tags = [t["tag"] for t in fake.created[0]["tags"]]
@@ -142,6 +146,7 @@ class TestTagsAndCollections:
 # ---------------------------------------------------------------------------
 # DOI -> OA PDF
 # ---------------------------------------------------------------------------
+
 
 class TestOaPdfAttempt:
     def test_doi_triggers_attempt(self, monkeypatch, dummy_ctx):
@@ -171,8 +176,7 @@ class TestOaPdfAttempt:
         monkeypatch.setattr("zotero_mcp.tools._helpers._try_attach_oa_pdf", stub)
 
         server.add_by_csl_json(
-            csl_json={"type": "book", "title": "B",
-                      "author": [{"family": "A"}]},
+            csl_json={"type": "book", "title": "B", "author": [{"family": "A"}]},
             ctx=dummy_ctx,
         )
 
@@ -182,6 +186,7 @@ class TestOaPdfAttempt:
 # ---------------------------------------------------------------------------
 # file_path ingestion
 # ---------------------------------------------------------------------------
+
 
 class TestFilePath:
     def test_reads_json_file(self, monkeypatch, dummy_ctx, tmp_path):
@@ -218,7 +223,8 @@ class TestFilePath:
     def test_rejects_missing_file(self, monkeypatch, dummy_ctx):
         _patch_hybrid(monkeypatch)
         result = server.add_by_csl_json(
-            file_path="/absolutely/no/such/file.json", ctx=dummy_ctx,
+            file_path="/absolutely/no/such/file.json",
+            ctx=dummy_ctx,
         )
         assert "not found" in result.lower()
 
@@ -241,6 +247,7 @@ class TestFilePath:
 # ---------------------------------------------------------------------------
 # Error paths
 # ---------------------------------------------------------------------------
+
 
 class TestErrorPaths:
     def test_invalid_json_string(self, monkeypatch, dummy_ctx):
@@ -266,7 +273,9 @@ class TestErrorPaths:
     def test_both_csl_and_file_path_rejected(self, monkeypatch, dummy_ctx):
         _patch_hybrid(monkeypatch)
         result = server.add_by_csl_json(
-            csl_json=SAMPLE_ARTICLE, file_path="/tmp/x.json", ctx=dummy_ctx,
+            csl_json=SAMPLE_ARTICLE,
+            file_path="/tmp/x.json",
+            ctx=dummy_ctx,
         )
         assert "not both" in result
 
@@ -274,8 +283,6 @@ class TestErrorPaths:
         def raise_local(ctx):
             raise ValueError("Cannot perform write operations in local-only mode.")
 
-        monkeypatch.setattr(
-            "zotero_mcp.tools._helpers._get_write_client", raise_local
-        )
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", raise_local)
         result = server.add_by_csl_json(csl_json=SAMPLE_ARTICLE, ctx=dummy_ctx)
         assert "local-only" in result.lower()

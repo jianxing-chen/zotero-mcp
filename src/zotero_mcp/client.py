@@ -68,6 +68,7 @@ def with_zotero_api_lock(func):
     nested decorated calls on the same thread (e.g. add_by_url -> add_by_doi)
     acquire instantly and are never blocked by this bound.
     """
+
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
         timeout = _lock_timeout()
@@ -88,6 +89,7 @@ def with_zotero_api_lock(func):
             return func(*args, **kwargs)
         finally:
             _zotero_api_lock.release()
+
     return wrapper
 
 
@@ -378,6 +380,7 @@ def generate_bibtex(item: dict[str, Any]) -> str:
     # Try Better BibTeX first
     try:
         from zotero_mcp.better_bibtex_client import ZoteroBetterBibTexAPI
+
         bibtex = ZoteroBetterBibTexAPI()
 
         if bibtex.is_zotero_running():
@@ -402,7 +405,7 @@ def generate_bibtex(item: dict[str, Any]) -> str:
         "thesis": "phdthesis",
         "report": "techreport",
         "webpage": "misc",
-        "manuscript": "unpublished"
+        "manuscript": "unpublished",
     }
 
     # Create citation key
@@ -431,14 +434,14 @@ def generate_bibtex(item: dict[str, Any]) -> str:
         ("place", "address"),
         ("DOI", "doi"),
         ("url", "url"),
-        ("abstractNote", "abstract")
+        ("abstractNote", "abstract"),
     ]
 
     for zotero_field, bibtex_field in field_mappings:
         if value := data.get(zotero_field):
             # Escape special characters
             value = value.replace("{", "\\{").replace("}", "\\}")
-            lines.append(f'  {bibtex_field} = {{{value}}},')
+            lines.append(f"  {bibtex_field} = {{{value}}},")
 
     # Add authors
     if creators:
@@ -450,23 +453,21 @@ def generate_bibtex(item: dict[str, Any]) -> str:
                 elif "name" in creator:
                     authors.append(creator["name"])
         if authors:
-            lines.append(f'  author = {{{" and ".join(authors)}}},')
+            lines.append(f"  author = {{{' and '.join(authors)}}},")
 
     # Add year
     if year != "nodate":
-        lines.append(f'  year = {{{year}}},')
+        lines.append(f"  year = {{{year}}},")
 
     # Remove trailing comma from last field and close entry
-    if lines[-1].endswith(','):
+    if lines[-1].endswith(","):
         lines[-1] = lines[-1][:-1]
     lines.append("}")
 
     return "\n".join(lines)
 
 
-def get_attachment_details(
-    zot: zotero.Zotero, item: dict[str, Any]
-) -> AttachmentDetails | None:
+def get_attachment_details(zot: zotero.Zotero, item: dict[str, Any]) -> AttachmentDetails | None:
     """
     Get attachment details for a Zotero item, finding the most relevant attachment.
 

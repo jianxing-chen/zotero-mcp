@@ -5,7 +5,6 @@ Open Library → Google Books lookup cascade, and the resulting Zotero book
 item shape.
 """
 
-
 import requests
 from conftest import DummyContext, FakeZotero
 
@@ -20,6 +19,7 @@ from zotero_mcp.tools._helpers import (
 # ---------------------------------------------------------------------------
 # ISBN normalization
 # ---------------------------------------------------------------------------
+
 
 class TestNormalizeIsbn:
     def test_valid_isbn13(self):
@@ -63,6 +63,7 @@ class TestNormalizeIsbn:
 # Lookup helpers: Open Library and Google Books
 # ---------------------------------------------------------------------------
 
+
 class _FakeResponse:
     def __init__(self, status_code=200, payload=None):
         self.status_code = status_code
@@ -74,11 +75,13 @@ class _FakeResponse:
 
 def _fake_get_factory(responses):
     """Build a fake requests.get that returns responses keyed by URL substring."""
+
     def _fake_get(url, **kwargs):
         for substring, resp in responses.items():
             if substring in url:
                 return resp
         return _FakeResponse(404)
+
     return _fake_get
 
 
@@ -95,30 +98,39 @@ OL_PAYLOAD = {
 }
 
 GB_PAYLOAD = {
-    "items": [{
-        "volumeInfo": {
-            "title": "Some Rare Book",
-            "subtitle": "A Subtitle",
-            "authors": ["Jane Doe"],
-            "publisher": "Academic Press",
-            "publishedDate": "2020",
-            "pageCount": 300,
-            "infoLink": "https://books.google.com/books?id=abc",
+    "items": [
+        {
+            "volumeInfo": {
+                "title": "Some Rare Book",
+                "subtitle": "A Subtitle",
+                "authors": ["Jane Doe"],
+                "publisher": "Academic Press",
+                "publishedDate": "2020",
+                "pageCount": 300,
+                "infoLink": "https://books.google.com/books?id=abc",
+            }
         }
-    }]
+    ]
 }
 
 
 class TestOpenLibraryLookup:
     def test_hit_returns_normalized_dict(self, monkeypatch):
         monkeypatch.setattr(
-            _write, "requests",
-            type("R", (), {
-                "get": _fake_get_factory({
-                    "openlibrary.org": _FakeResponse(200, OL_PAYLOAD),
-                }),
-                "RequestException": requests.RequestException,
-            })
+            _write,
+            "requests",
+            type(
+                "R",
+                (),
+                {
+                    "get": _fake_get_factory(
+                        {
+                            "openlibrary.org": _FakeResponse(200, OL_PAYLOAD),
+                        }
+                    ),
+                    "RequestException": requests.RequestException,
+                },
+            ),
         )
         meta = _write._lookup_isbn_openlibrary("9780199735815", DummyContext())
         assert meta is not None
@@ -131,13 +143,20 @@ class TestOpenLibraryLookup:
 
     def test_miss_returns_none(self, monkeypatch):
         monkeypatch.setattr(
-            _write, "requests",
-            type("R", (), {
-                "get": _fake_get_factory({
-                    "openlibrary.org": _FakeResponse(200, {}),
-                }),
-                "RequestException": requests.RequestException,
-            })
+            _write,
+            "requests",
+            type(
+                "R",
+                (),
+                {
+                    "get": _fake_get_factory(
+                        {
+                            "openlibrary.org": _FakeResponse(200, {}),
+                        }
+                    ),
+                    "RequestException": requests.RequestException,
+                },
+            ),
         )
         assert _write._lookup_isbn_openlibrary("9999999999999", DummyContext()) is None
 
@@ -145,13 +164,20 @@ class TestOpenLibraryLookup:
 class TestGoogleBooksLookup:
     def test_hit_returns_normalized_dict(self, monkeypatch):
         monkeypatch.setattr(
-            _write, "requests",
-            type("R", (), {
-                "get": _fake_get_factory({
-                    "googleapis.com": _FakeResponse(200, GB_PAYLOAD),
-                }),
-                "RequestException": requests.RequestException,
-            })
+            _write,
+            "requests",
+            type(
+                "R",
+                (),
+                {
+                    "get": _fake_get_factory(
+                        {
+                            "googleapis.com": _FakeResponse(200, GB_PAYLOAD),
+                        }
+                    ),
+                    "RequestException": requests.RequestException,
+                },
+            ),
         )
         meta = _write._lookup_isbn_google_books("9780000000000", DummyContext())
         assert meta is not None
@@ -162,13 +188,20 @@ class TestGoogleBooksLookup:
 
     def test_no_items_returns_none(self, monkeypatch):
         monkeypatch.setattr(
-            _write, "requests",
-            type("R", (), {
-                "get": _fake_get_factory({
-                    "googleapis.com": _FakeResponse(200, {"items": []}),
-                }),
-                "RequestException": requests.RequestException,
-            })
+            _write,
+            "requests",
+            type(
+                "R",
+                (),
+                {
+                    "get": _fake_get_factory(
+                        {
+                            "googleapis.com": _FakeResponse(200, {"items": []}),
+                        }
+                    ),
+                    "RequestException": requests.RequestException,
+                },
+            ),
         )
         assert _write._lookup_isbn_google_books("9999999999999", DummyContext()) is None
 
@@ -176,6 +209,7 @@ class TestGoogleBooksLookup:
 # ---------------------------------------------------------------------------
 # End-to-end add_by_isbn
 # ---------------------------------------------------------------------------
+
 
 class TestAddByIsbnEndToEnd:
     def test_open_library_hit_creates_book(self, monkeypatch):
@@ -185,13 +219,20 @@ class TestAddByIsbnEndToEnd:
             lambda ctx: (fake, fake),
         )
         monkeypatch.setattr(
-            _write, "requests",
-            type("R", (), {
-                "get": _fake_get_factory({
-                    "openlibrary.org": _FakeResponse(200, OL_PAYLOAD),
-                }),
-                "RequestException": requests.RequestException,
-            })
+            _write,
+            "requests",
+            type(
+                "R",
+                (),
+                {
+                    "get": _fake_get_factory(
+                        {
+                            "openlibrary.org": _FakeResponse(200, OL_PAYLOAD),
+                        }
+                    ),
+                    "RequestException": requests.RequestException,
+                },
+            ),
         )
 
         result = server.add_by_isbn(
@@ -218,14 +259,21 @@ class TestAddByIsbnEndToEnd:
             lambda ctx: (fake, fake),
         )
         monkeypatch.setattr(
-            _write, "requests",
-            type("R", (), {
-                "get": _fake_get_factory({
-                    "openlibrary.org": _FakeResponse(200, {}),  # OL miss
-                    "googleapis.com": _FakeResponse(200, GB_PAYLOAD),  # GB hit
-                }),
-                "RequestException": requests.RequestException,
-            })
+            _write,
+            "requests",
+            type(
+                "R",
+                (),
+                {
+                    "get": _fake_get_factory(
+                        {
+                            "openlibrary.org": _FakeResponse(200, {}),  # OL miss
+                            "googleapis.com": _FakeResponse(200, GB_PAYLOAD),  # GB hit
+                        }
+                    ),
+                    "RequestException": requests.RequestException,
+                },
+            ),
         )
 
         result = server.add_by_isbn(
@@ -243,14 +291,21 @@ class TestAddByIsbnEndToEnd:
             lambda ctx: (fake, fake),
         )
         monkeypatch.setattr(
-            _write, "requests",
-            type("R", (), {
-                "get": _fake_get_factory({
-                    "openlibrary.org": _FakeResponse(200, {}),
-                    "googleapis.com": _FakeResponse(200, {"items": []}),
-                }),
-                "RequestException": requests.RequestException,
-            })
+            _write,
+            "requests",
+            type(
+                "R",
+                (),
+                {
+                    "get": _fake_get_factory(
+                        {
+                            "openlibrary.org": _FakeResponse(200, {}),
+                            "googleapis.com": _FakeResponse(200, {"items": []}),
+                        }
+                    ),
+                    "RequestException": requests.RequestException,
+                },
+            ),
         )
 
         result = server.add_by_isbn(
@@ -286,13 +341,20 @@ class TestAddByIsbnEndToEnd:
             lambda ctx: (fake, fake),
         )
         monkeypatch.setattr(
-            _write, "requests",
-            type("R", (), {
-                "get": _fake_get_factory({
-                    "openlibrary.org": _FakeResponse(200, OL_PAYLOAD),
-                }),
-                "RequestException": requests.RequestException,
-            })
+            _write,
+            "requests",
+            type(
+                "R",
+                (),
+                {
+                    "get": _fake_get_factory(
+                        {
+                            "openlibrary.org": _FakeResponse(200, OL_PAYLOAD),
+                        }
+                    ),
+                    "RequestException": requests.RequestException,
+                },
+            ),
         )
 
         server.add_by_isbn(

@@ -1,6 +1,5 @@
 """Tests for item related/relation functionality."""
 
-
 from conftest import DummyContext, FakeZotero, _FakeResponse
 
 from zotero_mcp import server
@@ -9,8 +8,8 @@ from zotero_mcp import server
 # Helpers
 # -----------------------------------------------------------------------------
 
-def _make_item(key="ABCD1234", version=10, title="Test Title",
-               relations=None, **kwargs):
+
+def _make_item(key="ABCD1234", version=10, title="Test Title", relations=None, **kwargs):
     """Build a Zotero item dict with optional relations."""
     return {
         "key": key,
@@ -20,10 +19,9 @@ def _make_item(key="ABCD1234", version=10, title="Test Title",
             "version": version,
             "itemType": "journalArticle",
             "title": title,
-            "creators": [{"creatorType": "author",
-                          "firstName": "Jane", "lastName": "Doe"}],
+            "creators": [{"creatorType": "author", "firstName": "Jane", "lastName": "Doe"}],
             "relations": relations or {},
-            **kwargs
+            **kwargs,
         },
     }
 
@@ -56,15 +54,14 @@ class FakeZoteroForRelations(FakeZotero):
 # Get Related Items Tests
 # -----------------------------------------------------------------------------
 
-class TestGetItemRelated:
 
+class TestGetItemRelated:
     def test_no_relations(self, monkeypatch):
         """Item with no relations returns appropriate message."""
         item = _make_item(key="ITEM0001", relations={})
         fake = FakeZoteroForRelations(items=[item])
 
-        monkeypatch.setattr("zotero_mcp.tools.retrieval._client.get_zotero_client",
-                            lambda: fake)
+        monkeypatch.setattr("zotero_mcp.tools.retrieval._client.get_zotero_client", lambda: fake)
 
         result = server.get_item_related("ITEM0001", ctx=DummyContext())
 
@@ -75,14 +72,11 @@ class TestGetItemRelated:
         """Item with relations returns formatted list."""
         item1 = _make_item(key="ITEM0001", title="First Paper")
         item2 = _make_item(key="ITEM0002", title="Second Paper")
-        item1["data"]["relations"] = {
-            "dc:relation": ["http://zotero.org/users/12345/items/ITEM0002"]
-        }
+        item1["data"]["relations"] = {"dc:relation": ["http://zotero.org/users/12345/items/ITEM0002"]}
 
         fake = FakeZoteroForRelations(items=[item1, item2])
 
-        monkeypatch.setattr("zotero_mcp.tools.retrieval._client.get_zotero_client",
-                            lambda: fake)
+        monkeypatch.setattr("zotero_mcp.tools.retrieval._client.get_zotero_client", lambda: fake)
 
         result = server.get_item_related("ITEM0001", ctx=DummyContext())
 
@@ -94,8 +88,7 @@ class TestGetItemRelated:
         """Fetching relations for nonexistent item returns error."""
         fake = FakeZoteroForRelations(items=[])
 
-        monkeypatch.setattr("zotero_mcp.tools.retrieval._client.get_zotero_client",
-                            lambda: fake)
+        monkeypatch.setattr("zotero_mcp.tools.retrieval._client.get_zotero_client", lambda: fake)
 
         result = server.get_item_related("NOTFOUND", ctx=DummyContext())
 
@@ -106,16 +99,15 @@ class TestGetItemRelated:
 # Add Relation Tests
 # -----------------------------------------------------------------------------
 
-class TestAddItemRelation:
 
+class TestAddItemRelation:
     def test_add_relation_success(self, monkeypatch):
         """Successfully add a relation between two items."""
         item1 = _make_item(key="ITEM0001", title="Paper One")
         item2 = _make_item(key="ITEM0002", title="Paper Two")
         fake = FakeZoteroForRelations(items=[item1, item2])
 
-        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
-                            lambda ctx: (fake, fake))
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake, fake))
 
         result = server.add_item_relation(
             item_key="ITEM0001",
@@ -138,8 +130,7 @@ class TestAddItemRelation:
         item1 = _make_item(key="ITEM0001")
         fake = FakeZoteroForRelations(items=[item1])
 
-        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
-                            lambda ctx: (fake, fake))
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake, fake))
 
         result = server.add_item_relation(
             item_key="ITEM0001",
@@ -155,8 +146,7 @@ class TestAddItemRelation:
         item1 = _make_item(key="ITEM0001")
         fake = FakeZoteroForRelations(items=[item1])
 
-        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
-                            lambda ctx: (fake, fake))
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake, fake))
 
         result = server.add_item_relation(
             item_key="ITEM0001",
@@ -168,14 +158,11 @@ class TestAddItemRelation:
 
     def test_duplicate_relation(self, monkeypatch):
         """Adding duplicate relation returns informative message."""
-        item1 = _make_item(key="ITEM0001", relations={
-            "dc:relation": ["http://zotero.org/users/12345/items/ITEM0002"]
-        })
+        item1 = _make_item(key="ITEM0001", relations={"dc:relation": ["http://zotero.org/users/12345/items/ITEM0002"]})
         item2 = _make_item(key="ITEM0002")
         fake = FakeZoteroForRelations(items=[item1, item2])
 
-        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
-                            lambda ctx: (fake, fake))
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake, fake))
 
         result = server.add_item_relation(
             item_key="ITEM0001",
@@ -190,20 +177,15 @@ class TestAddItemRelation:
 # Remove Relation Tests
 # -----------------------------------------------------------------------------
 
-class TestRemoveItemRelation:
 
+class TestRemoveItemRelation:
     def test_remove_relation_success(self, monkeypatch):
         """Successfully remove a relation."""
-        item1 = _make_item(key="ITEM0001", relations={
-            "dc:relation": ["http://zotero.org/users/12345/items/ITEM0002"]
-        })
-        item2 = _make_item(key="ITEM0002", relations={
-            "dc:relation": ["http://zotero.org/users/12345/items/ITEM0001"]
-        })
+        item1 = _make_item(key="ITEM0001", relations={"dc:relation": ["http://zotero.org/users/12345/items/ITEM0002"]})
+        item2 = _make_item(key="ITEM0002", relations={"dc:relation": ["http://zotero.org/users/12345/items/ITEM0001"]})
         fake = FakeZoteroForRelations(items=[item1, item2])
 
-        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
-                            lambda ctx: (fake, fake))
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake, fake))
 
         result = server.remove_item_relation(
             item_key="ITEM0001",
@@ -221,8 +203,7 @@ class TestRemoveItemRelation:
         item2 = _make_item(key="ITEM0002")
         fake = FakeZoteroForRelations(items=[item1, item2])
 
-        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
-                            lambda ctx: (fake, fake))
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake, fake))
 
         result = server.remove_item_relation(
             item_key="ITEM0001",
@@ -239,8 +220,7 @@ class TestRemoveItemRelation:
         item2 = _make_item(key="ITEM0002")
         fake = FakeZoteroForRelations(items=[item1, item2])
 
-        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
-                            lambda ctx: (fake, fake))
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake, fake))
 
         result = server.remove_item_relation(
             item_key="ITEM0001",

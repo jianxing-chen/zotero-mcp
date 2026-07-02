@@ -54,14 +54,10 @@ def test_zotero_ft_cache_short_circuits_pdf_extraction(tmp_path):
     storage = tmp_path / "storage"
     attachment_dir = storage / "ABCDEFGH"
     attachment_dir.mkdir(parents=True)
-    (attachment_dir / ".zotero-ft-cache").write_text(
-        "Full body text extracted by Zotero, including the conclusion."
-    )
+    (attachment_dir / ".zotero-ft-cache").write_text("Full body text extracted by Zotero, including the conclusion.")
     # Recorded sqlite path points at a filename that no longer exists.
     reader = _Reader(
-        attachments=[
-            ("ABCDEFGH", "storage:original-filename-renamed.pdf", "application/pdf")
-        ],
+        attachments=[("ABCDEFGH", "storage:original-filename-renamed.pdf", "application/pdf")],
         storage_dir=storage,
     )
 
@@ -110,9 +106,7 @@ def test_storage_scan_recovers_from_renamed_pdf(tmp_path):
     on_disk.write_bytes(b"%PDF-1.4 fake content")
 
     reader = _Reader(
-        attachments=[
-            ("RENAMED1", "storage:recorded-name-but-not-on-disk.pdf", "application/pdf")
-        ],
+        attachments=[("RENAMED1", "storage:recorded-name-but-not-on-disk.pdf", "application/pdf")],
         storage_dir=storage,
     )
 

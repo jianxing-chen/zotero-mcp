@@ -58,9 +58,7 @@ def test_get_item_metadata_json_returns_complete_raw_item(monkeypatch):
     assert parsed["version"] == 7
     assert parsed["meta"]["numChildren"] == 2
     assert parsed["data"]["language"] == "en"
-    assert parsed["data"]["relations"]["dc:relation"] == [
-        "http://zotero.org/users/1/items/ABCD1234"
-    ]
+    assert parsed["data"]["relations"]["dc:relation"] == ["http://zotero.org/users/1/items/ABCD1234"]
 
 
 def test_get_item_metadata_markdown_remains_readable_summary(monkeypatch):

@@ -26,7 +26,9 @@ class TestApiRerankerRequests:
         resp.status_code = status
         resp.json.return_value = {
             "id": "rerank-abc123",
-            "results": results if results is not None else [
+            "results": results
+            if results is not None
+            else [
                 {"index": 2, "relevance_score": 0.95},
                 {"index": 0, "relevance_score": 0.72},
                 {"index": 1, "relevance_score": 0.31},
@@ -150,6 +152,7 @@ class TestApiRerankerErrors:
 
     def test_network_error_raises(self):
         import requests as req
+
         r = ApiReranker(model="m", base_url="http://localhost:8000/v1")
         with patch("requests.post", side_effect=req.ConnectionError("refused")):
             with pytest.raises(req.ConnectionError):

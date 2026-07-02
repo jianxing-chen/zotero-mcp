@@ -5,10 +5,7 @@ import os
 import pytest
 
 # Marker for tests that use tmp_path and fail on GitHub Actions
-skip_on_ci = pytest.mark.skipif(
-    os.environ.get("CI") == "true",
-    reason="tmp_path fixture unreliable on GitHub Actions"
-)
+skip_on_ci = pytest.mark.skipif(os.environ.get("CI") == "true", reason="tmp_path fixture unreliable on GitHub Actions")
 
 
 class DummyContext:
@@ -85,41 +82,47 @@ class FakeZotero:
             "extra": "",
         }
         if item_type in ("journalArticle", "preprint"):
-            base.update({
-                "publicationTitle": "",
-                "volume": "",
-                "issue": "",
-                "pages": "",
-                "ISSN": "",
-                "publisher": "",
-                "language": "",
-                "shortTitle": "",
-            })
+            base.update(
+                {
+                    "publicationTitle": "",
+                    "volume": "",
+                    "issue": "",
+                    "pages": "",
+                    "ISSN": "",
+                    "publisher": "",
+                    "language": "",
+                    "shortTitle": "",
+                }
+            )
         if item_type == "book":
-            base.update({
-                "publisher": "",
-                "place": "",
-                "ISBN": "",
-                "numPages": "",
-                "edition": "",
-                "volume": "",
-                "ISSN": "",
-                "language": "",
-                "shortTitle": "",
-            })
+            base.update(
+                {
+                    "publisher": "",
+                    "place": "",
+                    "ISBN": "",
+                    "numPages": "",
+                    "edition": "",
+                    "volume": "",
+                    "ISSN": "",
+                    "language": "",
+                    "shortTitle": "",
+                }
+            )
         if item_type == "bookSection":
-            base.update({
-                "bookTitle": "",
-                "publisher": "",
-                "place": "",
-                "ISBN": "",
-                "pages": "",
-                "edition": "",
-                "volume": "",
-                "ISSN": "",
-                "language": "",
-                "shortTitle": "",
-            })
+            base.update(
+                {
+                    "bookTitle": "",
+                    "publisher": "",
+                    "place": "",
+                    "ISBN": "",
+                    "pages": "",
+                    "edition": "",
+                    "volume": "",
+                    "ISSN": "",
+                    "language": "",
+                    "shortTitle": "",
+                }
+            )
         return base
 
     def addto_collection(self, collection_key, items, **kwargs):
@@ -134,8 +137,7 @@ class FakeZotero:
         return method
 
     def collection_items(self, key, **kwargs):
-        return [it for it in self._items
-                if key in it.get("data", {}).get("collections", [])]
+        return [it for it in self._items if key in it.get("data", {}).get("collections", [])]
 
     def file(self, key, **kwargs):
         return b""
@@ -144,6 +146,7 @@ class FakeZotero:
         """Create a dummy file so code that checks os.path.exists passes."""
         if path and filename:
             import os
+
             filepath = os.path.join(path, filename)
             with open(filepath, "wb") as f:
                 f.write(b"%PDF-1.4 fake")

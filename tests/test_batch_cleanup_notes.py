@@ -45,19 +45,14 @@ class FakeZoteroBatchCleanup:
         self.endpoint = "https://api.zotero.org"
         self.library_type = "users"
         self.library_id = "12345"
-        self.client = FakeHttpxClient(
-            status_code=patch_status, fail_keys=fail_keys
-        )
+        self.client = FakeHttpxClient(status_code=patch_status, fail_keys=fail_keys)
 
     def items(self, start=0, limit=100, **kwargs):
         # Honor itemType filtering.
         item_type = kwargs.get("itemType")
         pool = self._notes
         if item_type:
-            pool = [
-                n for n in pool
-                if n.get("data", {}).get("itemType") == item_type
-            ]
+            pool = [n for n in pool if n.get("data", {}).get("itemType") == item_type]
         return pool[start : start + limit]
 
     def item(self, key):
@@ -84,9 +79,7 @@ def _patch(monkeypatch, fake):
     """Patch for non-local (web) mode."""
     monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
     monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: False)
-    monkeypatch.setattr(
-        "zotero_mcp.client.get_web_zotero_client", lambda: fake
-    )
+    monkeypatch.setattr("zotero_mcp.client.get_web_zotero_client", lambda: fake)
 
 
 # ---------------------------------------------------------------------------
@@ -200,9 +193,7 @@ def test_standalone_only_false_includes_child_notes(monkeypatch):
     fake = FakeZoteroBatchCleanup(notes)
     _patch(monkeypatch, fake)
 
-    result = server.batch_cleanup_notes(
-        standalone_only=False, dry_run=True, ctx=DummyContext()
-    )
+    result = server.batch_cleanup_notes(standalone_only=False, dry_run=True, ctx=DummyContext())
 
     assert "Matched: 2 notes" in result
 
@@ -232,9 +223,7 @@ def test_empty_only_false_includes_content_notes(monkeypatch):
     fake = FakeZoteroBatchCleanup(notes)
     _patch(monkeypatch, fake)
 
-    result = server.batch_cleanup_notes(
-        empty_only=False, dry_run=True, ctx=DummyContext()
-    )
+    result = server.batch_cleanup_notes(empty_only=False, dry_run=True, ctx=DummyContext())
 
     assert "Matched: 2 notes" in result
 
@@ -298,9 +287,7 @@ def test_limit_caps_processed_notes(monkeypatch):
     fake = FakeZoteroBatchCleanup(notes)
     _patch(monkeypatch, fake)
 
-    result = server.batch_cleanup_notes(
-        dry_run=False, limit=2, ctx=DummyContext()
-    )
+    result = server.batch_cleanup_notes(dry_run=False, limit=2, ctx=DummyContext())
 
     assert "Trashed: 2" in result
     assert len(fake.client.calls) == 2

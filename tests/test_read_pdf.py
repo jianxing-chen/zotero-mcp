@@ -230,9 +230,7 @@ class TestEdgeCases:
             lambda _k, _c: ("/tmp/test.pdf", "Paper", "ATTKEY"),
         )
 
-        result = server.read_pdf_pages(
-            item_key="ITEM01", start_page=1, end_page=3, ctx=dummy_ctx
-        )
+        result = server.read_pdf_pages(item_key="ITEM01", start_page=1, end_page=3, ctx=dummy_ctx)
 
         assert "Read pages 1-3 of 10" in result
         assert "Pages 4-10 not yet read" in result
@@ -246,9 +244,7 @@ class TestEdgeCases:
             lambda _k, _c: ("/tmp/test.pdf", "Paper", "ATTKEY"),
         )
 
-        result = server.read_pdf_pages(
-            item_key="ITEM01", start_page=1, end_page=5, ctx=dummy_ctx
-        )
+        result = server.read_pdf_pages(item_key="ITEM01", start_page=1, end_page=5, ctx=dummy_ctx)
 
         assert "not yet read" not in result
         assert "continue" not in result.lower()

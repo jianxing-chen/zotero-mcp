@@ -65,10 +65,10 @@ class FakeZoteroClient:
 
     def __init__(self):
         self.items_by_key = {}
-        self.fulltext_by_key = {}   # key -> dict (content, indexedChars, ...)
+        self.fulltext_by_key = {}  # key -> dict (content, indexedChars, ...)
         self.children_by_parent = {}  # parent_key -> list[item]
-        self.versions_state = {}    # key -> library_version (current state)
-        self.version_history = []   # (since_version, changed_dict) pairs
+        self.versions_state = {}  # key -> library_version (current state)
+        self.version_history = []  # (since_version, changed_dict) pairs
         self.current_library_version = 0
         # Pagination helper
         self.items_order = []
@@ -93,7 +93,7 @@ class FakeZoteroClient:
 
     def items(self, start=0, limit=100, **kwargs):
         self.calls.append(("items", start, limit))
-        chunk = self.items_order[start:start + limit]
+        chunk = self.items_order[start : start + limit]
         return [self.items_by_key[k] for k in chunk]
 
     def item(self, key):
@@ -139,8 +139,9 @@ def _paper(key, title="Paper", item_type="conferencePaper", version=1):
     }
 
 
-def _build_search(monkeypatch, zot: FakeZoteroClient, chroma: FakeChromaClient,
-                  config_path: str | None = None) -> "semantic_search.ZoteroSemanticSearch":
+def _build_search(
+    monkeypatch, zot: FakeZoteroClient, chroma: FakeChromaClient, config_path: str | None = None
+) -> "semantic_search.ZoteroSemanticSearch":
     monkeypatch.setattr(semantic_search, "get_zotero_client", lambda: zot)
     monkeypatch.setattr(semantic_search, "is_local_mode", lambda: False)
     return semantic_search.ZoteroSemanticSearch(
@@ -151,9 +152,12 @@ def _build_search(monkeypatch, zot: FakeZoteroClient, chroma: FakeChromaClient,
 
 # --------- Unit tests: fulltext fetch helper ----------
 
+
 def test_fetch_fulltext_via_web_api_parent_hit(monkeypatch):
     zot = FakeZoteroClient()
-    zot.load_scenario([_paper("AAA")], fulltext={"AAA": {"content": "Body text.", "indexedChars": 10, "totalChars": 10}})
+    zot.load_scenario(
+        [_paper("AAA")], fulltext={"AAA": {"content": "Body text.", "indexedChars": 10, "totalChars": 10}}
+    )
     search = _build_search(monkeypatch, zot, FakeChromaClient())
     text, source = search._fetch_fulltext_via_web_api("AAA")
     assert text == "Body text."
@@ -196,10 +200,16 @@ def test_fetch_fulltext_via_web_api_returns_empty_when_nothing_available(monkeyp
 
 def test_fetch_fulltext_skips_non_pdf_children(monkeypatch):
     parent = _paper("PAR")
-    child_pdf = {"key": "PDF", "version": 1,
-                 "data": {"key": "PDF", "itemType": "attachment", "contentType": "application/pdf"}}
-    child_html = {"key": "HTM", "version": 1,
-                  "data": {"key": "HTM", "itemType": "attachment", "contentType": "text/html"}}
+    child_pdf = {
+        "key": "PDF",
+        "version": 1,
+        "data": {"key": "PDF", "itemType": "attachment", "contentType": "application/pdf"},
+    }
+    child_html = {
+        "key": "HTM",
+        "version": 1,
+        "data": {"key": "HTM", "itemType": "attachment", "contentType": "text/html"},
+    }
     zot = FakeZoteroClient()
     zot.load_scenario(
         [parent],
@@ -214,6 +224,7 @@ def test_fetch_fulltext_skips_non_pdf_children(monkeypatch):
 
 
 # --------- Integration tests: _get_items_from_api ----------
+
 
 def test_get_items_from_api_without_fulltext_leaves_data_untouched(monkeypatch):
     zot = FakeZoteroClient()
@@ -250,6 +261,7 @@ def test_get_items_from_api_with_fulltext_marks_misses_as_attempted(monkeypatch)
 
 # --------- Integration tests: incremental fetch ----------
 
+
 def test_get_changed_items_from_api_returns_only_changed_keys(monkeypatch):
     zot = FakeZoteroClient()
     zot.load_scenario(
@@ -277,6 +289,7 @@ def test_get_changed_items_filters_out_attachments_and_notes(monkeypatch):
 
 
 # --------- Integration tests: update_database orchestration ----------
+
 
 def _write_config(tmp_path, extra: dict | None = None):
     cfg = {
@@ -426,28 +439,29 @@ def test_update_database_force_rebuild_updates_last_sync_version(monkeypatch, tm
 
 # --------- Config loaders ----------
 
+
 def test_load_include_fulltext_defaults_true(monkeypatch, tmp_path):
     # No config file exists
-    search = _build_search(monkeypatch, FakeZoteroClient(), FakeChromaClient(),
-                           config_path=str(tmp_path / "missing.json"))
+    search = _build_search(
+        monkeypatch, FakeZoteroClient(), FakeChromaClient(), config_path=str(tmp_path / "missing.json")
+    )
     assert search._load_include_fulltext_setting() is True
 
 
 def test_load_include_fulltext_respects_opt_out(monkeypatch, tmp_path):
     config_path = _write_config(tmp_path, extra={"include_fulltext": False})
-    search = _build_search(monkeypatch, FakeZoteroClient(), FakeChromaClient(),
-                           config_path=config_path)
+    search = _build_search(monkeypatch, FakeZoteroClient(), FakeChromaClient(), config_path=config_path)
     assert search._load_include_fulltext_setting() is False
 
 
 def test_load_last_sync_version_defaults_zero(monkeypatch, tmp_path):
-    search = _build_search(monkeypatch, FakeZoteroClient(), FakeChromaClient(),
-                           config_path=str(tmp_path / "missing.json"))
+    search = _build_search(
+        monkeypatch, FakeZoteroClient(), FakeChromaClient(), config_path=str(tmp_path / "missing.json")
+    )
     assert search._load_last_sync_version() == 0
 
 
 def test_load_last_sync_version_reads_int(monkeypatch, tmp_path):
     config_path = _write_config(tmp_path, extra={"last_sync_version": 123})
-    search = _build_search(monkeypatch, FakeZoteroClient(), FakeChromaClient(),
-                           config_path=config_path)
+    search = _build_search(monkeypatch, FakeZoteroClient(), FakeChromaClient(), config_path=config_path)
     assert search._load_last_sync_version() == 123

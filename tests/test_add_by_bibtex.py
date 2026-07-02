@@ -39,6 +39,7 @@ def _disable_oa_pdf(monkeypatch):
 # Happy path: single entry
 # ---------------------------------------------------------------------------
 
+
 class TestSingleEntry:
     def test_creates_journal_article(self, monkeypatch, dummy_ctx):
         fake = _patch_hybrid(monkeypatch)
@@ -79,6 +80,7 @@ class TestSingleEntry:
 # Multiple entries
 # ---------------------------------------------------------------------------
 
+
 class TestMultipleEntries:
     def test_creates_multiple_items(self, monkeypatch, dummy_ctx):
         fake = _patch_hybrid(monkeypatch)
@@ -99,6 +101,7 @@ class TestMultipleEntries:
 # ---------------------------------------------------------------------------
 # Caller tags and collections are merged with source tags
 # ---------------------------------------------------------------------------
+
 
 class TestTagsAndCollections:
     def test_caller_tags_merged_with_source_keywords(self, monkeypatch, dummy_ctx):
@@ -154,6 +157,7 @@ class TestTagsAndCollections:
 # DOI triggers OA PDF attempt; no DOI skips it
 # ---------------------------------------------------------------------------
 
+
 class TestOaPdfAttempt:
     def test_doi_triggers_oa_attempt(self, monkeypatch, dummy_ctx):
         _patch_hybrid(monkeypatch)
@@ -164,9 +168,7 @@ class TestOaPdfAttempt:
             called["doi"] = doi
             return "stubbed attempt"
 
-        monkeypatch.setattr(
-            "zotero_mcp.tools._helpers._try_attach_oa_pdf", stub
-        )
+        monkeypatch.setattr("zotero_mcp.tools._helpers._try_attach_oa_pdf", stub)
 
         bib = "@article{a, title={T}, author={A, B}, year=2020, doi={10.1234/x}}"
         server.add_by_bibtex(bibtex=bib, ctx=dummy_ctx)
@@ -182,9 +184,7 @@ class TestOaPdfAttempt:
             called["count"] += 1
             return "stubbed"
 
-        monkeypatch.setattr(
-            "zotero_mcp.tools._helpers._try_attach_oa_pdf", stub
-        )
+        monkeypatch.setattr("zotero_mcp.tools._helpers._try_attach_oa_pdf", stub)
 
         bib = "@book{b, title={T}, author={A, B}, publisher={P}, year=2020}"
         server.add_by_bibtex(bibtex=bib, ctx=dummy_ctx)
@@ -195,6 +195,7 @@ class TestOaPdfAttempt:
 # ---------------------------------------------------------------------------
 # file_path ingestion
 # ---------------------------------------------------------------------------
+
 
 class TestFilePath:
     def test_reads_bib_file(self, monkeypatch, dummy_ctx, tmp_path):
@@ -218,8 +219,7 @@ class TestFilePath:
         _disable_oa_pdf(monkeypatch)
 
         f = tmp_path / "refs.bibtex"
-        f.write_text("@book{b, title={B}, author={P, Q}, publisher={Pub}, year=2020}",
-                     encoding="utf-8")
+        f.write_text("@book{b, title={B}, author={P, Q}, publisher={Pub}, year=2020}", encoding="utf-8")
 
         server.add_by_bibtex(file_path=str(f), ctx=dummy_ctx)
         assert len(fake.created) == 1
@@ -235,7 +235,8 @@ class TestFilePath:
     def test_rejects_missing_file(self, monkeypatch, dummy_ctx):
         _patch_hybrid(monkeypatch)
         result = server.add_by_bibtex(
-            file_path="/absolutely/no/such/file.bib", ctx=dummy_ctx,
+            file_path="/absolutely/no/such/file.bib",
+            ctx=dummy_ctx,
         )
         assert "not found" in result.lower()
 
@@ -259,6 +260,7 @@ class TestFilePath:
 # Error paths
 # ---------------------------------------------------------------------------
 
+
 class TestErrorPaths:
     def test_empty_bibtex(self, monkeypatch, dummy_ctx):
         _patch_hybrid(monkeypatch)
@@ -273,7 +275,9 @@ class TestErrorPaths:
     def test_both_bibtex_and_file_path_rejected(self, monkeypatch, dummy_ctx):
         _patch_hybrid(monkeypatch)
         result = server.add_by_bibtex(
-            bibtex="@a{x}", file_path="/tmp/x.bib", ctx=dummy_ctx,
+            bibtex="@a{x}",
+            file_path="/tmp/x.bib",
+            ctx=dummy_ctx,
         )
         assert "not both" in result
 
@@ -286,9 +290,7 @@ class TestErrorPaths:
         def raise_local(ctx):
             raise ValueError("Cannot perform write operations in local-only mode.")
 
-        monkeypatch.setattr(
-            "zotero_mcp.tools._helpers._get_write_client", raise_local
-        )
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", raise_local)
         result = server.add_by_bibtex(bibtex="@a{x, title=T}", ctx=dummy_ctx)
         assert "local-only" in result.lower()
 

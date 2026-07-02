@@ -17,6 +17,7 @@ from zotero_mcp.citation_import import (
 # Template fixture — mirrors the subset of Zotero's item_template() we need
 # ---------------------------------------------------------------------------
 
+
 def make_template(item_type: str) -> dict:
     base = {
         "itemType": item_type,
@@ -44,39 +45,66 @@ def make_template(item_type: str) -> dict:
         "seriesText": "",
         "journalAbbreviation": "",
     }
-    if item_type in ("journalArticle", "preprint",
-                     "magazineArticle", "newspaperArticle"):
+    if item_type in ("journalArticle", "preprint", "magazineArticle", "newspaperArticle"):
         base.update(article_fields)
     if item_type == "conferencePaper":
         base.update(article_fields)
-        base.update({"proceedingsTitle": "", "conferenceName": "",
-                     "place": "", "ISBN": ""})
+        base.update({"proceedingsTitle": "", "conferenceName": "", "place": "", "ISBN": ""})
     if item_type == "bookSection":
-        base.update({
-            "bookTitle": "", "publisher": "", "place": "", "ISBN": "",
-            "pages": "", "edition": "", "volume": "", "ISSN": "",
-            "series": "", "seriesNumber": "", "numberOfVolumes": "",
-        })
+        base.update(
+            {
+                "bookTitle": "",
+                "publisher": "",
+                "place": "",
+                "ISBN": "",
+                "pages": "",
+                "edition": "",
+                "volume": "",
+                "ISSN": "",
+                "series": "",
+                "seriesNumber": "",
+                "numberOfVolumes": "",
+            }
+        )
     if item_type == "book":
-        base.update({
-            "publisher": "", "place": "", "ISBN": "", "numPages": "",
-            "edition": "", "volume": "", "ISSN": "", "series": "",
-            "seriesNumber": "", "numberOfVolumes": "",
-        })
+        base.update(
+            {
+                "publisher": "",
+                "place": "",
+                "ISBN": "",
+                "numPages": "",
+                "edition": "",
+                "volume": "",
+                "ISSN": "",
+                "series": "",
+                "seriesNumber": "",
+                "numberOfVolumes": "",
+            }
+        )
     if item_type == "thesis":
-        base.update({
-            "thesisType": "", "university": "", "place": "", "numPages": "",
-        })
+        base.update(
+            {
+                "thesisType": "",
+                "university": "",
+                "place": "",
+                "numPages": "",
+            }
+        )
     if item_type == "report":
-        base.update({
-            "reportNumber": "", "reportType": "", "institution": "",
-            "place": "", "pages": "", "seriesTitle": "",
-        })
+        base.update(
+            {
+                "reportNumber": "",
+                "reportType": "",
+                "institution": "",
+                "place": "",
+                "pages": "",
+                "seriesTitle": "",
+            }
+        )
     if item_type == "webpage":
         base.update({"websiteTitle": "", "websiteType": "", "accessDate": ""})
     if item_type == "patent":
-        base.update({"patentNumber": "", "place": "", "country": "",
-                     "issuingAuthority": "", "pages": ""})
+        base.update({"patentNumber": "", "place": "", "country": "", "issuingAuthority": "", "pages": ""})
     if item_type == "document":
         base.update({"publisher": ""})
     return base
@@ -85,6 +113,7 @@ def make_template(item_type: str) -> dict:
 # ---------------------------------------------------------------------------
 # parse_bibtex
 # ---------------------------------------------------------------------------
+
 
 class TestParseBibtex:
     def test_parses_single_article(self):
@@ -129,6 +158,7 @@ class TestParseBibtex:
 # Author parsing
 # ---------------------------------------------------------------------------
 
+
 class TestAuthorParsing:
     def test_last_first_format(self):
         c = _parse_bibtex_author_list("Smith, John")
@@ -170,6 +200,7 @@ class TestAuthorParsing:
 # Date parsing
 # ---------------------------------------------------------------------------
 
+
 class TestDateParsing:
     def test_year_only(self):
         assert _format_bibtex_date("2020", "", "", "") == "2020"
@@ -205,6 +236,7 @@ class TestDateParsing:
 # ---------------------------------------------------------------------------
 # bibtex_entry_to_zotero
 # ---------------------------------------------------------------------------
+
 
 class TestBibtexToZotero:
     def test_article_basic(self):
@@ -299,6 +331,7 @@ class TestBibtexToZotero:
 # csl_json_to_zotero
 # ---------------------------------------------------------------------------
 
+
 class TestCslJsonToZotero:
     def test_article_journal(self):
         csl = {
@@ -325,7 +358,8 @@ class TestCslJsonToZotero:
 
     def test_chapter_uses_book_title(self):
         csl = {
-            "type": "chapter", "title": "C",
+            "type": "chapter",
+            "title": "C",
             "author": [{"family": "K"}],
             "container-title": "Big Book",
             "publisher": "Pub",
@@ -337,7 +371,8 @@ class TestCslJsonToZotero:
 
     def test_paper_conference(self):
         csl = {
-            "type": "paper-conference", "title": "P",
+            "type": "paper-conference",
+            "title": "P",
             "author": [{"family": "A"}],
             "container-title": "ICML 2020",
             "issued": {"date-parts": [[2020]]},
@@ -348,7 +383,8 @@ class TestCslJsonToZotero:
 
     def test_literal_author(self):
         csl = {
-            "type": "article-journal", "title": "t",
+            "type": "article-journal",
+            "title": "t",
             "author": [{"literal": "Acme Corp."}],
         }
         item = csl_json_to_zotero(csl, make_template)
@@ -356,15 +392,15 @@ class TestCslJsonToZotero:
 
     def test_editor_as_creator(self):
         csl = {
-            "type": "book", "title": "t",
+            "type": "book",
+            "title": "t",
             "editor": [{"given": "E", "family": "Edit"}],
         }
         item = csl_json_to_zotero(csl, make_template)
         assert item["creators"][0]["creatorType"] == "editor"
 
     def test_keyword_list(self):
-        csl = {"type": "article-journal", "title": "t",
-               "keyword": ["alpha", "beta"]}
+        csl = {"type": "article-journal", "title": "t", "keyword": ["alpha", "beta"]}
         item = csl_json_to_zotero(csl, make_template)
         assert [t["tag"] for t in item["tags"]] == ["alpha", "beta"]
 
@@ -374,8 +410,7 @@ class TestCslJsonToZotero:
         assert item["itemType"] == "document"
 
     def test_unmapped_field_to_extra(self):
-        csl = {"type": "article-journal", "title": "t",
-               "custom-field": "custom-value"}
+        csl = {"type": "article-journal", "title": "t", "custom-field": "custom-value"}
         item = csl_json_to_zotero(csl, make_template)
         assert "custom-field: custom-value" in item["extra"]
 
@@ -388,6 +423,7 @@ class TestCslJsonToZotero:
 # ---------------------------------------------------------------------------
 # coerce_csl_json_input
 # ---------------------------------------------------------------------------
+
 
 class TestCoerceCslInput:
     def test_accepts_json_string(self):
@@ -422,6 +458,7 @@ class TestCoerceCslInput:
 # ---------------------------------------------------------------------------
 # merge_tags
 # ---------------------------------------------------------------------------
+
 
 class TestMergeTags:
     def test_merges_and_preserves_order(self):

@@ -82,12 +82,8 @@ def dummy_ctx():
 
 
 def _patch_clients(monkeypatch, zot):
-    monkeypatch.setattr(
-        "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (zot, zot)
-    )
-    monkeypatch.setattr(
-        "requests.get", lambda *a, **kw: _make_crossref_response()
-    )
+    monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (zot, zot))
+    monkeypatch.setattr("requests.get", lambda *a, **kw: _make_crossref_response())
     monkeypatch.setattr(
         "zotero_mcp.tools._helpers._try_attach_oa_pdf",
         lambda *a, **kw: "skipped (test)",
@@ -97,6 +93,7 @@ def _patch_clients(monkeypatch, zot):
 # ---------------------------------------------------------------------------
 # find_existing_items
 # ---------------------------------------------------------------------------
+
 
 class TestFindExistingItems:
     def test_doi_match(self, fake_zot):
@@ -112,52 +109,62 @@ class TestFindExistingItems:
         assert _helpers.find_existing_items(fake_zot, doi="10.9999/other") == []
 
     def test_attachments_excluded(self, fake_zot):
-        fake_zot._items.append({
-            "key": "ATTACH01",
-            "version": 1,
-            "data": {"itemType": "attachment", "DOI": DOI},
-        })
+        fake_zot._items.append(
+            {
+                "key": "ATTACH01",
+                "version": 1,
+                "data": {"itemType": "attachment", "DOI": DOI},
+            }
+        )
         out = _helpers.find_existing_items(fake_zot, doi=DOI)
         assert [i["key"] for i in out] == ["EXIST001"]
 
     def test_arxiv_match_via_url(self, fake_zot):
-        fake_zot._items.append({
-            "key": "ARXIV001",
-            "version": 1,
-            "data": {
-                "itemType": "preprint",
-                "url": "https://arxiv.org/abs/2401.00001",
-                "extra": "",
-            },
-        })
+        fake_zot._items.append(
+            {
+                "key": "ARXIV001",
+                "version": 1,
+                "data": {
+                    "itemType": "preprint",
+                    "url": "https://arxiv.org/abs/2401.00001",
+                    "extra": "",
+                },
+            }
+        )
         out = _helpers.find_existing_items(fake_zot, arxiv_id="2401.00001")
         assert [i["key"] for i in out] == ["ARXIV001"]
 
     def test_arxiv_match_via_extra(self, fake_zot):
-        fake_zot._items.append({
-            "key": "ARXIV002",
-            "version": 1,
-            "data": {"itemType": "preprint", "url": "", "extra": "arXiv:2401.00002"},
-        })
+        fake_zot._items.append(
+            {
+                "key": "ARXIV002",
+                "version": 1,
+                "data": {"itemType": "preprint", "url": "", "extra": "arXiv:2401.00002"},
+            }
+        )
         out = _helpers.find_existing_items(fake_zot, arxiv_id="2401.00002")
         assert [i["key"] for i in out] == ["ARXIV002"]
 
     def test_isbn_match_across_10_13_forms(self, fake_zot):
         # ISBN-10 0306406152 == ISBN-13 9780306406157
-        fake_zot._items.append({
-            "key": "BOOK0001",
-            "version": 1,
-            "data": {"itemType": "book", "ISBN": "0-306-40615-2 9999999999"},
-        })
+        fake_zot._items.append(
+            {
+                "key": "BOOK0001",
+                "version": 1,
+                "data": {"itemType": "book", "ISBN": "0-306-40615-2 9999999999"},
+            }
+        )
         out = _helpers.find_existing_items(fake_zot, isbn="9780306406157")
         assert [i["key"] for i in out] == ["BOOK0001"]
 
     def test_url_match_modulo_trailing_slash(self, fake_zot):
-        fake_zot._items.append({
-            "key": "PAGE0001",
-            "version": 1,
-            "data": {"itemType": "webpage", "url": "https://example.com/post/"},
-        })
+        fake_zot._items.append(
+            {
+                "key": "PAGE0001",
+                "version": 1,
+                "data": {"itemType": "webpage", "url": "https://example.com/post/"},
+            }
+        )
         out = _helpers.find_existing_items(fake_zot, url="https://example.com/post")
         assert [i["key"] for i in out] == ["PAGE0001"]
 
@@ -176,18 +183,22 @@ class TestFindExistingItems:
 # add_by_doi × if_exists
 # ---------------------------------------------------------------------------
 
+
 class TestAddByDoiIfExists:
     def test_file_mode_reuses_and_converges(self, monkeypatch, fake_zot, dummy_ctx):
         _patch_clients(monkeypatch, fake_zot)
 
         result = server.add_by_doi(
-            doi=DOI, collections=["COLB0001"], tags=["new-tag"],
-            if_exists="file", ctx=dummy_ctx,
+            doi=DOI,
+            collections=["COLB0001"],
+            tags=["new-tag"],
+            if_exists="file",
+            ctx=dummy_ctx,
         )
 
-        assert fake_zot.created == []                      # no duplicate item
+        assert fake_zot.created == []  # no duplicate item
         assert ("COLB0001", "EXIST001") in fake_zot.addto_calls
-        assert len(fake_zot.updated) == 1                  # tags update
+        assert len(fake_zot.updated) == 1  # tags update
         new_tags = {t["tag"] for t in fake_zot.updated[0]["data"]["tags"]}
         assert new_tags == {"old", "new-tag"}
         assert "Already in library" in result
@@ -197,17 +208,14 @@ class TestAddByDoiIfExists:
     def test_file_mode_second_run_is_noop(self, monkeypatch, fake_zot, dummy_ctx):
         _patch_clients(monkeypatch, fake_zot)
 
-        server.add_by_doi(doi=DOI, collections=["COLB0001"], tags=["new-tag"],
-                          if_exists="file", ctx=dummy_ctx)
+        server.add_by_doi(doi=DOI, collections=["COLB0001"], tags=["new-tag"], if_exists="file", ctx=dummy_ctx)
         addto_after_first = list(fake_zot.addto_calls)
         updates_after_first = len(fake_zot.updated)
 
-        result = server.add_by_doi(doi=DOI, collections=["COLB0001"],
-                                   tags=["new-tag"], if_exists="file",
-                                   ctx=dummy_ctx)
+        result = server.add_by_doi(doi=DOI, collections=["COLB0001"], tags=["new-tag"], if_exists="file", ctx=dummy_ctx)
 
         assert fake_zot.created == []
-        assert fake_zot.addto_calls == addto_after_first   # nothing re-filed
+        assert fake_zot.addto_calls == addto_after_first  # nothing re-filed
         assert len(fake_zot.updated) == updates_after_first  # no tag rewrite
         assert "already in ['COLB0001']" in result
 
@@ -215,8 +223,11 @@ class TestAddByDoiIfExists:
         _patch_clients(monkeypatch, fake_zot)
 
         result = server.add_by_doi(
-            doi=DOI, collections=["COLB0001"], tags=["new-tag"],
-            if_exists="skip", ctx=dummy_ctx,
+            doi=DOI,
+            collections=["COLB0001"],
+            tags=["new-tag"],
+            if_exists="skip",
+            ctx=dummy_ctx,
         )
 
         assert fake_zot.created == []
@@ -233,11 +244,14 @@ class TestAddByDoiIfExists:
         assert "Successfully added" in result
 
     def test_file_mode_creates_when_no_match(self, monkeypatch, fake_zot, dummy_ctx):
-        fake_zot._items = []          # nothing in the library
+        fake_zot._items = []  # nothing in the library
         _patch_clients(monkeypatch, fake_zot)
 
         result = server.add_by_doi(
-            doi=DOI, collections=["COLB0001"], if_exists="file", ctx=dummy_ctx,
+            doi=DOI,
+            collections=["COLB0001"],
+            if_exists="file",
+            ctx=dummy_ctx,
         )
 
         assert len(fake_zot.created) == 1
@@ -254,20 +268,23 @@ class TestAddByDoiIfExists:
 # add_by_url × if_exists (arXiv + webpage routing)
 # ---------------------------------------------------------------------------
 
+
 class TestAddByUrlIfExists:
     def test_arxiv_reused_without_network(self, monkeypatch, fake_zot, dummy_ctx):
-        fake_zot._items.append({
-            "key": "ARXIV001",
-            "version": 2,
-            "data": {
-                "itemType": "preprint",
-                "title": "An arXiv Paper",
-                "url": "https://arxiv.org/abs/2401.00001",
-                "extra": "arXiv:2401.00001",
-                "collections": [],
-                "tags": [],
-            },
-        })
+        fake_zot._items.append(
+            {
+                "key": "ARXIV001",
+                "version": 2,
+                "data": {
+                    "itemType": "preprint",
+                    "title": "An arXiv Paper",
+                    "url": "https://arxiv.org/abs/2401.00001",
+                    "extra": "arXiv:2401.00001",
+                    "collections": [],
+                    "tags": [],
+                },
+            }
+        )
         monkeypatch.setattr(
             "zotero_mcp.tools._helpers._get_write_client",
             lambda ctx: (fake_zot, fake_zot),
@@ -280,7 +297,9 @@ class TestAddByUrlIfExists:
 
         result = server.add_by_url(
             url="https://arxiv.org/abs/2401.00001",
-            collections=["COLB0001"], if_exists="file", ctx=dummy_ctx,
+            collections=["COLB0001"],
+            if_exists="file",
+            ctx=dummy_ctx,
         )
 
         assert fake_zot.created == []
@@ -288,25 +307,29 @@ class TestAddByUrlIfExists:
         assert "Already in library" in result
 
     def test_webpage_reused_by_url(self, monkeypatch, fake_zot, dummy_ctx):
-        fake_zot._items.append({
-            "key": "PAGE0001",
-            "version": 3,
-            "data": {
-                "itemType": "webpage",
-                "title": "A Post",
-                "url": "https://example.com/post/",
-                "collections": [],
-                "tags": [],
-            },
-        })
+        fake_zot._items.append(
+            {
+                "key": "PAGE0001",
+                "version": 3,
+                "data": {
+                    "itemType": "webpage",
+                    "title": "A Post",
+                    "url": "https://example.com/post/",
+                    "collections": [],
+                    "tags": [],
+                },
+            }
+        )
         monkeypatch.setattr(
             "zotero_mcp.tools._helpers._get_write_client",
             lambda ctx: (fake_zot, fake_zot),
         )
 
         result = server.add_by_url(
-            url="https://example.com/post", collections=["COLB0001"],
-            if_exists="file", ctx=dummy_ctx,
+            url="https://example.com/post",
+            collections=["COLB0001"],
+            if_exists="file",
+            ctx=dummy_ctx,
         )
 
         assert fake_zot.created == []
@@ -318,27 +341,32 @@ class TestAddByUrlIfExists:
 # add_by_isbn × if_exists
 # ---------------------------------------------------------------------------
 
+
 class TestAddByIsbnIfExists:
     def test_existing_isbn_reused_across_forms(self, monkeypatch, fake_zot, dummy_ctx):
-        fake_zot._items.append({
-            "key": "BOOK0001",
-            "version": 4,
-            "data": {
-                "itemType": "book",
-                "title": "A Book",
-                "ISBN": "0-306-40615-2",   # ISBN-10 form of 9780306406157
-                "collections": [],
-                "tags": [],
-            },
-        })
+        fake_zot._items.append(
+            {
+                "key": "BOOK0001",
+                "version": 4,
+                "data": {
+                    "itemType": "book",
+                    "title": "A Book",
+                    "ISBN": "0-306-40615-2",  # ISBN-10 form of 9780306406157
+                    "collections": [],
+                    "tags": [],
+                },
+            }
+        )
         monkeypatch.setattr(
             "zotero_mcp.tools._helpers._get_write_client",
             lambda ctx: (fake_zot, fake_zot),
         )
 
         result = server.add_by_isbn(
-            isbn="9780306406157", collections=["COLB0001"],
-            if_exists="file", ctx=dummy_ctx,
+            isbn="9780306406157",
+            collections=["COLB0001"],
+            if_exists="file",
+            ctx=dummy_ctx,
         )
 
         assert fake_zot.created == []
@@ -349,6 +377,7 @@ class TestAddByIsbnIfExists:
 # ---------------------------------------------------------------------------
 # add_by_bibtex × if_exists (batch: mixed existing/new)
 # ---------------------------------------------------------------------------
+
 
 class TestAddByBibtexIfExists:
     def test_mixed_batch_reuses_and_creates(self, monkeypatch, fake_zot, dummy_ctx):
@@ -367,7 +396,9 @@ class TestAddByBibtexIfExists:
             "@article{fresh, title={Fresh Paper}, author={C, D}, year={2024}}"
         )
         result = server.add_by_bibtex(
-            bibtex=bib, collections=["COLB0001"], if_exists="file",
+            bibtex=bib,
+            collections=["COLB0001"],
+            if_exists="file",
             ctx=dummy_ctx,
         )
 
@@ -383,10 +414,11 @@ class TestAddByBibtexIfExists:
             lambda ctx: (fake_zot, fake_zot),
         )
 
-        bib = ("@article{exists, title={Existing Paper}, author={A, B}, "
-               "year={2024}, doi={" + DOI + "}}")
+        bib = "@article{exists, title={Existing Paper}, author={A, B}, year={2024}, doi={" + DOI + "}}"
         result = server.add_by_bibtex(
-            bibtex=bib, collections=["COLB0001"], if_exists="skip",
+            bibtex=bib,
+            collections=["COLB0001"],
+            if_exists="skip",
             ctx=dummy_ctx,
         )
 

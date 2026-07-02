@@ -38,9 +38,7 @@ class FakeZoteroResolver(FakeZotero):
             self._create_counter += 1
             new_key = f"NEW{self._create_counter:05d}"
             result[str(i)] = new_key
-            self._collections.append(
-                _coll(new_key, c["name"], c.get("parentCollection") or False)
-            )
+            self._collections.append(_coll(new_key, c["name"], c.get("parentCollection") or False))
         return {"success": result, "successful": {}, "failed": {}}
 
     def _retrieve_data(self, path):
@@ -74,6 +72,7 @@ def zot():
 # build_collection_paths
 # ---------------------------------------------------------------------------
 
+
 class TestBuildCollectionPaths:
     def test_paths_built_from_parent_links(self, zot):
         paths = _helpers.build_collection_paths(zot._collections)
@@ -82,16 +81,16 @@ class TestBuildCollectionPaths:
         assert paths["CHLD0003"] == ["_project", "Deep Learning"]
 
     def test_orphaned_parent_degrades_to_short_path(self):
-        paths = _helpers.build_collection_paths(
-            [_coll("AAAA0001", "Orphan", parent="GONE0000")]
-        )
+        paths = _helpers.build_collection_paths([_coll("AAAA0001", "Orphan", parent="GONE0000")])
         assert paths["AAAA0001"] == ["Orphan"]
 
     def test_parent_cycle_does_not_hang(self):
-        paths = _helpers.build_collection_paths([
-            _coll("AAAA0001", "A", parent="BBBB0001"),
-            _coll("BBBB0001", "B", parent="AAAA0001"),
-        ])
+        paths = _helpers.build_collection_paths(
+            [
+                _coll("AAAA0001", "A", parent="BBBB0001"),
+                _coll("BBBB0001", "B", parent="AAAA0001"),
+            ]
+        )
         assert "A" in "/".join(paths["AAAA0001"])
         assert "B" in "/".join(paths["BBBB0001"])
 
@@ -99,6 +98,7 @@ class TestBuildCollectionPaths:
 # ---------------------------------------------------------------------------
 # resolve_collection_specs — keys
 # ---------------------------------------------------------------------------
+
 
 class TestKeyResolution:
     def test_live_key_passes_through(self, zot):
@@ -123,6 +123,7 @@ class TestKeyResolution:
 # resolve_collection_specs — names and paths
 # ---------------------------------------------------------------------------
 
+
 class TestNameAndPathResolution:
     def test_exact_name_case_insensitive(self, zot):
         assert _helpers.resolve_collection_specs(zot, ["machine learning"]) == ["ROOT0001"]
@@ -139,14 +140,10 @@ class TestNameAndPathResolution:
         assert "Machine Learning/Deep Learning" in msg
 
     def test_path_disambiguates(self, zot):
-        assert _helpers.resolve_collection_specs(
-            zot, ["_project/Deep Learning"]
-        ) == ["CHLD0003"]
+        assert _helpers.resolve_collection_specs(zot, ["_project/Deep Learning"]) == ["CHLD0003"]
 
     def test_path_is_case_insensitive(self, zot):
-        assert _helpers.resolve_collection_specs(
-            zot, ["machine learning/deep learning"]
-        ) == ["CHLD0001"]
+        assert _helpers.resolve_collection_specs(zot, ["machine learning/deep learning"]) == ["CHLD0001"]
 
     def test_unknown_name_suggests_close_matches(self, zot):
         with pytest.raises(ValueError) as exc:
@@ -158,9 +155,7 @@ class TestNameAndPathResolution:
         assert "Machine Learning" in msg
 
     def test_mixed_specs_resolve_in_order_and_dedupe(self, zot):
-        out = _helpers.resolve_collection_specs(
-            zot, ["ROOT0003", "reading list", "Optimisation"]
-        )
+        out = _helpers.resolve_collection_specs(zot, ["ROOT0003", "reading list", "Optimisation"])
         assert out == ["ROOT0003", "CHLD0002"]
 
     def test_empty_specs_no_fetch(self):
@@ -176,32 +171,41 @@ class TestNameAndPathResolution:
 # resolve_collection_specs — create_missing
 # ---------------------------------------------------------------------------
 
+
 class TestCreateMissing:
     def test_creates_single_name_at_root(self, zot):
         out = _helpers.resolve_collection_specs(
-            zot, ["Brand New"], create_missing=True, write_zot=zot,
+            zot,
+            ["Brand New"],
+            create_missing=True,
+            write_zot=zot,
             ctx=DummyContext(),
         )
         assert out == ["NEW00001"]
-        assert zot.created_collections == [
-            {"name": "Brand New", "parentCollection": False}
-        ]
+        assert zot.created_collections == [{"name": "Brand New", "parentCollection": False}]
 
     def test_creates_chain_under_existing_prefix(self, zot):
         out = _helpers.resolve_collection_specs(
-            zot, ["_project/intertemporal/drafts"], create_missing=True,
-            write_zot=zot, ctx=DummyContext(),
+            zot,
+            ["_project/intertemporal/drafts"],
+            create_missing=True,
+            write_zot=zot,
+            ctx=DummyContext(),
         )
         # '_project' exists (ROOT0002); 'intertemporal' and 'drafts' created.
         assert [c["name"] for c in zot.created_collections] == [
-            "intertemporal", "drafts",
+            "intertemporal",
+            "drafts",
         ]
         assert zot.created_collections[0]["parentCollection"] == "ROOT0002"
         assert out == ["NEW00002"]
 
     def test_existing_spec_not_recreated(self, zot):
         out = _helpers.resolve_collection_specs(
-            zot, ["Reading List"], create_missing=True, write_zot=zot,
+            zot,
+            ["Reading List"],
+            create_missing=True,
+            write_zot=zot,
         )
         assert out == ["ROOT0003"]
         assert zot.created_collections == []
@@ -209,12 +213,16 @@ class TestCreateMissing:
     def test_ambiguous_parent_prefix_errors(self, zot):
         with pytest.raises(ValueError, match="ambiguous"):
             _helpers.resolve_collection_specs(
-                zot, ["Deep Learning/subtopic"], create_missing=True,
+                zot,
+                ["Deep Learning/subtopic"],
+                create_missing=True,
                 write_zot=zot,
             )
 
     def test_create_missing_without_write_client_errors(self, zot):
         with pytest.raises(ValueError, match="writable"):
             _helpers.resolve_collection_specs(
-                zot, ["Brand New"], create_missing=True,
+                zot,
+                ["Brand New"],
+                create_missing=True,
             )

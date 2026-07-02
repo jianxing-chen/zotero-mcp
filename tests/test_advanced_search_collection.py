@@ -118,9 +118,7 @@ def test_collection_field_doesNotContain(monkeypatch):
     _patch(monkeypatch)
 
     result = server.advanced_search(
-        conditions=[
-            {"field": "collection", "operation": "doesNotContain", "value": "COLCCCCC"}
-        ],
+        conditions=[{"field": "collection", "operation": "doesNotContain", "value": "COLCCCCC"}],
         ctx=DummyContext(),
     )
 

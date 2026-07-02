@@ -434,21 +434,14 @@ class ApiReranker:
                 "return_documents": False,
             }
 
-        resp = requests.post(
-            self._endpoint(), headers=headers, json=payload, timeout=self.timeout
-        )
+        resp = requests.post(self._endpoint(), headers=headers, json=payload, timeout=self.timeout)
         if resp.status_code != 200:
-            raise RuntimeError(
-                f"Rerank API returned HTTP {resp.status_code}: {resp.text[:200]}"
-            )
+            raise RuntimeError(f"Rerank API returned HTTP {resp.status_code}: {resp.text[:200]}")
         data = resp.json()
         results = data.get("results") or []
         # The endpoint returns results pre-sorted by descending relevance_score,
         # but sort defensively in case a non-conformant server is used.
-        scored = [
-            (int(r.get("index", 0)), float(r.get("relevance_score", 0.0)))
-            for r in results
-        ]
+        scored = [(int(r.get("index", 0)), float(r.get("relevance_score", 0.0))) for r in results]
         scored.sort(key=lambda p: p[1], reverse=True)
         return scored[:top_k]
 
@@ -558,10 +551,7 @@ class ZoteroSemanticSearch:
             if rtype == "api":
                 base_url = self._reranker_config.get("base_url")
                 if not base_url:
-                    logger.warning(
-                        "Reranker type=api but no base_url configured; "
-                        "disabling reranker."
-                    )
+                    logger.warning("Reranker type=api but no base_url configured; disabling reranker.")
                     return None
                 self._reranker = ApiReranker(
                     model=model,
@@ -605,12 +595,7 @@ class ZoteroSemanticSearch:
         try:
             with open(self.config_path) as f:
                 file_config = json.load(f)
-                value = (
-                    file_config
-                    .get("semantic_search", {})
-                    .get("openai_batch", {})
-                    .get("enabled", False)
-                )
+                value = file_config.get("semantic_search", {}).get("openai_batch", {}).get("enabled", False)
                 return bool(value)
         except Exception as e:
             logger.warning(f"Error loading OpenAI batch setting: {e}")
@@ -842,8 +827,11 @@ class ZoteroSemanticSearch:
                     "Set ZOTERO_LOCAL=true or run 'zotero-mcp setup' to enable local mode."
                 )
             return self._get_items_from_local_db(
-                limit, extract_fulltext=extract_fulltext, chroma_client=chroma_client,
-                force_rebuild=force_rebuild, reindex_keys=reindex_keys,
+                limit,
+                extract_fulltext=extract_fulltext,
+                chroma_client=chroma_client,
+                force_rebuild=force_rebuild,
+                reindex_keys=reindex_keys,
             )
         else:
             return self._get_items_from_api(limit, include_fulltext=include_fulltext_via_api)
@@ -982,16 +970,13 @@ class ZoteroSemanticSearch:
                     local_items = [it for it in local_items if getattr(it, "key", "").upper() in _rk]
                     try:
                         sys.stderr.write(
-                            f"Reindex mode: {len(local_items)}/{len(_rk)} requested items "
-                            f"found in local DB.\n"
+                            f"Reindex mode: {len(local_items)}/{len(_rk)} requested items found in local DB.\n"
                         )
                     except Exception:
                         pass
                     if not local_items:
                         try:
-                            sys.stderr.write(
-                                "  None of the requested keys were found — nothing to do.\n"
-                            )
+                            sys.stderr.write("  None of the requested keys were found — nothing to do.\n")
                         except Exception:
                             pass
                         return []
@@ -1510,18 +1495,13 @@ class ZoteroSemanticSearch:
                 if not zotero_db_path and self.config_path and os.path.exists(self.config_path):
                     try:
                         with open(self.config_path) as f:
-                            zotero_db_path = (
-                                json.load(f).get("semantic_search", {}).get("zotero_db_path")
-                            )
+                            zotero_db_path = json.load(f).get("semantic_search", {}).get("zotero_db_path")
                     except Exception:
                         pass
                 with LocalZoteroReader(db_path=zotero_db_path) as reader:
                     snapshot_keys = reader.get_all_item_keys()
         except Exception as e:
-            logger.warning(
-                f"Could not verify local snapshot completeness ({e}); "
-                "keeping previous sync watermark."
-            )
+            logger.warning(f"Could not verify local snapshot completeness ({e}); keeping previous sync watermark.")
             return None
 
         missing = api_keys - snapshot_keys
@@ -1806,9 +1786,7 @@ class ZoteroSemanticSearch:
                 # captured above (immutable sqlite reads skip WAL contents);
                 # only promote the watermark if the snapshot was complete.
                 elif extract_fulltext and target_sync_version is not None:
-                    target_sync_version = self._verify_local_snapshot_version(
-                        target_sync_version
-                    )
+                    target_sync_version = self._verify_local_snapshot_version(target_sync_version)
 
             stats["total_items"] = len(all_items)
             logger.info(f"Found {stats['total_items']} items to process")
@@ -1908,10 +1886,7 @@ class ZoteroSemanticSearch:
                         stats["recovered_items"] += 1
                     except Exception as _probe_e:
                         _first_err = str(_probe_e).lower()
-                        _retry_skippable = (
-                            "dimension" in _first_err
-                            or "embedding function conflict" in _first_err
-                        )
+                        _retry_skippable = "dimension" in _first_err or "embedding function conflict" in _first_err
 
                 if _retry_skippable:
                     # Deterministic failure — stop immediately, don't burn
@@ -2153,8 +2128,7 @@ class ZoteroSemanticSearch:
             batch_ids=selected_ids or None,
         )
         batches = [
-            batch for batch in manifest.get("batches", [])
-            if not selected_ids or batch.get("batch_id") in selected_ids
+            batch for batch in manifest.get("batches", []) if not selected_ids or batch.get("batch_id") in selected_ids
         ]
         missing_ids = selected_ids - {batch.get("batch_id") for batch in batches}
         if missing_ids:
@@ -2181,10 +2155,7 @@ class ZoteroSemanticSearch:
         )
 
         all_batches = manifest.get("batches", [])
-        batches = [
-            batch for batch in all_batches
-            if not selected_ids or batch.get("batch_id") in selected_ids
-        ]
+        batches = [batch for batch in all_batches if not selected_ids or batch.get("batch_id") in selected_ids]
         missing_ids = selected_ids - {batch.get("batch_id") for batch in batches}
         if missing_ids:
             raise FileNotFoundError(f"No OpenAI batch manifest entries found for: {', '.join(sorted(missing_ids))}")
@@ -2241,10 +2212,12 @@ class ZoteroSemanticSearch:
                     continue
                 if batch.get("status") != "completed":
                     stats["batches_skipped"] += 1
-                    stats["errors"].append({
-                        "batch_id": batch.get("batch_id"),
-                        "error": f"Batch status is {batch.get('status')}, not completed",
-                    })
+                    stats["errors"].append(
+                        {
+                            "batch_id": batch.get("batch_id"),
+                            "error": f"Batch status is {batch.get('status')}, not completed",
+                        }
+                    )
                     continue
                 output_file_id = batch.get("output_file_id")
                 if not output_file_id:
@@ -2260,22 +2233,18 @@ class ZoteroSemanticSearch:
                 embeddings_by_id, row_failures = openai_batch.parse_embedding_output(output_text)
 
                 if batch.get("error_file_id"):
-                    error_path = Path(batch["records_path"]).with_name(Path(batch["records_path"]).stem + "-errors.jsonl")
+                    error_path = Path(batch["records_path"]).with_name(
+                        Path(batch["records_path"]).stem + "-errors.jsonl"
+                    )
                     error_text = openai_batch.download_file_text(client, batch["error_file_id"], error_path)
                     row_failures.extend(openai_batch.parse_error_output(error_text))
 
                 records = {record["id"]: record for record in openai_batch.read_jsonl(Path(batch["records_path"]))}
                 ids = [doc_id for doc_id in embeddings_by_id if doc_id in records]
                 unexpected_output_ids = [doc_id for doc_id in embeddings_by_id if doc_id not in records]
-                failure_ids = {
-                    failure.get("custom_id")
-                    for failure in row_failures
-                    if failure.get("custom_id")
-                }
+                failure_ids = {failure.get("custom_id") for failure in row_failures if failure.get("custom_id")}
                 missing_result_ids = [
-                    doc_id
-                    for doc_id in records
-                    if doc_id not in embeddings_by_id and doc_id not in failure_ids
+                    doc_id for doc_id in records if doc_id not in embeddings_by_id and doc_id not in failure_ids
                 ]
                 missing_errors = [
                     {"custom_id": doc_id, "error": "Batch output returned an embedding for an unknown record"}
@@ -2313,10 +2282,7 @@ class ZoteroSemanticSearch:
         finally:
             lock_cm.__exit__(None, None, None)
 
-    def search(self,
-               query: str,
-               limit: int = 10,
-               filters: dict[str, Any] | None = None) -> dict[str, Any]:
+    def search(self, query: str, limit: int = 10, filters: dict[str, Any] | None = None) -> dict[str, Any]:
         """
         Perform semantic search over the Zotero library.
 
@@ -2358,9 +2324,7 @@ class ZoteroSemanticSearch:
                 except Exception as rerank_err:
                     # Reranker failure (e.g. oMLX endpoint down, network error)
                     # must not abort the whole search — fall back to vector order.
-                    logger.warning(
-                        f"Reranker failed, falling back to vector order: {rerank_err}"
-                    )
+                    logger.warning(f"Reranker failed, falling back to vector order: {rerank_err}")
 
             # Enrich results with full Zotero item data, grouping passages back
             # to their parent items and capping at `limit` distinct papers.

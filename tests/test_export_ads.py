@@ -154,12 +154,9 @@ class TestExportAdsTool:
         ctx.info = MagicMock()
 
         mock_zot = MagicMock()
-        mock_zot.item.return_value = {
-            "data": {"extra": "arXiv:2401.12345\nbibcode: 2024ApJ...968L..12A"}
-        }
+        mock_zot.item.return_value = {"data": {"extra": "arXiv:2401.12345\nbibcode: 2024ApJ...968L..12A"}}
 
-        with patch("zotero_mcp.tools.ads._client") as mock_client, \
-             patch("zotero_mcp.tools.ads.ads_client") as mock_ads:
+        with patch("zotero_mcp.tools.ads._client") as mock_client, patch("zotero_mcp.tools.ads.ads_client") as mock_ads:
             mock_client.get_zotero_client.return_value = mock_zot
             mock_ads.is_available.return_value = True
             mock_ads.normalize_bibcode.return_value = None  # not a raw bibcode
@@ -181,12 +178,9 @@ class TestExportAdsTool:
         ctx.info = MagicMock()
 
         mock_zot = MagicMock()
-        mock_zot.item.return_value = {
-            "data": {"extra": "arXiv:2401.12345 [astro-ph.CO]"}
-        }
+        mock_zot.item.return_value = {"data": {"extra": "arXiv:2401.12345 [astro-ph.CO]"}}
 
-        with patch("zotero_mcp.tools.ads._client") as mock_client, \
-             patch("zotero_mcp.tools.ads.ads_client") as mock_ads:
+        with patch("zotero_mcp.tools.ads._client") as mock_client, patch("zotero_mcp.tools.ads.ads_client") as mock_ads:
             mock_client.get_zotero_client.return_value = mock_zot
             mock_ads.is_available.return_value = True
             mock_ads.normalize_bibcode.return_value = None  # not a raw bibcode
@@ -212,12 +206,9 @@ class TestExportAdsTool:
         ctx.info = MagicMock()
 
         mock_zot = MagicMock()
-        mock_zot.item.return_value = {
-            "data": {"extra": "arXiv:2401.12345\nbibcode: 2024ApJ...968L..12A"}
-        }
+        mock_zot.item.return_value = {"data": {"extra": "arXiv:2401.12345\nbibcode: 2024ApJ...968L..12A"}}
 
-        with patch("zotero_mcp.tools.ads._client") as mock_client, \
-             patch("zotero_mcp.tools.ads.ads_client") as mock_ads:
+        with patch("zotero_mcp.tools.ads._client") as mock_client, patch("zotero_mcp.tools.ads.ads_client") as mock_ads:
             mock_client.get_zotero_client.return_value = mock_zot
             mock_ads.is_available.return_value = True
             mock_ads.normalize_bibcode.return_value = None
@@ -234,12 +225,9 @@ class TestExportAdsTool:
 
         ctx = MagicMock()
         mock_zot = MagicMock()
-        mock_zot.item.return_value = {
-            "data": {"extra": "arXiv:9999.99999 [astro-ph.CO]"}
-        }
+        mock_zot.item.return_value = {"data": {"extra": "arXiv:9999.99999 [astro-ph.CO]"}}
 
-        with patch("zotero_mcp.tools.ads._client") as mock_client, \
-             patch("zotero_mcp.tools.ads.ads_client") as mock_ads:
+        with patch("zotero_mcp.tools.ads._client") as mock_client, patch("zotero_mcp.tools.ads.ads_client") as mock_ads:
             mock_client.get_zotero_client.return_value = mock_zot
             mock_ads.is_available.return_value = True
             mock_ads.normalize_bibcode.return_value = None
@@ -256,12 +244,9 @@ class TestExportAdsTool:
         ctx.info = MagicMock()
 
         mock_zot = MagicMock()
-        mock_zot.item.return_value = {
-            "data": {"extra": "arXiv:astro-ph/0501001"}
-        }
+        mock_zot.item.return_value = {"data": {"extra": "arXiv:astro-ph/0501001"}}
 
-        with patch("zotero_mcp.tools.ads._client") as mock_client, \
-             patch("zotero_mcp.tools.ads.ads_client") as mock_ads:
+        with patch("zotero_mcp.tools.ads._client") as mock_client, patch("zotero_mcp.tools.ads.ads_client") as mock_ads:
             mock_client.get_zotero_client.return_value = mock_zot
             mock_ads.is_available.return_value = True
             mock_ads.normalize_bibcode.return_value = None
@@ -320,8 +305,7 @@ class TestExportAdsTool:
         mock_zot = MagicMock()
         mock_zot.item.return_value = {"data": {"extra": ""}}
 
-        with patch("zotero_mcp.tools.ads._client") as mock_client, \
-             patch("zotero_mcp.tools.ads.ads_client") as mock_ads:
+        with patch("zotero_mcp.tools.ads._client") as mock_client, patch("zotero_mcp.tools.ads.ads_client") as mock_ads:
             mock_client.get_zotero_client.return_value = mock_zot
             mock_ads.is_available.return_value = True
             mock_ads.normalize_bibcode.return_value = None

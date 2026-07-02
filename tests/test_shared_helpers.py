@@ -1,6 +1,5 @@
 """Tests for shared helper functions in server.py and utils.py."""
 
-
 import pytest
 from conftest import DummyContext, FakeZotero
 
@@ -10,6 +9,7 @@ from zotero_mcp.utils import clean_html
 # ---------------------------------------------------------------------------
 # _normalize_str_list_input
 # ---------------------------------------------------------------------------
+
 
 class TestNormalizeStrListInput:
     def test_none_returns_empty(self):
@@ -57,9 +57,13 @@ class TestNormalizeStrListInput:
 # clean_html (with collapse_whitespace=True, replaces _strip_xml_tags)
 # ---------------------------------------------------------------------------
 
+
 class TestStripXmlTags:
     def test_jats_tags(self):
-        assert clean_html("<jats:p>Hello <jats:italic>world</jats:italic></jats:p>", collapse_whitespace=True) == "Hello world"
+        assert (
+            clean_html("<jats:p>Hello <jats:italic>world</jats:italic></jats:p>", collapse_whitespace=True)
+            == "Hello world"
+        )
 
     def test_html_tags(self):
         assert clean_html("<p>Hello <b>world</b></p>", collapse_whitespace=True) == "Hello world"
@@ -78,6 +82,7 @@ class TestStripXmlTags:
 # ---------------------------------------------------------------------------
 # _normalize_doi
 # ---------------------------------------------------------------------------
+
 
 class TestNormalizeDoi:
     def test_bare_doi(self):
@@ -109,6 +114,7 @@ class TestNormalizeDoi:
 # _normalize_arxiv_id
 # ---------------------------------------------------------------------------
 
+
 class TestNormalizeArxivId:
     def test_new_format(self):
         assert server._normalize_arxiv_id("2401.00001") == "2401.00001"
@@ -137,6 +143,7 @@ class TestNormalizeArxivId:
 # ---------------------------------------------------------------------------
 # _resolve_collection_names
 # ---------------------------------------------------------------------------
+
 
 class TestResolveCollectionNames:
     def test_resolve_single_name(self):
@@ -188,6 +195,7 @@ class TestResolveCollectionNames:
 # _get_write_client
 # ---------------------------------------------------------------------------
 
+
 class TestGetWriteClient:
     def test_web_mode_returns_same_client(self, monkeypatch):
         fake = FakeZotero()
@@ -223,9 +231,9 @@ class TestGetWriteClient:
         monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: local)
         monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: True)
         monkeypatch.setattr("zotero_mcp.client.get_web_zotero_client", lambda: web)
-        monkeypatch.setattr("zotero_mcp.client.get_active_library", lambda: {
-            "library_id": "group123", "library_type": "group"
-        })
+        monkeypatch.setattr(
+            "zotero_mcp.client.get_active_library", lambda: {"library_id": "group123", "library_type": "group"}
+        )
         _, write_zot = server._get_write_client(DummyContext())
         assert write_zot.library_id == "group123"
         assert write_zot.library_type == "groups"
@@ -248,17 +256,21 @@ class TestGetWriteClient:
 # _handle_write_response
 # ---------------------------------------------------------------------------
 
+
 class TestHandleWriteResponse:
     def test_httpx_200(self):
         from conftest import _FakeResponse
+
         assert server._handle_write_response(_FakeResponse(200)) is True
 
     def test_httpx_204(self):
         from conftest import _FakeResponse
+
         assert server._handle_write_response(_FakeResponse(204)) is True
 
     def test_httpx_412_fails(self):
         from conftest import _FakeResponse
+
         assert server._handle_write_response(_FakeResponse(412)) is False
 
     def test_dict_with_success(self):
@@ -275,6 +287,7 @@ class TestHandleWriteResponse:
 
     def test_logs_error_on_failure(self):
         from conftest import _FakeResponse
+
         ctx = DummyContext()
         ctx.errors = []
         ctx.error = lambda msg: ctx.errors.append(msg)
@@ -286,6 +299,7 @@ class TestHandleWriteResponse:
 # ---------------------------------------------------------------------------
 # CROSSREF_TYPE_MAP
 # ---------------------------------------------------------------------------
+
 
 class TestCrossrefTypeMap:
     def test_journal_article(self):
@@ -308,6 +322,7 @@ class TestCrossrefTypeMap:
 # _strip_unwritable_fields — pyzotero check_items whitelist omission workaround
 # ---------------------------------------------------------------------------
 
+
 class TestStripUnwritableFields:
     """pyzotero's check_items() rejects keys outside a hardcoded whitelist that
     omits `lastRead` (set by Zotero's PDF reader). Without stripping, any
@@ -316,6 +331,7 @@ class TestStripUnwritableFields:
 
     def test_strips_last_read_from_attachment(self):
         from zotero_mcp.tools import _helpers
+
         item = {
             "key": "ATT1",
             "version": 3,
@@ -335,11 +351,13 @@ class TestStripUnwritableFields:
 
     def test_noop_when_field_absent(self):
         from zotero_mcp.tools import _helpers
+
         item = {"data": {"itemType": "journalArticle", "title": "x"}}
         _helpers._strip_unwritable_fields(item)
         assert item["data"] == {"itemType": "journalArticle", "title": "x"}
 
     def test_safe_when_data_missing(self):
         from zotero_mcp.tools import _helpers
+
         # Should not raise on a malformed item with no data dict.
         _helpers._strip_unwritable_fields({"key": "ABC"})

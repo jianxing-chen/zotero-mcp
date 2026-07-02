@@ -51,9 +51,7 @@ class _RecordingZotero(FakeZotero):
             key = f"KEY{i:04d}"
             result[str(i)] = key
             # Stash the created item so item(key) can read it back.
-            stored_collections = (
-                list(item.get("collections") or []) if self._atomic else []
-            )
+            stored_collections = list(item.get("collections") or []) if self._atomic else []
             self._created_items[key] = {
                 "key": key,
                 "version": 1,
@@ -108,9 +106,7 @@ class TestEnsureCollectionMembership:
         z.create_items([{"itemType": "journalArticle", "collections": ["A75DWWBH"]}])
         # Pre-seed one membership so only the second key needs addto.
         z._created_items["KEY0000"]["data"]["collections"] = ["A75DWWBH"]
-        failed = _helpers.ensure_collection_membership(
-            z, "KEY0000", ["A75DWWBH", "BBBBBBBB"]
-        )
+        failed = _helpers.ensure_collection_membership(z, "KEY0000", ["A75DWWBH", "BBBBBBBB"])
         assert failed == []
         assert z.addto_calls == [("BBBBBBBB", "KEY0000")]
 
@@ -121,9 +117,7 @@ class TestEnsureCollectionMembership:
 
 
 def _patch_write_client(monkeypatch, zot):
-    monkeypatch.setattr(
-        "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (zot, zot)
-    )
+    monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (zot, zot))
     monkeypatch.setattr("requests.get", lambda *a, **kw: _make_crossref_response())
     # Bypass the OA-PDF lookup (it would hit Unpaywall / Semantic Scholar over the network).
     monkeypatch.setattr(
@@ -141,9 +135,7 @@ def test_add_by_doi_string_collection_routes_correctly(monkeypatch):
     ]
     _patch_write_client(monkeypatch, z)
 
-    result = server.add_by_doi(
-        doi="10.1234/test", collections="A75DWWBH", ctx=DummyContext()
-    )
+    result = server.add_by_doi(doi="10.1234/test", collections="A75DWWBH", ctx=DummyContext())
 
     item = z.created[0]
     assert item["collections"] == ["A75DWWBH"]
@@ -159,9 +151,7 @@ def test_add_by_doi_string_collection_with_atomic_failure_backstops(monkeypatch)
     ]
     _patch_write_client(monkeypatch, z)
 
-    result = server.add_by_doi(
-        doi="10.1234/test", collections="A75DWWBH", ctx=DummyContext()
-    )
+    result = server.add_by_doi(doi="10.1234/test", collections="A75DWWBH", ctx=DummyContext())
 
     assert z.addto_calls == [("A75DWWBH", "KEY0000")]
     assert "Filed in ['A75DWWBH']" in result
