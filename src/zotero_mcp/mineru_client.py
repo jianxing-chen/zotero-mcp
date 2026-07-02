@@ -647,8 +647,11 @@ def _cloud_parse_single(
     try:
         import requests
 
+        # Upload timeout scales with the overall timeout — thick books
+        # produce large PDFs that need more than the old hardcoded 120s.
+        upload_timeout = max(120, timeout // 3)
         with open(pdf_path, "rb") as fh:
-            put_resp = requests.put(upload_url, data=fh, timeout=120)
+            put_resp = requests.put(upload_url, data=fh, timeout=upload_timeout)
     except Exception as e:
         logger.warning(f"MinerU cloud file upload failed: {e}")
         return None
