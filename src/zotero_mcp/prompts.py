@@ -138,10 +138,12 @@ def expand_from_paper(identifier: str) -> str:
 
 @mcp.prompt(
     name="zotero_read_paper",
-    description="Read a paper in full (all pages) and produce a structured "
-    "summary with page references. Drives page-by-page extraction so "
-    "nothing is missed — unlike a single read_pdf_pages call which "
-    "may stop after the first batch.",
+    description="Read a paper in full and produce a structured summary with "
+    "page references. Automatically detects whether a MinerU-powered "
+    "vector index exists for the item — if so, uses semantic search to "
+    "locate relevant chapters/sections and reads only those pages "
+    "(efficient for long documents). If not, falls back to sequential "
+    "page-by-page reading so nothing is missed.",
 )
 def read_paper(item_key: str, focus: str = "") -> str:
     """Read an entire paper and summarize it.
@@ -152,6 +154,7 @@ def read_paper(item_key: str, focus: str = "") -> str:
             'the derivation in section 3'). Empty = full balanced summary.
     """
     focus_clause = f" Pay special attention to: {focus}." if focus else ""
+    focus_query = focus or "main topic key findings methodology results"
     return "\n".join(
         [
             f"Read and summarize the paper with Zotero item key `{item_key}` — "
@@ -161,28 +164,57 @@ def read_paper(item_key: str, focus: str = "") -> str:
             "",
             f"1. `zotero_get_item_metadata(item_key='{item_key}')` — get the title, authors, year, DOI for context.",
             "",
-            f"2. `zotero_get_pdf_outline(item_key='{item_key}')` — "
-            "get the table of contents. If it returns 'no outline', proceed "
-            "anyway (many papers don't have one embedded).",
+            f"2. `zotero_get_pdf_outline(item_key='{item_key}')` — get the table of "
+            "contents. If it returns 'no outline', proceed anyway.",
             "",
-            f"3. Read the paper in full, in batches of up to 50 pages. "
-            f"Start with `zotero_read_pdf_pages(item_key='{item_key}', "
-            "start_page=1, end_page=50)`. The output header tells you the "
-            "total page count. Continue reading the remaining pages in "
-            "consecutive 50-page batches (e.g. 51-100, 101-150) until you "
-            "have covered every page. Do NOT stop after the first batch "
-            "unless the paper is ≤50 pages. MinerU caches the parsed PDF "
-            "after the first call, so later batches are fast.",
+            "3. **Detect whether a MinerU-powered vector index exists** by running "
+            f"`zotero_semantic_search(query='{focus_query}', limit=8)` — "
+            f"if results for `{item_key}` appear with a **page number** in the "
+            "Location field (e.g. 'p. 145'), the document has a full MinerU "
+            "vector index. Choose your reading strategy accordingly:",
             "",
-            "4. After reading all pages, produce a structured summary:",
+            "   **Strategy A — Vector-indexed (page numbers present in search hits):**",
+            "   The document has been parsed by MinerU and fully indexed. Use "
+            "semantic search to locate every major section instead of reading "
+            "sequentially:",
+            "   a. Run several `zotero_semantic_search` calls with different "
+            "   queries to map the document's structure: e.g. "
+            "'introduction and motivation', 'methodology and data', "
+            "'key results and main findings', 'discussion and conclusions', "
+            "'limitations and future work'.",
+            f"   b. Collect the page numbers from each hit. Sort them and read "
+            f"   the relevant page ranges with `zotero_read_pdf_pages"
+            f"(item_key='{item_key}', start_page=N, end_page=M)` — "
+            f"MinerU cache means later reads are instant.",
+            "   c. If a section spans many pages, read it in ≤50-page batches. "
+            "   Cross-check: have you covered every section from the outline? "
+            "   If any section was missed by the semantic queries, read it "
+            "   directly by page range.",
+            "   This strategy is far more token-efficient than sequential "
+            "reading for long documents (books, theses, long reviews).",
+            "",
+            "   **Strategy B — No vector index (search returns no hits for this item, or no page numbers):**",
+            f"   Read sequentially in batches of up to 50 pages. Start with "
+            f"`zotero_read_pdf_pages(item_key='{item_key}', start_page=1, "
+            "end_page=50)`. The output header tells you the total page count. "
+            "Continue in consecutive 50-page batches (51-100, 101-150) until "
+            "every page is covered. Do NOT stop after the first batch unless "
+            "the paper is ≤50 pages. MinerU caches the parsed PDF after the "
+            "first call, so later batches are fast.",
+            f"   After the first read, you'll see a hint to run "
+            f"`zotero_update_search_database(reindex_keys=['{item_key}'])` — "
+            f"do this if the document is long (>50 pages) so future queries "
+            f"can use Strategy A.",
+            "",
+            "4. After reading the relevant pages (via either strategy), produce a structured summary:",
             "   - **Research question & motivation**",
             "   - **Methodology** (model, data, experimental setup)",
             "   - **Key results** (cite specific numbers, formulas, figures)",
             "   - **Conclusions & limitations**",
             "   Reference page numbers for important findings (e.g. 'p. 12').",
             "",
-            "If the paper is very long (>200 pages, e.g. a thesis or book), "
-            "first use the outline to identify the most relevant chapters, "
-            "and read those in full rather than every page.",
+            "If the paper is very long (>200 pages, e.g. a thesis or book) and "
+            "Strategy A is unavailable, first use the outline to identify the "
+            "most relevant chapters, and read those in full rather than every page.",
         ]
     )
