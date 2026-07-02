@@ -923,3 +923,41 @@ def _dispatch_parse(
 def _invalidate_cache(attachment_key: str, config: dict[str, Any]) -> None:
     cache_dir = _cache_dir_for(attachment_key, config)
     shutil.rmtree(cache_dir, ignore_errors=True)
+
+
+def read_cached_pages_joined(attachment_key: str, config: dict[str, Any] | None = None) -> str | None:
+    """Return cached MinerU fulltext with form-feed page separators, or None.
+
+    Cache-only read (no parse triggered). Reads ``pages.json`` (a
+    ``list[str]``, one element per page) and joins with ``\\f`` so that
+    ``semantic_search._page_for_offset`` can resolve a chunk's character
+    offset back to a 1-indexed page number.
+
+    Unlike the reverted ``read_cached_fulltext`` (which read the flat
+    ``fulltext.md`` and lost page boundaries), this preserves page
+    boundaries — essential for the "embedding定位 → MinerU精读验证"
+    workflow where a semantic hit must report a page number the agent
+    can pass to ``zotero_read_pdf_pages``.
+
+    Returns None if no cache exists, the cache is unreadable, or
+    ``pages.json`` is missing/invalid. The caller (``local_db``) treats
+    None as "fall back to pdfminer".
+    """
+    if not attachment_key:
+        return None
+    cfg = config if config is not None else load_mineru_config()
+    try:
+        cache_dir = _cache_dir_for(attachment_key, cfg)
+        pages_path = cache_dir / "pages.json"
+        if not pages_path.exists():
+            return None
+        pages = json.loads(pages_path.read_text(encoding="utf-8", errors="replace"))
+    except Exception as e:
+        logger.debug(f"read_cached_pages_joined({attachment_key}) read failed: {e}")
+        return None
+    if not isinstance(pages, list) or not pages:
+        return None
+    # Filter out empty pages but keep page numbering contiguous — a
+    # blank page in the middle still counts as a page boundary.
+    joined = "\f".join(p if isinstance(p, str) else "" for p in pages)
+    return joined if joined.strip() else None

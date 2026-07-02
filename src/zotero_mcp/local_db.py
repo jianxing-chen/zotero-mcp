@@ -102,7 +102,13 @@ class LocalZoteroReader:
     without going through the Zotero API.
     """
 
-    def __init__(self, db_path: str | None = None, pdf_max_pages: int | None = None, pdf_timeout: int = 30):
+    def __init__(
+        self,
+        db_path: str | None = None,
+        pdf_max_pages: int | None = None,
+        pdf_timeout: int = 30,
+        prefer_mineru: bool = False,
+    ):
         """
         Initialize the local database reader.
 
@@ -111,11 +117,16 @@ class LocalZoteroReader:
             pdf_max_pages: Maximum pages to extract from PDFs. 0 means no
                 limit (extract all pages); None falls back to the default 10.
             pdf_timeout: Seconds to wait for PDF extraction before killing the process.
+            prefer_mineru: When True, _extract_fulltext_for_item checks for a
+                cached MinerU parse (from a prior 精读 session) before falling
+                back to .zotero-ft-cache / pdfminer. Used by the reindex_keys
+                path to build a page-aware, full-document vector index.
         """
         self.db_path = db_path or self._find_zotero_db()
         self._connection: sqlite3.Connection | None = None
         self.pdf_max_pages: int | None = pdf_max_pages
         self.pdf_timeout: int = pdf_timeout
+        self.prefer_mineru: bool = prefer_mineru
         # Reduce noise from pdfminer warnings
         try:
             logging.getLogger("pdfminer").setLevel(logging.ERROR)
@@ -504,20 +515,50 @@ class LocalZoteroReader:
         # rather than a stub or thumbnail.
         return max(candidates, key=lambda p: p.stat().st_size)
 
+    def _read_mineru_cache(self, attachment_key: str) -> str | None:
+        """Return cached MinerU fulltext (with \\f page separators) for an
+        attachment, or ``None``.
+
+        Cache-only read (no parse triggered). When a 精读 session has
+        already produced a MinerU parse, the semantic index reuses its
+        per-page text — preserving page boundaries (for
+        ``_page_for_offset``) and LaTeX/table structure that pdfminer
+        destroys. Import is deferred to avoid pulling torch/mineru deps
+        into the semantic-search build path when MinerU is not configured.
+        """
+        try:
+            from .mineru_client import read_cached_pages_joined
+        except Exception:
+            return None
+        return read_cached_pages_joined(attachment_key)
+
     def _extract_fulltext_for_item(self, item_id: int) -> tuple[str, str] | None:
         """Attempt to extract fulltext and source from the item's best attachment.
 
-        Preference order:
+        Preference order (when ``prefer_mineru`` is set):
+        0. MinerU cache (from a prior 精读 — page-aware, LaTeX-preserving)
+           — source ``"mineru-cache"``.
         1. ``.zotero-ft-cache`` (Zotero's own already-indexed text — survives
            filename drift, no subprocess needed) — source ``"zotero-cache"``.
         2. PDF extraction — source ``"pdf"``.
         3. HTML extraction — source ``"html"``.
         4. Textual attachments (.txt, .vtt, .srt, etc.) — source ``"file"``.
 
+        When ``prefer_mineru`` is False (default, including the normal
+        incremental build path), step 0 is skipped entirely — the build
+        path stays dep-light and uniform across all items.
+
         If the sqlite-recorded filename doesn't resolve on disk, scan the
         attachment's storage folder for a content-type-matching file before
         giving up (#291, #265).
         """
+        # 0. MinerU cache — reuse a prior 精读 parse if available.
+        if getattr(self, "prefer_mineru", False):
+            for key, _path, _ctype in self._iter_parent_attachments(item_id):
+                cached = self._read_mineru_cache(key)
+                if cached:
+                    return (cached, "mineru-cache")
+
         # 1. Zotero's own full-text cache — use it whenever present.
         for key, _path, _ctype in self._iter_parent_attachments(item_id):
             cached = self._read_zotero_ft_cache(key)

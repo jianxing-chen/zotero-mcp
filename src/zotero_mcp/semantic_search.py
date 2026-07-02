@@ -890,11 +890,18 @@ class ZoteroSemanticSearch:
             # already uncapped, so this only matters for the pdfminer path.)
             if reindex_keys and pdf_max_pages is None:
                 pdf_max_pages = 0
+            # reindex_keys also enables MinerU cache reuse: if a prior 精读
+            # session cached pages.json for an item, the reindex uses that
+            # (page-aware, LaTeX-preserving) text instead of pdfminer.
+            prefer_mineru = bool(reindex_keys)
 
             with (
                 suppress_stdout(),
                 LocalZoteroReader(
-                    db_path=zotero_db_path, pdf_max_pages=pdf_max_pages, pdf_timeout=pdf_timeout
+                    db_path=zotero_db_path,
+                    pdf_max_pages=pdf_max_pages,
+                    pdf_timeout=pdf_timeout,
+                    prefer_mineru=prefer_mineru,
                 ) as reader,
             ):
                 # Capture the snapshot's full key set on the SAME connection
@@ -2039,6 +2046,13 @@ class ZoteroSemanticSearch:
                         item_max = _chunks_for_pages(_pages[uk], chunk_size, overlap)
                     else:
                         item_max = max_chunks
+                    # MinerU-sourced items (from a prior 精读 cache) get
+                    # full-document chunking — no 20-chunk cap. A 500-page
+                    # book parsed by MinerU should produce ~800+ chunks so
+                    # every page is searchable; the cap is a pdfminer-path
+                    # guard against pathological extraction bloat.
+                    if item.get("data", {}).get("fulltextSource") == "mineru-cache":
+                        item_max = max(item_max, 10000)
                     passages = split_into_passages(doc_text, chunk_size, overlap, item_max)
                     if not passages:
                         stats["skipped"] += 1
