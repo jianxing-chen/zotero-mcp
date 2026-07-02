@@ -634,6 +634,7 @@ def create_collection(name: str, parent_collection: str | None = None, *, ctx: C
         'Example: zotero_delete_collection(collection_key="KMMQDFQ4").'
     ),
 )
+@with_zotero_api_lock
 def delete_collection(collection_key: str, *, ctx: Context) -> str:
     try:
         _read_zot, write_zot = _helpers._get_write_client(ctx)
@@ -1666,6 +1667,7 @@ def _lookup_isbn_google_books(isbn, ctx):
         "specs instead of failing."
     ),
 )
+@with_zotero_api_lock
 def add_by_isbn(
     isbn: str,
     collections: list[str] | str | None = None,
@@ -2095,6 +2097,7 @@ def update_item(
         "By default refuses to trash notes; set allow_note=True to override."
     ),
 )
+@with_zotero_api_lock
 def delete_item(item_key: str, allow_note: bool = False, *, ctx: Context) -> str:
     """
     Move a Zotero item to the Trash.
@@ -2803,6 +2806,7 @@ def _find_matching_uri(rel_list: list, library_id: str, item_key: str) -> str | 
     name="zotero_add_item_relation",
     description="Add a related item relationship to a Zotero item. Creates a bidirectional link between two items.",
 )
+@with_zotero_api_lock
 def add_item_relation(item_key: str, related_item_key: str, relation_type: str = "dc:relation", *, ctx: Context) -> str:
     """
     Add a related item relationship to a Zotero item.
@@ -2916,6 +2920,7 @@ def add_item_relation(item_key: str, related_item_key: str, relation_type: str =
     name="zotero_remove_item_relation",
     description="Remove a related item relationship from a Zotero item.",
 )
+@with_zotero_api_lock
 def remove_item_relation(
     item_key: str,
     related_item_key: str,
@@ -3264,6 +3269,7 @@ def _format_batch_result(header: str, results: list[dict]) -> str:
         "create_missing_collections: create unknown collection specs."
     ),
 )
+@with_zotero_api_lock
 def add_by_bibtex(
     bibtex: str | None = None,
     file_path: str | None = None,
@@ -3389,6 +3395,7 @@ def _try_ads_pdf(write_zot, item_key: str, bibcode: str, ctx: Context) -> str | 
         "'skip' | 'duplicate'."
     ),
 )
+@with_zotero_api_lock
 def add_by_bibcode(
     bibcode: str | list[str] | None = None,
     collections: list[str] | str | None = None,
@@ -3583,6 +3590,7 @@ def add_by_bibcode(
         "create_missing_collections: create unknown collection specs."
     ),
 )
+@with_zotero_api_lock
 def add_by_csl_json(
     csl_json: str | list | dict | None = None,
     file_path: str | None = None,
@@ -4433,7 +4441,7 @@ def _upgrade_single_preprint(
     if pub_bibcode:
         existing_extra = data.get("extra") or ""
         # Don't duplicate if already present.
-        if f"bibcode: {pub_bibcode}" not in existing_extra.lower():
+        if f"bibcode: {pub_bibcode}".lower() not in existing_extra.lower():
             # Replace any existing arXiv bibcode line, or append.
             new_extra = existing_extra
             # Remove old arXiv bibcode line if present.
