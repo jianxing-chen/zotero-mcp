@@ -1503,7 +1503,16 @@ def get_recent(limit: int | str = 10, collection_key: str | None = None, *, ctx:
 
 @mcp.tool(
     name="zotero_get_item_related",
-    description="Get all related items for a specific Zotero item. Returns items that are linked via the relations field.",
+    description=(
+        "List all items related to a given Zotero item, i.e. those linked "
+        "via the item's relations field (typically created by "
+        "zotero_add_item_relation or the Zotero UI's 'Related' tab). "
+        "item_key: the 8-character Zotero item key to look up. "
+        "Returns a markdown list of related items (title, key, item type) "
+        "or a 'no related items' message. Read-only; works in local-only "
+        "mode. "
+        "Example: zotero_get_item_related(item_key='ABCD1234')."
+    ),
 )
 def get_item_related(item_key: str, *, ctx: Context) -> str:
     """

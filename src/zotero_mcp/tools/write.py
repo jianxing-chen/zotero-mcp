@@ -2810,7 +2810,20 @@ def _find_matching_uri(rel_list: list, library_id: str, item_key: str) -> str | 
 
 @mcp.tool(
     name="zotero_add_item_relation",
-    description="Add a related item relationship to a Zotero item. Creates a bidirectional link between two items.",
+    description=(
+        "Add a related-item relationship between two Zotero items, "
+        "creating a bidirectional link by default. "
+        "item_key: the primary item. "
+        "related_item_key: the item to link it to. "
+        "relation_type: relation predicate (default 'dc:relation'; rarely "
+        "changed). "
+        "The reverse relation is added automatically unless you also call "
+        "zotero_remove_item_relation with remove_bidirectional=True. "
+        "Requires a writable library (web API key or hybrid mode) — fails "
+        "in local-only mode. "
+        "Example: zotero_add_item_relation(item_key='ABCD1234', "
+        "related_item_key='EFGH5678')."
+    ),
 )
 @with_zotero_api_lock
 def add_item_relation(item_key: str, related_item_key: str, relation_type: str = "dc:relation", *, ctx: Context) -> str:
@@ -2924,7 +2937,18 @@ def add_item_relation(item_key: str, related_item_key: str, relation_type: str =
 
 @mcp.tool(
     name="zotero_remove_item_relation",
-    description="Remove a related item relationship from a Zotero item.",
+    description=(
+        "Remove a related-item relationship from a Zotero item. "
+        "item_key: the primary item. "
+        "related_item_key: the related item to unlink. "
+        "relation_type: relation predicate to remove (default 'dc:relation'). "
+        "remove_bidirectional: also remove the reverse relation (default True). "
+        "No-op (returns a message, no error) if the relation is not found. "
+        "Requires a writable library (web API key or hybrid mode) — fails "
+        "in local-only mode. "
+        "Example: zotero_remove_item_relation(item_key='ABCD1234', "
+        "related_item_key='EFGH5678')."
+    ),
 )
 @with_zotero_api_lock
 def remove_item_relation(
