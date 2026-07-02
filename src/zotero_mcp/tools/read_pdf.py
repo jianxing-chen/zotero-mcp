@@ -116,20 +116,34 @@ def _get_pdf_path(item_key: str, ctx: Context) -> tuple[str, str, str | None] | 
 
 @mcp.tool(
     name="zotero_read_pdf_pages",
-    description="Read specific page range(s) from a PDF attachment of a Zotero item. "
-    "Use this when you know which pages to read — for example after getting the PDF "
-    "outline via zotero_get_pdf_outline. Pages are 1-indexed. Max 50 pages per call. "
-    "IMPORTANT for full reading: a single call returns at most 50 pages, but many "
-    "papers have 20-40+ pages. To read a paper IN FULL, call this tool repeatedly "
-    "with consecutive ranges (e.g. 1-50, 51-100) until the returned total page "
-    "count is covered — do NOT stop after the first call unless you have read the "
-    "last page. The output header shows 'Total pages in PDF: N'; if your current "
-    "end_page < N, pages remain unread. MinerU caches the whole PDF after the "
-    "first call, so later ranges return instantly. "
-    "When MinerU is configured (see ``mineru`` block in config.json), the tool returns "
-    "structured Markdown with formulas as LaTeX and tables as HTML — far more accurate "
-    "than plain text extraction for papers. Otherwise falls back to PyMuPDF text layer. "
-    "Requires PyMuPDF: pip install zotero-mcp-server[pdf]",
+    description=(
+        "Read specific page range(s) from a PDF attachment of a Zotero item — "
+        "also known as 精读 (close/structured reading). "
+        "This is THE tool for extracting PDF content with accurate formulas "
+        "and tables. When MinerU is configured (see ``mineru`` block in "
+        "config.json), it returns structured Markdown with formulas as LaTeX "
+        "and tables as HTML — far more accurate than plain text extraction. "
+        "MinerU parses the ENTIRE PDF on the first call and caches it "
+        "(~/.cache/zotero-mcp/mineru/<key>/pages.json), so subsequent reads "
+        "of any page are instant. "
+        "Use this when: the user says 精读/精读全文/读论文/读这本书/read "
+        "this paper/extract formulas or tables/parse PDF with MinerU; or "
+        "after zotero_semantic_search returns a page number and you need "
+        "to read that page's structured content. "
+        "Pages are 1-indexed. Max 50 pages per call. "
+        "IMPORTANT for full reading: a single call returns at most 50 pages, "
+        "but many papers have 20-40+ pages. To read a paper IN FULL, call "
+        "this tool repeatedly with consecutive ranges (e.g. 1-50, 51-100) "
+        "until the returned total page count is covered — do NOT stop after "
+        "the first call unless you have read the last page. The output header "
+        "shows 'Total pages in PDF: N'; if your current end_page < N, pages "
+        "remain unread. "
+        "After the first read, a hint appears suggesting "
+        "zotero_update_search_database(reindex_keys=[...]) to build a "
+        "page-aware vector index for semantic search. "
+        "Otherwise falls back to PyMuPDF text layer. "
+        "Requires PyMuPDF: pip install zotero-mcp-server[pdf]"
+    ),
 )
 def read_pdf_pages(
     item_key: str,
