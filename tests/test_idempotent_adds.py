@@ -13,11 +13,10 @@ if_exists contract on the add_by_* family:
 from unittest.mock import MagicMock
 
 import pytest
-
 from conftest import DummyContext, FakeZotero, _FakeResponse
+
 from zotero_mcp import server
 from zotero_mcp.tools import _helpers
-
 
 DOI = "10.1234/test.2024.001"
 

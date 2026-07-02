@@ -19,9 +19,8 @@ Two fixes here:
 
 from pathlib import Path
 
-import pytest
-
 from conftest import skip_on_ci
+
 from zotero_mcp.local_db import LocalZoteroReader
 
 

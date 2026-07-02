@@ -5,11 +5,9 @@ Each test prevents a specific bug from reappearing.
 
 import json
 
-import pytest
-
 from conftest import DummyContext, FakeZotero, _FakeResponse
-from zotero_mcp import server
 
+from zotero_mcp import server
 
 # ---------------------------------------------------------------------------
 # Bug 1: manage_collections passed [item_dict] (list) instead of item_dict

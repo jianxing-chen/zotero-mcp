@@ -17,12 +17,12 @@ from __future__ import annotations
 
 import logging
 
-from zotero_mcp._context import Context
 from zotero_mcp import client as _client
-from zotero_mcp.client import with_zotero_api_lock
 from zotero_mcp import scite_client as _scite
 from zotero_mcp import utils as _utils
 from zotero_mcp._app import mcp
+from zotero_mcp._context import Context
+from zotero_mcp.client import with_zotero_api_lock
 from zotero_mcp.tools import _helpers
 
 logger = logging.getLogger(__name__)

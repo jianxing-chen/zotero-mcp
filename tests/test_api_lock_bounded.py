@@ -11,11 +11,10 @@ import time
 
 import pytest
 
-from zotero_mcp import client as _client
 from zotero_mcp.client import (
     ZoteroApiBusyError,
-    with_zotero_api_lock,
     _zotero_api_lock,
+    with_zotero_api_lock,
 )
 
 

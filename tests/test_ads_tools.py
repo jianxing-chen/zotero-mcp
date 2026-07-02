@@ -5,16 +5,11 @@ in-library tagging, citation network direction handling, bibcode dedup,
 and graceful degradation.
 """
 
-import sys
-import types
-from unittest.mock import MagicMock, patch
 
 import pytest
+from conftest import FakeZotero
 
-from conftest import DummyContext, FakeZotero
-
-from zotero_mcp import ads_client
-from zotero_mcp import server
+from zotero_mcp import ads_client, server
 
 
 class _FakeCtx:

@@ -7,13 +7,11 @@ with zero behavior change.
 """
 
 import sys
-from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
-from zotero_mcp.tools import read_pdf
 from zotero_mcp import mineru_client
+from zotero_mcp.tools import read_pdf
 
 
 class _FakeFitzDoc:

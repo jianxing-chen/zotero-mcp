@@ -14,7 +14,7 @@ import pytest
 if sys.version_info >= (3, 14):
     pytest.skip("chromadb incompatible with Python 3.14+", allow_module_level=True)
 
-from zotero_mcp.semantic_search import ApiReranker, CrossEncoderReranker
+from zotero_mcp.semantic_search import ApiReranker
 
 
 # --------------------------------------------------------------------------- #

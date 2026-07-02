@@ -1,12 +1,11 @@
 """Tests for search improvements: normalization, variant generation, fallback cascade."""
 
-import pytest
-from unittest.mock import MagicMock, patch
-from conftest import DummyContext, FakeZotero, skip_on_ci
+from unittest.mock import MagicMock
+
+from conftest import DummyContext, skip_on_ci
 
 from zotero_mcp import utils as _utils
 from zotero_mcp.tools import search as search_module
-
 
 # ---------------------------------------------------------------------------
 # TestNormalization

@@ -1,11 +1,11 @@
 """Tests for the standalone CLI module (zotero-cli entry point)."""
 
-import sys
 from unittest.mock import MagicMock, create_autospec, patch
 
 import pytest
 
 import zotero_mcp.tools.write as write_tools
+from zotero_mcp._context import Context
 from zotero_mcp.cli_standalone import (
     CLIContext,
     build_parser,
@@ -15,8 +15,6 @@ from zotero_mcp.cli_standalone import (
     cmd_search,
     main,
 )
-from zotero_mcp._context import Context
-
 
 # ---------------------------------------------------------------------------
 # CLIContext

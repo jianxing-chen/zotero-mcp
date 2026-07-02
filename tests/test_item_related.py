@@ -1,10 +1,9 @@
 """Tests for item related/relation functionality."""
 
-import pytest
 
-from zotero_mcp import server
 from conftest import DummyContext, FakeZotero, _FakeResponse
 
+from zotero_mcp import server
 
 # -----------------------------------------------------------------------------
 # Helpers

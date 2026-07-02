@@ -21,7 +21,6 @@ if sys.version_info >= (3, 14):
 
 from zotero_mcp import semantic_search
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -142,7 +141,7 @@ class TestGeminiQueryEmbedding:
         # Verify embed_content was called
         mock_client.models.embed_content.assert_called_once()
         call_kwargs = mock_client.models.embed_content.call_args
-        config_arg = call_kwargs.kwargs.get("config") or call_kwargs[1].get("config")
+        call_kwargs.kwargs.get("config") or call_kwargs[1].get("config")
         # Verify the task_type was retrieval_query
         mock_types.EmbedContentConfig.assert_called_once_with(task_type="retrieval_query")
         assert result == [0.1, 0.2, 0.3]
