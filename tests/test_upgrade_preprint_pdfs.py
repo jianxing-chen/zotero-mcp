@@ -341,3 +341,60 @@ class TestUpgradePreprintPdfs:
         # _upgrade_single_preprint called only once (for PRE1)
         mock_upgrade.assert_called_once()
         assert mock_upgrade.call_args[0][1] == "PRE1"
+
+    @patch("zotero_mcp.tools.write._upgrade_single_preprint")
+    @patch("zotero_mcp.tools.write._helpers._get_write_client")
+    def test_item_keys_processes_specified_items_only(self, mock_get_client, mock_upgrade, dummy_ctx, monkeypatch):
+        """When item_keys is given, only those items are fetched (no library scan)."""
+        read_zot = MagicMock()
+        # read_zot.item(key) is called for each specified key
+        preprint1 = self._make_preprint_item(key="AAA1111")
+        preprint2 = self._make_preprint_item(key="BBB2222", title="Other Paper")
+        read_zot.item.side_effect = lambda key: {"AAA1111": preprint1, "BBB2222": preprint2}[key]
+        mock_get_client.return_value = (read_zot, MagicMock())
+
+        mock_upgrade.return_value = {"key": "", "status": "not_published", "details": "", "error": ""}
+
+        from zotero_mcp import ads_client
+
+        monkeypatch.setattr(ads_client, "is_available", lambda: True)
+
+        from zotero_mcp import scihub_client
+
+        monkeypatch.setattr(scihub_client, "is_scihub_enabled", lambda cfg: False)
+
+        from zotero_mcp.tools.write import upgrade_preprint_pdfs
+
+        result = upgrade_preprint_pdfs(item_keys=["AAA1111", "BBB2222"], ctx=dummy_ctx)
+        # read_zot.items() (scan) must NOT be called; read_zot.item() is called per key
+        read_zot.items.assert_not_called()
+        assert read_zot.item.call_count == 2
+        assert "Total preprints checked:** 2" in result
+        assert mock_upgrade.call_count == 2
+
+    @patch("zotero_mcp.tools.write._upgrade_single_preprint")
+    @patch("zotero_mcp.tools.write._helpers._get_write_client")
+    def test_item_keys_skips_nonexistent(self, mock_get_client, mock_upgrade, dummy_ctx, monkeypatch):
+        """When item_keys references a nonexistent item, it's skipped gracefully."""
+        read_zot = MagicMock()
+        preprint = self._make_preprint_item(key="GOOD111")
+        read_zot.item.side_effect = lambda key: preprint if key == "GOOD111" else None
+        mock_get_client.return_value = (read_zot, MagicMock())
+
+        mock_upgrade.return_value = {"key": "GOOD111", "status": "not_published", "details": "", "error": ""}
+
+        from zotero_mcp import ads_client
+
+        monkeypatch.setattr(ads_client, "is_available", lambda: True)
+
+        from zotero_mcp import scihub_client
+
+        monkeypatch.setattr(scihub_client, "is_scihub_enabled", lambda cfg: False)
+
+        from zotero_mcp.tools.write import upgrade_preprint_pdfs
+
+        result = upgrade_preprint_pdfs(item_keys=["GOOD111", "BAD2222"], ctx=dummy_ctx)
+        # Only the existing item is processed
+        assert "Total preprints checked:** 1" in result
+        mock_upgrade.assert_called_once()
+        assert mock_upgrade.call_args[0][1] == "GOOD111"

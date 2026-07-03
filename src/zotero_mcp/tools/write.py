@@ -4665,14 +4665,22 @@ def upgrade_preprints(limit: int | None = None, *, ctx: Context) -> str:
         "version is found or the PDF download fails, the item is left untouched. "
         "Requires ADS_API_TOKEN. Enable scihub.enabled in config.json to get the "
         "publisher version; without Sci-Hub the cascade falls back to the arXiv "
-        "preprint (same as the existing PDF)."
+        "preprint (same as the existing PDF). Pass item_keys to process specific "
+        "items instead of scanning the whole library."
     ),
 )
 @with_zotero_api_lock
-def upgrade_preprint_pdfs(limit: int | None = None, *, ctx: Context) -> str:
+def upgrade_preprint_pdfs(
+    limit: int | None = None,
+    item_keys: list[str] | str | None = None,
+    *,
+    ctx: Context,
+) -> str:
     """Upgrade arXiv preprints: metadata + publisher PDF replacement.
 
-    See the tool description for the full flow.
+    When ``item_keys`` is given, only those items are processed (no library
+    scan). Otherwise the library is scanned for itemType=preprint items with
+    an arXiv identifier in Extra. ``limit`` caps the scan in either mode.
     """
     try:
         read_zot, write_zot = _helpers._get_write_client(ctx)
@@ -4688,32 +4696,50 @@ def upgrade_preprint_pdfs(limit: int | None = None, *, ctx: Context) -> str:
 
     scihub_enabled = _helpers._scihub.is_scihub_enabled(_helpers._scihub.load_scihub_config())
 
-    # Paginate through preprint items (server-side itemType filter is cheaper
-    # than the client-side scan used by upgrade_preprints).
     preprints: list[dict] = []
-    batch_size = 50
-    start = 0
-    while True:
-        try:
-            items = read_zot.items(itemType="preprint", start=start, limit=batch_size)
-        except Exception as e:
-            ctx.error(f"Error fetching preprint items: {e}")
-            break
-        if not items:
-            break
-        for it in items:
-            data = it.get("data", {})
-            # Only process preprints with an arXiv identifier in Extra.
-            if _parse_arxiv_id_from_extra(data.get("extra")):
-                preprints.append(it)
-        start += batch_size
-        if len(items) < batch_size:
-            break
-        if limit and len(preprints) >= limit:
-            preprints = preprints[:limit]
-            break
 
-    total = len(preprints) if not limit else min(len(preprints), limit or len(preprints))
+    if item_keys:
+        # Targeted mode: fetch each specified item directly.
+        keys = _helpers._normalize_str_list_input(item_keys, "item_keys")
+        if not keys:
+            return "Error: Must provide at least one item_key"
+        for key in keys:
+            try:
+                item = read_zot.item(key)
+            except Exception as e:
+                ctx.info(f"Skipping {key}: fetch failed ({e})")
+                continue
+            if not item:
+                continue
+            preprints.append(item)
+            if limit and len(preprints) >= limit:
+                break
+    else:
+        # Scan mode: paginate through all preprint items (server-side
+        # itemType filter is cheaper than a client-side scan).
+        batch_size = 50
+        start = 0
+        while True:
+            try:
+                items = read_zot.items(itemType="preprint", start=start, limit=batch_size)
+            except Exception as e:
+                ctx.error(f"Error fetching preprint items: {e}")
+                break
+            if not items:
+                break
+            for it in items:
+                data = it.get("data", {})
+                # Only process preprints with an arXiv identifier in Extra.
+                if _parse_arxiv_id_from_extra(data.get("extra")):
+                    preprints.append(it)
+            start += batch_size
+            if len(items) < batch_size:
+                break
+            if limit and len(preprints) >= limit:
+                preprints = preprints[:limit]
+                break
+
+    total = len(preprints)
     ctx.info(f"Found {total} arXiv preprint items.")
 
     stats = {
