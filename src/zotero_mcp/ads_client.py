@@ -246,6 +246,51 @@ def get_pdf_url(bibcode: str, prefer: str = "eprint") -> str | None:
     return None
 
 
+def get_pdf_urls(bibcode: str, prefer: str = "eprint") -> list[str]:
+    """Return link_gateway PDF URLs in priority order (best first).
+
+    Like :func:`get_pdf_url` but returns **all** available endpoints in the
+    caller's preferred order, so a download loop can try each in turn. This
+    matters when ``prefer="pub"``: the publisher PDF is returned first, but if
+    the publisher's WAF/captcha blocks the download, the caller can fall back
+    to the arXiv preprint (EPRINT_PDF) within the same source rather than
+    dropping to a weaker source in the cascade.
+
+    Args:
+        bibcode: normalized bibcode.
+        prefer: ``"pub"`` (publisher first, then eprint) or ``"eprint"``
+            (arXiv first, then publisher).
+
+    Returns:
+        Ordered list of link_gateway URLs (possibly empty).
+    """
+    record = fetch_record(bibcode)
+    if not record:
+        return []
+    esources = record.get("esources") or []
+    if not isinstance(esources, list):
+        esources = []
+
+    eprint_available = "EPRINT_PDF" in esources
+    pub_available = "PUB_PDF" in esources
+
+    if prefer == "pub":
+        order = [("PUB_PDF", pub_available), ("EPRINT_PDF", eprint_available)]
+    else:
+        order = [("EPRINT_PDF", eprint_available), ("PUB_PDF", pub_available)]
+
+    urls: list[str] = []
+    for endpoint, available in order:
+        if available:
+            urls.append(f"{ADS_LINK_BASE}/{bibcode}/{endpoint}")
+
+    # If no direct PDF in esources, fall back to eprint gateway anyway (ADS may
+    # still resolve an arXiv PDF even when esources doesn't list it).
+    if not urls and (eprint_available or prefer == "eprint"):
+        urls.append(f"{ADS_LINK_BASE}/{bibcode}/EPRINT_PDF")
+    return urls
+
+
 def get_pdf_url_by_doi(doi: str, prefer: str = "pub") -> tuple[str | None, str | None]:
     """Resolve a PDF URL from a DOI via ADS, returning ``(pdf_url, bibcode)``.
 
@@ -277,6 +322,29 @@ def get_pdf_url_by_doi(doi: str, prefer: str = "pub") -> tuple[str | None, str |
         return None, None
     pdf_url = get_pdf_url(bibcode, prefer=prefer)
     return pdf_url, bibcode
+
+
+def get_pdf_urls_by_doi(doi: str, prefer: str = "pub") -> tuple[list[str], str | None]:
+    """Resolve ordered PDF URLs from a DOI via ADS.
+
+    Like :func:`get_pdf_url_by_doi` but returns all available link_gateway
+    URLs in priority order via :func:`get_pdf_urls`, so the cascade can try
+    each in turn (publisher PDF first when ``prefer="pub"``, then the arXiv
+    preprint if the publisher download is blocked).
+
+    Returns:
+        ``(urls, bibcode)`` — ``urls`` is a (possibly empty) ordered list.
+    """
+    if not doi:
+        return [], None
+    docs = search(f"doi:{doi}", fl=_FULL_FIELDS, rows=1)
+    if not docs:
+        return [], None
+    bibcode = docs[0].get("bibcode")
+    if not bibcode:
+        return [], None
+    urls = get_pdf_urls(bibcode, prefer=prefer)
+    return urls, bibcode
 
 
 # --------------------------------------------------------------------------- #

@@ -1004,37 +1004,38 @@ def _try_pmc(doi, ctx):
 
 
 def _try_ads_pdf_url(bibcode, prefer_pub_pdf, ctx):
-    """Return an ADS link_gateway PDF URL for a known bibcode, or None.
+    """Return ADS link_gateway PDF URL(s) for a known bibcode, or None.
 
-    Thin wrapper around ``ads_client.get_pdf_url`` so the cascade treats ADS
-    like the other URL resolvers (Unpaywall, arXiv, …) — it returns a URL,
-    and the cascade's download step (``_download_and_attach_pdf``) handles the
-    actual fetch with SSRF guards.
+    Returns a list of URLs (publisher first, then eprint when
+    ``prefer_pub_pdf=True``) so the cascade can try each in turn within the
+    same "ADS" source. When only one endpoint is available, the list has a
+    single element. Returns ``[]`` when ADS has no PDF for this bibcode.
     """
     try:
         prefer = "pub" if prefer_pub_pdf else "eprint"
-        url = _ads_client.get_pdf_url(bibcode, prefer=prefer)
-        if url:
-            ctx.info(f"ADS: link_gateway PDF for {bibcode} ({prefer})")
-        return url
+        urls = _ads_client.get_pdf_urls(bibcode, prefer=prefer)
+        if urls:
+            ctx.info(f"ADS: link_gateway PDFs for {bibcode} ({prefer}): {urls}")
+        return urls
     except Exception as e:
         ctx.info(f"ADS URL lookup failed: {e}")
         return None
 
 
 def _try_ads_pdf_url_by_doi(doi, prefer_pub_pdf, ctx):
-    """Resolve an ADS PDF URL from a DOI via ``ads_client.get_pdf_url_by_doi``.
+    """Resolve ADS PDF URL(s) from a DOI via ``ads_client.get_pdf_urls_by_doi``.
 
     Used when the cascade has a DOI but no bibcode (the common case for
-    ``add_by_doi`` and the batch importers). Returns only the PDF URL — the
-    resolved bibcode is discarded here since the caller has no use for it.
+    ``add_by_doi`` and the batch importers). Returns the list of PDF URLs
+    (publisher first, then eprint when ``prefer_pub_pdf=True``) — the resolved
+    bibcode is discarded here since the caller has no use for it.
     """
     try:
         prefer = "pub" if prefer_pub_pdf else "eprint"
-        url, _bibcode = _ads_client.get_pdf_url_by_doi(doi, prefer=prefer)
-        if url:
-            ctx.info(f"ADS: resolved PDF via DOI lookup ({prefer})")
-        return url
+        urls, _bibcode = _ads_client.get_pdf_urls_by_doi(doi, prefer=prefer)
+        if urls:
+            ctx.info(f"ADS: resolved PDFs via DOI lookup ({prefer}): {urls}")
+        return urls
     except Exception as e:
         ctx.info(f"ADS DOI lookup failed: {e}")
         return None
@@ -1099,8 +1100,19 @@ def _try_attach_oa_pdf(
 
     for source_name, find_url in sources:
         try:
-            pdf_url = find_url()
-            if pdf_url:
+            result = find_url()
+            # A source may return a single URL (str) or multiple (list) —
+            # e.g. ADS returns [PUB_PDF, EPRINT_PDF] so the cascade tries the
+            # publisher PDF first and falls back to the arXiv preprint within
+            # the same "ADS" source when the publisher download is blocked.
+            if isinstance(result, list):
+                candidate_urls: list[str] = result
+            elif isinstance(result, str) and result:
+                candidate_urls = [result]
+            else:
+                candidate_urls = []
+
+            for pdf_url in candidate_urls:
                 ctx.info(f"Trying PDF from {source_name}: {pdf_url}")
                 found_urls.append((source_name, pdf_url))
 
@@ -1112,7 +1124,7 @@ def _try_attach_oa_pdf(
                     if webdav_suffix is not None:
                         return f"PDF attached (source: {source_name}){webdav_suffix}"
 
-                ctx.info(f"{source_name} URL didn't yield a valid PDF, trying next source")
+                ctx.info(f"{source_name} URL didn't yield a valid PDF, trying next URL")
         except Exception as e:
             ctx.info(f"{source_name} failed: {e}")
 
