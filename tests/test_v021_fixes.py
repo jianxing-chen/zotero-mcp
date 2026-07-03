@@ -1,10 +1,13 @@
 """Tests for v0.2.1 fixes: pagination, grandparent resolution,
 merge attachment dedup, linked-URL removal, and no-PDF messaging."""
 
+import re
+import time
 from unittest.mock import MagicMock, patch
 
 from conftest import DummyContext
 
+from zotero_mcp.batch_runner import read_status
 from zotero_mcp.tools import _helpers
 from zotero_mcp.tools.annotations import (
     _batch_resolve_grandparent_titles,
@@ -249,8 +252,9 @@ class TestMergeAttachmentDedup:
         assert "D_ATT" not in result or "skipped" in result.lower() or "Merged" in result
 
     @patch("zotero_mcp.tools.write._helpers._get_write_client")
-    def test_merge_keeps_different_pdf(self, mock_get_client, dummy_ctx):
+    def test_merge_keeps_different_pdf(self, mock_get_client, dummy_ctx, monkeypatch, tmp_path):
         """Different PDFs on keeper and duplicate are both kept."""
+        monkeypatch.setattr("zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks")
         keeper_att = {
             "key": "K_ATT",
             "version": 1,
@@ -281,7 +285,20 @@ class TestMergeAttachmentDedup:
 
         from zotero_mcp.tools.write import merge_duplicates
 
-        merge_duplicates("KEEPER", ["DUP1"], confirm=True, ctx=dummy_ctx)
+        result = merge_duplicates("KEEPER", ["DUP1"], confirm=True, ctx=dummy_ctx)
+
+        # confirm=True spawns a background task
+        assert "started" in result.lower() or "⏳" in result
+        assert "get_batch_task_status" in result
+        # Wait for the background merge to finish before checking side effects
+        m = re.search(r"\*\*([^*]+)\*\*", result)
+        task_id = m.group(1)
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            s = read_status(task_id)
+            if s and s.status in ("completed", "failed"):
+                break
+            time.sleep(0.05)
 
         # The different attachment SHOULD have been re-parented
         reparent_calls = [

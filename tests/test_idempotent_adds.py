@@ -10,15 +10,36 @@ if_exists contract on the add_by_* family:
 - 'skip': report the existing item, change nothing.
 """
 
+import re
+import time
 from unittest.mock import MagicMock
 
 import pytest
 from conftest import DummyContext, FakeZotero, _FakeResponse
 
 from zotero_mcp import server
+from zotero_mcp.batch_runner import read_status
 from zotero_mcp.tools import _helpers
 
 DOI = "10.1234/test.2024.001"
+
+
+def _wait_for_task(result):
+    """Extract task_id from a background-task return string and wait for completion.
+
+    Returns the final TaskStatus (or None if the result isn't a task-start string).
+    """
+    m = re.search(r"\*\*([^*]+)\*\*", result)
+    if not m:
+        return None
+    task_id = m.group(1)
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        s = read_status(task_id)
+        if s and s.status in ("completed", "failed"):
+            return s
+        time.sleep(0.05)
+    return read_status(task_id)
 
 
 def _make_crossref_response():
@@ -380,7 +401,10 @@ class TestAddByIsbnIfExists:
 
 
 class TestAddByBibtexIfExists:
-    def test_mixed_batch_reuses_and_creates(self, monkeypatch, fake_zot, dummy_ctx):
+    def test_mixed_batch_reuses_and_creates(self, monkeypatch, fake_zot, dummy_ctx, tmp_path):
+        monkeypatch.setattr(
+            "zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks"
+        )
         monkeypatch.setattr(
             "zotero_mcp.tools._helpers._get_write_client",
             lambda ctx: (fake_zot, fake_zot),
@@ -402,13 +426,23 @@ class TestAddByBibtexIfExists:
             ctx=dummy_ctx,
         )
 
+        assert "started" in result.lower() or "⏳" in result
+        assert "get_batch_task_status" in result
+        s = _wait_for_task(result)
+        assert s is not None
+        assert s.status == "completed"
+
         # Only the DOI-less entry creates a new item.
         assert len(fake_zot.created) == 1
         assert ("COLB0001", "EXIST001") in fake_zot.addto_calls
-        assert "1 already existed" in result
-        assert "reused existing" in result
+        # The "exists" entry was reused (file mode) — reflected in succeeded_items detail.
+        details = " ".join(it.get("detail") or "" for it in s.succeeded_items)
+        assert "reused existing" in details
 
-    def test_skip_mode_reports_without_changes(self, monkeypatch, fake_zot, dummy_ctx):
+    def test_skip_mode_reports_without_changes(self, monkeypatch, fake_zot, dummy_ctx, tmp_path):
+        monkeypatch.setattr(
+            "zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks"
+        )
         monkeypatch.setattr(
             "zotero_mcp.tools._helpers._get_write_client",
             lambda ctx: (fake_zot, fake_zot),
@@ -422,6 +456,14 @@ class TestAddByBibtexIfExists:
             ctx=dummy_ctx,
         )
 
+        assert "started" in result.lower() or "⏳" in result
+        assert "get_batch_task_status" in result
+        s = _wait_for_task(result)
+        assert s is not None
+        assert s.status == "completed"
+
         assert fake_zot.created == []
         assert fake_zot.addto_calls == []
-        assert "skipped — already in library" in result
+        # Skip mode is reported via the succeeded_items detail string.
+        details = " ".join(it.get("detail") or "" for it in s.succeeded_items)
+        assert "skipped — already in library" in details

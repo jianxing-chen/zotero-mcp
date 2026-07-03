@@ -2404,8 +2404,16 @@ def find_duplicates(
         "Example execute: same, plus confirm=True."
     ),
 )
-@with_zotero_api_lock
 def merge_duplicates(keeper_key: str, duplicate_keys: list[str] | str, confirm: bool = False, *, ctx: Context) -> str:
+    """Merge duplicate items into a keeper.
+
+    Not decorated with @with_zotero_api_lock: the execute path (confirm=True)
+    spawns a background task. The reparent-then-trash sequence is multi-step
+    and if interrupted mid-way (MCP client timeout + process kill), children
+    end up re-parented to the keeper while duplicates are NOT trashed —
+    leaving the library in a confusing state with duplicate children.
+    Background mode ensures the lock isn't held for the whole sequence.
+    """
     try:
         read_zot, write_zot = _helpers._get_write_client(ctx)
     except ValueError as e:
@@ -2497,37 +2505,130 @@ def merge_duplicates(keeper_key: str, duplicate_keys: list[str] | str, confirm: 
             ]
             return "\n".join(lines)
 
-        # EXECUTE MERGE
-        ctx.info(f"Merging {len(dup_keys)} duplicates into {keeper_key}")
+        # EXECUTE MERGE — spawn background task
+        # The reparent-then-trash sequence is multi-step; if interrupted
+        # mid-way (MCP timeout + process kill), children get re-parented
+        # but duplicates stay — confusing state. Background mode avoids
+        # holding the RLock for the whole sequence.
+        from zotero_mcp.batch_runner import create_task, spawn_task
 
-        # Step 3: Consolidate tags
-        if new_tags:
-            keeper_data = keeper.get("data", {})
-            existing_tags = [t.get("tag", "") for t in keeper_data.get("tags", [])]
-            keeper_data["tags"] = [{"tag": t} for t in sorted(set(existing_tags) | all_tags)]
-            _helpers._strip_unwritable_fields(keeper)
-            resp = write_zot.update_item(keeper)
-            if not _helpers._handle_write_response(resp, ctx):
-                return "Error: Failed to merge tags into keeper."
-            keeper = write_zot.item(keeper_key)  # re-fetch for version
+        # Serialize the data the worker needs (keeper, duplicates, attachment
+        # sigs, computed tags/collections) so the worker doesn't re-fetch.
+        worker_data = {
+            "keeper_key": keeper_key,
+            "keeper": keeper,
+            "duplicates": [
+                {"key": d["item"]["key"], "item": d["item"], "children": d["children"]}
+                for d in duplicates
+            ],
+            "new_tags": sorted(new_tags),
+            "new_collections": sorted(new_collections),
+            "all_tags": sorted(all_tags),
+            "keeper_attachment_sigs": [list(s) for s in keeper_attachment_sigs],
+        }
+        work_items = [{"key": keeper_key}]
+        status = create_task("merge_duplicates", work_items=work_items)
+        spawn_task(status, lambda s: _merge_duplicates_worker(s, worker_data))
 
-        # Step 4: Consolidate collections
-        for coll_key in new_collections:
-            resp = write_zot.addto_collection(coll_key, keeper)
-            if not _helpers._handle_write_response(resp, ctx):
-                ctx.warning(f"Failed to add keeper to collection {coll_key}")
-            keeper = write_zot.item(keeper_key)  # re-fetch for version
+        skipped_suffix = (
+            f" ({skipped_attachment_count} duplicate attachments skipped)"
+            if skipped_attachment_count else ""
+        )
+        return (
+            f"⏳ Merge started: **{status.task_id}**\n\n"
+            f"Merging {len(dup_keys)} duplicates into `{keeper_key}` in the background.\n"
+            f"- Tags to merge: {len(new_tags)} new\n"
+            f"- Collections to add: {len(new_collections)} new\n"
+            f"- Children to re-parent: {total_children_to_move - skipped_attachment_count}"
+            f"{skipped_suffix}"
+            f"\n\nCheck progress: call `zotero_get_batch_task_status` "
+            f"with task_id `{status.task_id}`."
+        )
 
-        # Step 5: Re-parent children (skip duplicate attachments)
-        moved = []
-        failed = []
-        skipped_dupes = []
-        for dup in duplicates:
-            for child in dup["children"]:
-                child_key = child.get("key", "?")
-                try:
-                    fresh_child = write_zot.item(child_key)
-                    # Skip duplicate attachments — keeper already has this one
+    except ValueError as e:
+        return f"Input error: {e}"
+    except Exception as e:
+        ctx.error(f"Error merging duplicates: {e}")
+        return f"Error merging duplicates: {e}"
+
+
+def _merge_duplicates_worker(status, data) -> None:
+    """Background worker for merge_duplicates (execute path).
+
+    Steps: consolidate tags → add collections → re-parent children →
+    trash duplicates. Acquires the API lock per-API-call (not per-step)
+    so other tools can run between operations.
+    """
+    from pyzotero.zotero import build_url as _build_url
+
+    from zotero_mcp.batch_runner import update_status
+
+    try:
+        _, write_zot = _helpers._get_write_client(None)
+    except ValueError as e:
+        raise RuntimeError(str(e))
+
+    keeper_key = data["keeper_key"]
+    keeper = data["keeper"]
+    duplicates = data["duplicates"]
+    new_tags = set(data.get("new_tags", []))
+    new_collections = set(data.get("new_collections", []))
+    all_tags = set(data.get("all_tags", []))
+    keeper_attachment_sigs = {tuple(s) for s in data.get("keeper_attachment_sigs", [])}
+
+    succeeded_items: list[dict] = []
+    failed_items: list[dict] = []
+    step = 0
+    total_steps = 4  # tags, collections, reparent, trash
+
+    # Step 1: Consolidate tags
+    if new_tags:
+        try:
+            def _update_tags():
+                keeper_data = keeper.get("data", {})
+                existing_tags = [t.get("tag", "") for t in keeper_data.get("tags", [])]
+                keeper_data["tags"] = [{"tag": t} for t in sorted(set(existing_tags) | all_tags)]
+                _helpers._strip_unwritable_fields(keeper)
+                resp = write_zot.update_item(keeper)
+                return _helpers._handle_write_response(resp, None)
+
+            if not _with_api_lock(_update_tags):
+                failed_items.append({"key": keeper_key, "detail": "Failed to merge tags"})
+        except Exception as e:
+            failed_items.append({"key": keeper_key, "detail": f"Tags: {e}"})
+
+    step += 1
+    update_status(status.task_id, processed=step, succeeded=len(succeeded_items),
+                  failed=len(failed_items), succeeded_items=succeeded_items,
+                  failed_items=failed_items)
+
+    # Step 2: Consolidate collections
+    for coll_key in new_collections:
+        try:
+            def _add_coll(ck=coll_key):
+                k = write_zot.item(keeper_key)
+                resp = write_zot.addto_collection(ck, k)
+                return _helpers._handle_write_response(resp, None)
+
+            if not _with_api_lock(_add_coll):
+                failed_items.append({"key": keeper_key, "detail": f"Collection {coll_key} failed"})
+        except Exception as e:
+            failed_items.append({"key": keeper_key, "detail": f"Collection {coll_key}: {e}"})
+
+    step += 1
+    update_status(status.task_id, processed=step, succeeded=len(succeeded_items),
+                  failed=len(failed_items), succeeded_items=succeeded_items,
+                  failed_items=failed_items)
+
+    # Step 3: Re-parent children (skip duplicate attachments)
+    moved = []
+    reparent_failed = []
+    for dup in duplicates:
+        for child in dup["children"]:
+            child_key = child.get("key", "?")
+            try:
+                def _reparent(ck=child_key):
+                    fresh_child = write_zot.item(ck)
                     child_data = fresh_child.get("data", {})
                     if child_data.get("itemType") == "attachment":
                         child_sig = (
@@ -2537,69 +2638,89 @@ def merge_duplicates(keeper_key: str, duplicate_keys: list[str] | str, confirm: 
                             child_data.get("url", ""),
                         )
                         if child_sig in keeper_attachment_sigs:
-                            skipped_dupes.append(child_key)
-                            continue  # Skip — keeper already has this attachment
+                            return "skipped"
                     fresh_child.get("data", {})["parentItem"] = keeper_key
                     _helpers._strip_unwritable_fields(fresh_child)
                     resp = write_zot.update_item(fresh_child)
-                    if _helpers._handle_write_response(resp, ctx):
-                        moved.append(child_key)
-                    else:
-                        failed.append(child_key)
-                except Exception as e:
-                    failed.append(f"{child_key} ({e})")
+                    return "moved" if _helpers._handle_write_response(resp, None) else "failed"
 
-        if failed:
-            return (
+                result = _with_api_lock(_reparent)
+                if result == "moved":
+                    moved.append(child_key)
+                    succeeded_items.append({"key": child_key, "detail": "re-parented"})
+                elif result == "skipped":
+                    succeeded_items.append({"key": child_key, "detail": "duplicate attachment skipped"})
+                else:
+                    reparent_failed.append(child_key)
+                    failed_items.append({"key": child_key, "detail": "re-parent failed"})
+            except Exception as e:
+                reparent_failed.append(child_key)
+                failed_items.append({"key": child_key, "detail": str(e)})
+
+    step += 1
+    update_status(status.task_id, processed=step, succeeded=len(succeeded_items),
+                  failed=len(failed_items), succeeded_items=succeeded_items,
+                  failed_items=failed_items)
+
+    # If re-parenting had failures, do NOT trash duplicates —
+    # the user should fix failures and retry.
+    if reparent_failed:
+        update_status(
+            status.task_id,
+            processed=total_steps,
+            succeeded=len(succeeded_items),
+            failed=len(failed_items),
+            succeeded_items=succeeded_items,
+            failed_items=failed_items,
+            result_summary=(
                 f"Merge partially completed. Moved {len(moved)} children, "
-                f"but {len(failed)} failed: {failed}\n\n"
-                "Duplicates were NOT trashed. Fix the failures and retry."
-            )
+                f"but {len(reparent_failed)} failed. "
+                f"Duplicates were NOT trashed — fix failures and retry."
+            ),
+        )
+        return
 
-        # Step 6: Trash duplicates (move to Zotero Trash, NOT permanent delete)
-        # pyzotero's update_item() strips "deleted" and delete_item() permanently
-        # destroys items. We send a direct PATCH with {"deleted": 1} which moves
-        # items to Zotero's Trash — recoverable by the user.
-        trashed = []
-        for dup in duplicates:
-            dup_key = dup["item"]["key"]
-            try:
-                dup_item = write_zot.item(dup_key)
+    # Step 4: Trash duplicates
+    trashed = []
+    for dup in duplicates:
+        dup_key = dup["item"]["key"]
+        try:
+            def _trash(dk=dup_key):
+                dup_item = write_zot.item(dk)
                 version = dup_item["version"]
-                from pyzotero.zotero import build_url
-
-                url = build_url(
+                url = _build_url(
                     write_zot.endpoint,
-                    f"/{write_zot.library_type}/{write_zot.library_id}/items/{dup_key}",
+                    f"/{write_zot.library_type}/{write_zot.library_id}/items/{dk}",
                 )
                 headers = {"If-Unmodified-Since-Version": str(version)}
                 resp = write_zot.client.patch(
-                    url=url,
-                    headers=headers,
+                    url=url, headers=headers,
                     content=json.dumps({"deleted": 1}),
                 )
-                if resp.status_code in (200, 204):
-                    trashed.append(dup_key)
-                else:
-                    ctx.warning(f"Failed to trash {dup_key}: HTTP {resp.status_code}")
-            except Exception as e:
-                ctx.warning(f"Failed to trash {dup_key}: {e}")
+                return resp.status_code in (200, 204)
 
-        skip_info = f" ({len(skipped_dupes)} duplicate attachments skipped)" if skipped_dupes else ""
-        return (
-            f"Merge complete.\n\n"
-            f"- Tags merged: {len(new_tags)} new\n"
-            f"- Collections added: {len(new_collections)} new\n"
-            f"- Children re-parented: {len(moved)}{skip_info}\n"
-            f"- Duplicates trashed: {', '.join(f'`{k}`' for k in trashed)}\n\n"
-            "Trashed items can be restored from Zotero's Trash."
-        )
+            if _with_api_lock(_trash):
+                trashed.append(dup_key)
+                succeeded_items.append({"key": dup_key, "detail": "trashed"})
+            else:
+                failed_items.append({"key": dup_key, "detail": "trash: HTTP error"})
+        except Exception as e:
+            failed_items.append({"key": dup_key, "detail": f"trash: {e}"})
 
-    except ValueError as e:
-        return f"Input error: {e}"
-    except Exception as e:
-        ctx.error(f"Error merging duplicates: {e}")
-        return f"Error merging duplicates: {e}"
+    update_status(
+        status.task_id,
+        processed=total_steps,
+        succeeded=len(succeeded_items),
+        failed=len(failed_items),
+        succeeded_items=succeeded_items,
+        failed_items=failed_items,
+        result_summary=(
+            f"Merge complete. Tags merged: {len(new_tags)}, "
+            f"collections added: {len(new_collections)}, "
+            f"children re-parented: {len(moved)}, "
+            f"duplicates trashed: {len(trashed)}."
+        ),
+    )
 
 
 @mcp.tool(
@@ -3401,7 +3522,6 @@ def _format_batch_result(header: str, results: list[dict]) -> str:
         "create_missing_collections: create unknown collection specs."
     ),
 )
-@with_zotero_api_lock
 def add_by_bibtex(
     bibtex: str | None = None,
     file_path: str | None = None,
@@ -3413,6 +3533,11 @@ def add_by_bibtex(
     *,
     ctx: Context,
 ) -> str:
+    """Add one or more items to Zotero from a BibTeX string or .bib file.
+
+    Not decorated with @with_zotero_api_lock: spawns a background task that
+    acquires the lock per-item. Prevents MCP-client-timeout + lock-wedge.
+    """
     try:
         _read_zot, write_zot = _helpers._get_write_client(ctx)
     except ValueError as e:
@@ -3455,46 +3580,122 @@ def add_by_bibtex(
 
         ctx.info(f"Parsed {len(entries)} BibTeX entries")
 
-        results = []
-        for entry in entries:
-            try:
-                item_data = _citation_import.bibtex_entry_to_zotero(entry, write_zot.item_template)
-            except Exception as e:
-                results.append(
-                    {
-                        "ok": False,
-                        "key": None,
-                        "doi": None,
-                        "pdf_status": None,
-                        "error": f"conversion failed: {e}",
-                        "title": entry.get("citekey") or "(unknown)",
-                    }
-                )
-                continue
+        from zotero_mcp.batch_runner import create_task, spawn_task
 
-            reused = _maybe_reuse_existing(_read_zot, write_zot, item_data, coll_keys, tags, if_exists, ctx)
-            if reused is not None:
-                results.append(reused)
-                continue
+        work_items = [{"key": str(i)} for i in range(len(entries))]
+        status = create_task("add_by_bibtex", work_items=work_items)
+        spawn_task(
+            status,
+            lambda s: _add_by_bibtex_worker(s, entries, coll_keys, tags, attach_mode, if_exists),
+        )
 
-            _apply_caller_tags_and_collections(item_data, tags, coll_keys)
-            # prefer_pub_pdf=True: entries with a DOI usually describe the
-            # published version; prefer the publisher PDF (institutional access).
-            results.append(
-                _create_and_attach(
-                    write_zot,
-                    item_data,
-                    attach_mode,
-                    ctx,
-                    prefer_pub_pdf=True,
-                )
-            )
-
-        return _format_batch_result("# zotero_add_by_bibtex", results)
+        return (
+            f"⏳ Import started: **{status.task_id}**\n\n"
+            f"Will import {len(entries)} entries in the background.\n\n"
+            f"Check progress: call `zotero_get_batch_task_status` "
+            f"with task_id `{status.task_id}`."
+        )
 
     except Exception as e:
         ctx.error(f"Error adding by BibTeX: {e}")
         return f"Error adding by BibTeX: {e}"
+
+
+def _add_by_bibtex_worker(status, entries, coll_keys, tags, attach_mode, if_exists) -> None:
+    """Background worker for add_by_bibtex."""
+    from zotero_mcp.batch_runner import update_status
+
+    try:
+        read_zot, write_zot = _helpers._get_write_client(None)
+    except ValueError as e:
+        raise RuntimeError(str(e))
+
+    total = len(entries)
+    succeeded = 0
+    failed = 0
+    succeeded_items: list[dict] = []
+    failed_items: list[dict] = []
+
+    for idx, entry in enumerate(entries, 1):
+        try:
+            item_data = _citation_import.bibtex_entry_to_zotero(entry, write_zot.item_template)
+        except Exception as e:
+            failed += 1
+            failed_items.append(
+                {"key": entry.get("citekey") or "(unknown)", "detail": f"conversion failed: {e}"}
+            )
+            if idx % 5 == 0 or idx == total:
+                update_status(
+                    status.task_id,
+                    processed=idx,
+                    succeeded=succeeded,
+                    failed=failed,
+                    succeeded_items=succeeded_items,
+                    failed_items=failed_items,
+                )
+            _time.sleep(0.3)
+            continue
+
+        try:
+            reused = _with_api_lock(
+                lambda: _maybe_reuse_existing(read_zot, write_zot, item_data, coll_keys, tags, if_exists, None)
+            )
+            if reused is not None:
+                succeeded += 1
+                succeeded_items.append(
+                    {"key": reused.get("key") or "", "detail": reused.get("existed") or "reused"}
+                )
+            else:
+                _apply_caller_tags_and_collections(item_data, tags, coll_keys)
+                # prefer_pub_pdf=True: entries with a DOI usually describe the
+                # published version; prefer the publisher PDF (institutional access).
+                result = _with_api_lock(
+                    lambda: _create_and_attach(
+                        write_zot,
+                        item_data,
+                        attach_mode,
+                        None,
+                        prefer_pub_pdf=True,
+                    )
+                )
+                if result.get("ok"):
+                    succeeded += 1
+                    succeeded_items.append(
+                        {"key": result.get("key") or "", "detail": result.get("title") or ""}
+                    )
+                else:
+                    failed += 1
+                    failed_items.append(
+                        {"key": result.get("key") or "", "detail": result.get("error") or "create failed"}
+                    )
+        except Exception as e:
+            logger.warning(f"Failed to import BibTeX entry: {e}")
+            failed += 1
+            failed_items.append(
+                {"key": entry.get("citekey") or "(unknown)", "detail": str(e)}
+            )
+
+        _time.sleep(0.3)
+
+        if idx % 5 == 0 or idx == total:
+            update_status(
+                status.task_id,
+                processed=idx,
+                succeeded=succeeded,
+                failed=failed,
+                succeeded_items=succeeded_items,
+                failed_items=failed_items,
+            )
+
+    update_status(
+        status.task_id,
+        processed=total,
+        succeeded=succeeded,
+        failed=failed,
+        succeeded_items=succeeded_items,
+        failed_items=failed_items,
+        result_summary=f"Imported {succeeded} entries, {failed} failed.",
+    )
 
 
 def _try_ads_pdf(write_zot, item_key: str, bibcode: str, ctx: Context) -> str | None:
@@ -3542,7 +3743,6 @@ def _try_ads_pdf(write_zot, item_key: str, bibcode: str, ctx: Context) -> str | 
         "'skip' | 'duplicate'."
     ),
 )
-@with_zotero_api_lock
 def add_by_bibcode(
     bibcode: str | list[str] | None = None,
     collections: list[str] | str | None = None,
@@ -3553,6 +3753,11 @@ def add_by_bibcode(
     *,
     ctx: Context,
 ) -> str:
+    """Add one or more items to Zotero from NASA ADS bibcodes.
+
+    Not decorated with @with_zotero_api_lock: spawns a background task that
+    acquires the lock per-item. Prevents MCP-client-timeout + lock-wedge.
+    """
     if not _ads_client.is_available():
         return (
             "Error: ADS_API_TOKEN is not set. Get a free token at "
@@ -3599,21 +3804,81 @@ def add_by_bibcode(
             return f"Error: {e}"
 
         ctx.info(f"Fetching {len(bibcodes)} ADS record(s)")
-        results = []
-        for bc in bibcodes:
+
+        # Spawn background task for the per-bibcode loop (ADS fetch + PDF cascade + upload per item).
+        from zotero_mcp.batch_runner import create_task, spawn_task
+
+        work_items = [{"key": bc, "bibcode": bc} for bc in bibcodes]
+        task_status = create_task("add_by_bibcode", work_items=work_items)
+        spawn_task(
+            task_status,
+            lambda s: _add_by_bibcode_worker(s, bibcodes, coll_keys, tags, attach_mode, if_exists),
+        )
+
+        return (
+            f"⏳ Bibcode import started: **{task_status.task_id}**\n\n"
+            f"Will import {len(bibcodes)} bibcode(s) in the background.\n\n"
+            f"Check progress: call `zotero_get_batch_task_status` "
+            f"with task_id `{task_status.task_id}`."
+        )
+
+    except Exception as e:
+        ctx.error(f"Error adding by bibcode: {e}")
+        return f"Error adding by bibcode: {e}"
+
+
+def _add_by_bibcode_worker(status, bibcodes, coll_keys, tags, attach_mode, if_exists) -> None:
+    """Background worker for add_by_bibcode.
+
+    Replicates the original synchronous loop: for each bibcode, fetch the ADS
+    record, convert to a Zotero item, run dedup (bibcode then DOI), and
+    create+attach. Per-item results are written to the task status file every
+    5 items and at the end.
+
+    Resolves its own write client via ``_helpers._get_write_client(None)`` so
+    the background thread doesn't share the foreground session. ``ctx`` is
+    passed as ``None`` to the underlying helpers (``find_existing_items``,
+    ``_converge_existing_item``, ``_maybe_reuse_existing``, ``_create_and_attach``)
+    — they all guard ``ctx is not None`` before logging, and logging is a
+    no-op in the background anyway.
+    """
+    from zotero_mcp.batch_runner import update_status
+
+    try:
+        read_zot, write_zot = _helpers._get_write_client(None)
+    except ValueError as e:
+        raise RuntimeError(str(e))
+
+    total = len(bibcodes)
+    succeeded = 0
+    failed = 0
+    succeeded_items: list[dict] = []
+    failed_items: list[dict] = []
+
+    def _checkpoint(idx: int) -> None:
+        """Write progress every 5 items (and on the last item)."""
+        if idx % 5 == 0 or idx == total:
+            update_status(
+                status.task_id,
+                processed=idx,
+                succeeded=succeeded,
+                failed=failed,
+                succeeded_items=succeeded_items,
+                failed_items=failed_items,
+            )
+
+    for idx, bc in enumerate(bibcodes, 1):
+        try:
+            # 1. Fetch the ADS record. ADS fetch is a network call, not a Zotero
+            #    write, but we hold the per-item lock for consistency with the
+            #    surrounding create/dedup steps that share the iteration.
             try:
-                doc = _ads_client.fetch_record(bc)
+                doc = _with_api_lock(lambda b=bc: _ads_client.fetch_record(b))
             except Exception as e:
-                results.append(
-                    {
-                        "ok": False,
-                        "key": None,
-                        "doi": None,
-                        "pdf_status": None,
-                        "error": f"ADS fetch failed: {e}",
-                        "title": bc,
-                    }
-                )
+                failed += 1
+                failed_items.append({"key": bc, "detail": f"ADS fetch failed: {e}"})
+                _time.sleep(0.3)
+                _checkpoint(idx)
                 continue
             if not doc:
                 err = "bibcode not found in ADS"
@@ -3622,103 +3887,113 @@ def add_by_bibcode(
                         "ADS_API_TOKEN rejected (invalid or expired) — get a new "
                         "free token at https://ui.adsabs.harvard.edu/#user/settings/token"
                     )
-                results.append(
-                    {
-                        "ok": False,
-                        "key": None,
-                        "doi": None,
-                        "pdf_status": None,
-                        "error": err,
-                        "title": bc,
-                    }
-                )
+                failed += 1
+                failed_items.append({"key": bc, "detail": err})
+                _time.sleep(0.3)
+                _checkpoint(idx)
                 continue
 
+            # 2. Convert ADS doc → Zotero item dict.
             try:
                 csl = _ads_client.doc_to_csl_json(doc)
                 item_data = _citation_import.csl_json_to_zotero(csl, write_zot.item_template)
             except Exception as e:
-                results.append(
-                    {
-                        "ok": False,
-                        "key": None,
-                        "doi": None,
-                        "pdf_status": None,
-                        "error": f"conversion failed: {e}",
-                        "title": (doc.get("title") or [bc])[0] if doc.get("title") else bc,
-                    }
-                )
+                title = (doc.get("title") or [bc])[0] if doc.get("title") else bc
+                failed += 1
+                failed_items.append({"key": bc, "detail": f"conversion failed: {e} ({title})"})
+                _time.sleep(0.3)
+                _checkpoint(idx)
                 continue
 
-            # Dedup: first by bibcode (extra field), then by DOI via the
-            # standard batch path. bibcode dedup is ADS-specific and must run
-            # before _maybe_reuse_existing (which only checks DOI).
+            # 3. Dedup: first by bibcode (extra field), then by DOI via the
+            #    standard batch path. bibcode dedup is ADS-specific and must
+            #    run before _maybe_reuse_existing (which only checks DOI).
             if if_exists != "duplicate":
-                existing = _helpers.find_existing_items(read_zot, bibcode=bc, ctx=ctx)
+                existing = _with_api_lock(
+                    lambda b=bc: _helpers.find_existing_items(read_zot, bibcode=b, ctx=None)
+                )
                 if existing:
                     item = existing[0]
                     if if_exists == "skip":
-                        results.append(
-                            {
-                                "ok": True,
-                                "key": item.get("key"),
-                                "doi": item.get("data", {}).get("DOI"),
-                                "pdf_status": None,
-                                "error": None,
-                                "title": item.get("data", {}).get("title") or bc,
-                                "collections_failed": [],
-                                "existed": "skipped — already in library (bibcode match)",
-                            }
+                        succeeded += 1
+                        succeeded_items.append(
+                            {"key": item.get("key") or "", "detail": "skipped — already in library (bibcode match)"}
                         )
-                        continue
-                    summary = _converge_existing_item(write_zot, item, coll_keys, tags, ctx)
-                    bits = []
-                    if summary["colls_added"]:
-                        bits.append(f"added to {summary['colls_added']}")
-                    if summary["colls_already"]:
-                        bits.append(f"already in {summary['colls_already']}")
-                    if summary["tags_added"]:
-                        bits.append(f"tags added {summary['tags_added']}")
-                    detail = "; ".join(bits) if bits else "already in requested state"
-                    results.append(
-                        {
-                            "ok": True,
-                            "key": summary["key"],
-                            "doi": item.get("data", {}).get("DOI"),
-                            "pdf_status": None,
-                            "error": None,
-                            "title": summary["title"],
-                            "collections_failed": summary["colls_failed"],
-                            "existed": f"reused existing (bibcode) — {detail}",
-                        }
-                    )
+                    else:
+                        summary = _with_api_lock(
+                            lambda it=item: _converge_existing_item(write_zot, it, coll_keys, tags, None)
+                        )
+                        bits = []
+                        if summary["colls_added"]:
+                            bits.append(f"added to {summary['colls_added']}")
+                        if summary["colls_already"]:
+                            bits.append(f"already in {summary['colls_already']}")
+                        if summary["tags_added"]:
+                            bits.append(f"tags added {summary['tags_added']}")
+                        detail = "; ".join(bits) if bits else "already in requested state"
+                        succeeded += 1
+                        succeeded_items.append(
+                            {"key": summary["key"] or "", "detail": f"reused existing (bibcode) — {detail}"}
+                        )
+                    _time.sleep(0.3)
+                    _checkpoint(idx)
                     continue
 
-            reused = _maybe_reuse_existing(read_zot, write_zot, item_data, coll_keys, tags, if_exists, ctx)
+            reused = _with_api_lock(
+                lambda idata=item_data: _maybe_reuse_existing(read_zot, write_zot, idata, coll_keys, tags, if_exists, None)
+            )
             if reused is not None:
-                results.append(reused)
+                succeeded += 1
+                succeeded_items.append(
+                    {"key": reused.get("key") or "", "detail": reused.get("existed") or "reused"}
+                )
+                _time.sleep(0.3)
+                _checkpoint(idx)
                 continue
 
             _apply_caller_tags_and_collections(item_data, tags, coll_keys)
             # bibcode is known here, so pass it in to short-circuit the ADS
             # DOI→bibcode lookup. prefer_pub_pdf=True because ADS bibcode imports
             # are astronomy papers and most users have institutional access.
-            created = _create_and_attach(
-                write_zot,
-                item_data,
-                attach_mode,
-                ctx,
-                bibcode=bc,
-                prefer_pub_pdf=True,
+            created = _with_api_lock(
+                lambda idata=item_data, b=bc: _create_and_attach(
+                    write_zot,
+                    idata,
+                    attach_mode,
+                    None,
+                    bibcode=b,
+                    prefer_pub_pdf=True,
+                )
             )
+            if created.get("ok"):
+                succeeded += 1
+                succeeded_items.append(
+                    {"key": created.get("key") or "", "detail": created.get("title") or ""}
+                )
+            else:
+                failed += 1
+                failed_items.append(
+                    {"key": created.get("key") or bc, "detail": created.get("error") or "create failed"}
+                )
+        except Exception as e:
+            logger.warning(f"Failed to import bibcode {bc}: {e}")
+            failed += 1
+            failed_items.append({"key": bc, "detail": str(e)})
 
-            results.append(created)
+        # Be gentle with ADS rate limits.
+        _time.sleep(0.3)
 
-        return _format_batch_result("# zotero_add_by_bibcode", results)
+        _checkpoint(idx)
 
-    except Exception as e:
-        ctx.error(f"Error adding by bibcode: {e}")
-        return f"Error adding by bibcode: {e}"
+    update_status(
+        status.task_id,
+        processed=total,
+        succeeded=succeeded,
+        failed=failed,
+        succeeded_items=succeeded_items,
+        failed_items=failed_items,
+        result_summary=f"Imported {succeeded} bibcode(s), {failed} failed.",
+    )
 
 
 @mcp.tool(
@@ -3736,7 +4011,6 @@ def add_by_bibcode(
         "create_missing_collections: create unknown collection specs."
     ),
 )
-@with_zotero_api_lock
 def add_by_csl_json(
     csl_json: str | list | dict | None = None,
     file_path: str | None = None,
@@ -3748,6 +4022,11 @@ def add_by_csl_json(
     *,
     ctx: Context,
 ) -> str:
+    """Add one or more items to Zotero from a CSL JSON string/object or file.
+
+    Not decorated with @with_zotero_api_lock: spawns a background task that
+    acquires the lock per-item. Prevents MCP-client-timeout + lock-wedge.
+    """
     try:
         _read_zot, write_zot = _helpers._get_write_client(ctx)
     except ValueError as e:
@@ -3790,46 +4069,122 @@ def add_by_csl_json(
 
         ctx.info(f"Processing {len(entries)} CSL JSON entries")
 
-        results = []
-        for entry in entries:
-            try:
-                item_data = _citation_import.csl_json_to_zotero(entry, write_zot.item_template)
-            except Exception as e:
-                results.append(
-                    {
-                        "ok": False,
-                        "key": None,
-                        "doi": None,
-                        "pdf_status": None,
-                        "error": f"conversion failed: {e}",
-                        "title": str(entry.get("id") or entry.get("title") or "(unknown)"),
-                    }
-                )
-                continue
+        from zotero_mcp.batch_runner import create_task, spawn_task
 
-            reused = _maybe_reuse_existing(_read_zot, write_zot, item_data, coll_keys, tags, if_exists, ctx)
-            if reused is not None:
-                results.append(reused)
-                continue
+        work_items = [{"key": str(i)} for i in range(len(entries))]
+        status = create_task("add_by_csl_json", work_items=work_items)
+        spawn_task(
+            status,
+            lambda s: _add_by_csl_json_worker(s, entries, coll_keys, tags, attach_mode, if_exists),
+        )
 
-            _apply_caller_tags_and_collections(item_data, tags, coll_keys)
-            # prefer_pub_pdf=True: entries with a DOI usually describe the
-            # published version; prefer the publisher PDF (institutional access).
-            results.append(
-                _create_and_attach(
-                    write_zot,
-                    item_data,
-                    attach_mode,
-                    ctx,
-                    prefer_pub_pdf=True,
-                )
-            )
-
-        return _format_batch_result("# zotero_add_by_csl_json", results)
+        return (
+            f"⏳ Import started: **{status.task_id}**\n\n"
+            f"Will import {len(entries)} entries in the background.\n\n"
+            f"Check progress: call `zotero_get_batch_task_status` "
+            f"with task_id `{status.task_id}`."
+        )
 
     except Exception as e:
         ctx.error(f"Error adding by CSL JSON: {e}")
         return f"Error adding by CSL JSON: {e}"
+
+
+def _add_by_csl_json_worker(status, entries, coll_keys, tags, attach_mode, if_exists) -> None:
+    """Background worker for add_by_csl_json."""
+    from zotero_mcp.batch_runner import update_status
+
+    try:
+        read_zot, write_zot = _helpers._get_write_client(None)
+    except ValueError as e:
+        raise RuntimeError(str(e))
+
+    total = len(entries)
+    succeeded = 0
+    failed = 0
+    succeeded_items: list[dict] = []
+    failed_items: list[dict] = []
+
+    for idx, entry in enumerate(entries, 1):
+        try:
+            item_data = _citation_import.csl_json_to_zotero(entry, write_zot.item_template)
+        except Exception as e:
+            failed += 1
+            failed_items.append(
+                {"key": str(entry.get("id") or entry.get("title") or "(unknown)"), "detail": f"conversion failed: {e}"}
+            )
+            if idx % 5 == 0 or idx == total:
+                update_status(
+                    status.task_id,
+                    processed=idx,
+                    succeeded=succeeded,
+                    failed=failed,
+                    succeeded_items=succeeded_items,
+                    failed_items=failed_items,
+                )
+            _time.sleep(0.3)
+            continue
+
+        try:
+            reused = _with_api_lock(
+                lambda: _maybe_reuse_existing(read_zot, write_zot, item_data, coll_keys, tags, if_exists, None)
+            )
+            if reused is not None:
+                succeeded += 1
+                succeeded_items.append(
+                    {"key": reused.get("key") or "", "detail": reused.get("existed") or "reused"}
+                )
+            else:
+                _apply_caller_tags_and_collections(item_data, tags, coll_keys)
+                # prefer_pub_pdf=True: entries with a DOI usually describe the
+                # published version; prefer the publisher PDF (institutional access).
+                result = _with_api_lock(
+                    lambda: _create_and_attach(
+                        write_zot,
+                        item_data,
+                        attach_mode,
+                        None,
+                        prefer_pub_pdf=True,
+                    )
+                )
+                if result.get("ok"):
+                    succeeded += 1
+                    succeeded_items.append(
+                        {"key": result.get("key") or "", "detail": result.get("title") or ""}
+                    )
+                else:
+                    failed += 1
+                    failed_items.append(
+                        {"key": result.get("key") or "", "detail": result.get("error") or "create failed"}
+                    )
+        except Exception as e:
+            logger.warning(f"Failed to import CSL JSON entry: {e}")
+            failed += 1
+            failed_items.append(
+                {"key": str(entry.get("id") or entry.get("title") or "(unknown)"), "detail": str(e)}
+            )
+
+        _time.sleep(0.3)
+
+        if idx % 5 == 0 or idx == total:
+            update_status(
+                status.task_id,
+                processed=idx,
+                succeeded=succeeded,
+                failed=failed,
+                succeeded_items=succeeded_items,
+                failed_items=failed_items,
+            )
+
+    update_status(
+        status.task_id,
+        processed=total,
+        succeeded=succeeded,
+        failed=failed,
+        succeeded_items=succeeded_items,
+        failed_items=failed_items,
+        result_summary=f"Imported {succeeded} entries, {failed} failed.",
+    )
 
 
 # --------------------------------------------------------------------------- #

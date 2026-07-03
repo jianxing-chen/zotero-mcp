@@ -1,10 +1,31 @@
 """Integration tests for the zotero_add_by_csl_json MCP tool."""
 
 import json
+import re
+import time
 
 from conftest import FakeZotero
 
 from zotero_mcp import server
+from zotero_mcp.batch_runner import read_status
+
+
+def _wait_for_task(result):
+    """Extract task_id from a background-task return string and wait for completion.
+
+    Returns the final TaskStatus (or None if the result isn't a task-start string).
+    """
+    m = re.search(r"\*\*([^*]+)\*\*", result)
+    if not m:
+        return None
+    task_id = m.group(1)
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        s = read_status(task_id)
+        if s and s.status in ("completed", "failed"):
+            return s
+        time.sleep(0.05)
+    return read_status(task_id)
 
 
 class FakeZoteroWithAttach(FakeZotero):
@@ -53,11 +74,18 @@ SAMPLE_ARTICLE = {
 
 
 class TestHappyPath:
-    def test_single_dict_input(self, monkeypatch, dummy_ctx):
+    def test_single_dict_input(self, monkeypatch, dummy_ctx, tmp_path):
+        monkeypatch.setattr(
+            "zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks"
+        )
         fake = _patch_hybrid(monkeypatch)
         _disable_oa_pdf(monkeypatch)
 
         result = server.add_by_csl_json(csl_json=SAMPLE_ARTICLE, ctx=dummy_ctx)
+
+        assert "started" in result.lower() or "⏳" in result
+        assert "get_batch_task_status" in result
+        _wait_for_task(result)
 
         assert len(fake.created) == 1
         created = fake.created[0]
@@ -66,9 +94,11 @@ class TestHappyPath:
         assert created["DOI"] == "10.1234/x"
         assert created["date"] == "2020-03-15"
         assert "Citation Key: X2020" in created["extra"]
-        assert "Successfully added" in result
 
-    def test_json_string_input(self, monkeypatch, dummy_ctx):
+    def test_json_string_input(self, monkeypatch, dummy_ctx, tmp_path):
+        monkeypatch.setattr(
+            "zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks"
+        )
         fake = _patch_hybrid(monkeypatch)
         _disable_oa_pdf(monkeypatch)
 
@@ -77,30 +107,43 @@ class TestHappyPath:
             ctx=dummy_ctx,
         )
 
+        assert "started" in result.lower() or "⏳" in result
+        assert "get_batch_task_status" in result
+        _wait_for_task(result)
+
         assert len(fake.created) == 1
         assert fake.created[0]["title"] == "A Paper"
-        assert "Successfully added" in result
 
-    def test_list_of_objects(self, monkeypatch, dummy_ctx):
+    def test_list_of_objects(self, monkeypatch, dummy_ctx, tmp_path):
+        monkeypatch.setattr(
+            "zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks"
+        )
         fake = _patch_hybrid(monkeypatch)
         _disable_oa_pdf(monkeypatch)
 
         entries = [SAMPLE_ARTICLE, {"type": "book", "title": "B", "author": [{"family": "A"}]}]
         result = server.add_by_csl_json(csl_json=entries, ctx=dummy_ctx)
 
+        assert "started" in result.lower() or "⏳" in result
+        assert "get_batch_task_status" in result
+        _wait_for_task(result)
+
         assert len(fake.created) == 2
         assert fake.created[0]["itemType"] == "journalArticle"
         assert fake.created[1]["itemType"] == "book"
-        assert "Added 2/2" in result
 
-    def test_json_string_array(self, monkeypatch, dummy_ctx):
+    def test_json_string_array(self, monkeypatch, dummy_ctx, tmp_path):
+        monkeypatch.setattr(
+            "zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks"
+        )
         fake = _patch_hybrid(monkeypatch)
         _disable_oa_pdf(monkeypatch)
 
-        server.add_by_csl_json(
+        result = server.add_by_csl_json(
             csl_json=json.dumps([SAMPLE_ARTICLE, SAMPLE_ARTICLE]),
             ctx=dummy_ctx,
         )
+        _wait_for_task(result)
 
         assert len(fake.created) == 2
 
@@ -111,34 +154,42 @@ class TestHappyPath:
 
 
 class TestTagsAndCollections:
-    def test_caller_tags_merged(self, monkeypatch, dummy_ctx):
+    def test_caller_tags_merged(self, monkeypatch, dummy_ctx, tmp_path):
+        monkeypatch.setattr(
+            "zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks"
+        )
         fake = _patch_hybrid(monkeypatch)
         _disable_oa_pdf(monkeypatch)
 
         csl = dict(SAMPLE_ARTICLE)
         csl["keyword"] = ["source1", "source2"]
 
-        server.add_by_csl_json(
+        result = server.add_by_csl_json(
             csl_json=csl,
             tags=["caller1", "source1"],
             ctx=dummy_ctx,
         )
+        _wait_for_task(result)
 
         tags = [t["tag"] for t in fake.created[0]["tags"]]
         assert tags == ["source1", "source2", "caller1"]
 
-    def test_collections_applied(self, monkeypatch, dummy_ctx):
+    def test_collections_applied(self, monkeypatch, dummy_ctx, tmp_path):
+        monkeypatch.setattr(
+            "zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks"
+        )
         fake = _patch_hybrid(monkeypatch)
         fake._collections = [
             {"key": "COL00001", "data": {"name": "One", "parentCollection": False}},
         ]
         _disable_oa_pdf(monkeypatch)
 
-        server.add_by_csl_json(
+        result = server.add_by_csl_json(
             csl_json=SAMPLE_ARTICLE,
             collections=["COL00001"],
             ctx=dummy_ctx,
         )
+        _wait_for_task(result)
 
         assert fake.created[0]["collections"] == ["COL00001"]
 
@@ -149,7 +200,10 @@ class TestTagsAndCollections:
 
 
 class TestOaPdfAttempt:
-    def test_doi_triggers_attempt(self, monkeypatch, dummy_ctx):
+    def test_doi_triggers_attempt(self, monkeypatch, dummy_ctx, tmp_path):
+        monkeypatch.setattr(
+            "zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks"
+        )
         _patch_hybrid(monkeypatch)
         called = {"count": 0, "doi": None}
 
@@ -160,7 +214,8 @@ class TestOaPdfAttempt:
 
         monkeypatch.setattr("zotero_mcp.tools._helpers._try_attach_oa_pdf", stub)
 
-        server.add_by_csl_json(csl_json=SAMPLE_ARTICLE, ctx=dummy_ctx)
+        result = server.add_by_csl_json(csl_json=SAMPLE_ARTICLE, ctx=dummy_ctx)
+        _wait_for_task(result)
 
         assert called["count"] == 1
         assert called["doi"] == "10.1234/x"
@@ -190,6 +245,9 @@ class TestOaPdfAttempt:
 
 class TestFilePath:
     def test_reads_json_file(self, monkeypatch, dummy_ctx, tmp_path):
+        monkeypatch.setattr(
+            "zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks"
+        )
         fake = _patch_hybrid(monkeypatch)
         _disable_oa_pdf(monkeypatch)
 
@@ -198,18 +256,25 @@ class TestFilePath:
 
         result = server.add_by_csl_json(file_path=str(f), ctx=dummy_ctx)
 
+        assert "started" in result.lower() or "⏳" in result
+        assert "get_batch_task_status" in result
+        _wait_for_task(result)
+
         assert len(fake.created) == 1
         assert fake.created[0]["title"] == "A Paper"
-        assert "Successfully added" in result
 
     def test_reads_csljson_extension(self, monkeypatch, dummy_ctx, tmp_path):
+        monkeypatch.setattr(
+            "zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks"
+        )
         fake = _patch_hybrid(monkeypatch)
         _disable_oa_pdf(monkeypatch)
 
         f = tmp_path / "refs.csljson"
         f.write_text(json.dumps([SAMPLE_ARTICLE, SAMPLE_ARTICLE]), encoding="utf-8")
 
-        server.add_by_csl_json(file_path=str(f), ctx=dummy_ctx)
+        result = server.add_by_csl_json(file_path=str(f), ctx=dummy_ctx)
+        _wait_for_task(result)
         assert len(fake.created) == 2
 
     def test_rejects_wrong_extension(self, monkeypatch, dummy_ctx, tmp_path):

@@ -5,10 +5,14 @@ in-library tagging, citation network direction handling, bibcode dedup,
 and graceful degradation.
 """
 
+import re
+import time
+
 import pytest
 from conftest import FakeZotero
 
 from zotero_mcp import ads_client, server
+from zotero_mcp.batch_runner import read_status
 
 
 class _FakeCtx:
@@ -159,8 +163,10 @@ class TestAddByBibcode:
         out = server.add_by_bibcode(bibcode="garbage", ctx=ctx)
         assert "no valid bibcodes" in out or "invalid" in out.lower()
 
-    def test_record_not_found(self, ctx, monkeypatch):
+    def test_record_not_found(self, ctx, monkeypatch, tmp_path):
         monkeypatch.setenv("ADS_API_TOKEN", "tok")
+        # Isolate background-task status files so they don't litter the dev box.
+        monkeypatch.setattr("zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks")
         fake_zot = FakeZotero()
         monkeypatch.setattr(
             "zotero_mcp.tools.write._helpers._get_write_client",
@@ -168,10 +174,14 @@ class TestAddByBibcode:
         )
         monkeypatch.setattr(ads_client, "fetch_record", lambda bc: None)
         out = server.add_by_bibcode(bibcode="2003ApJ...589L..21B", ctx=ctx)
-        assert "not found" in out or "❌" in out
+        # Background-task mode: the tool returns a task_id immediately, and the
+        # per-bibcode "not found" outcome is recorded in the task status.
+        assert "started" in out.lower() or "⏳" in out
+        assert "get_batch_task_status" in out
 
-    def test_successful_add(self, ctx, monkeypatch):
+    def test_successful_add(self, ctx, monkeypatch, tmp_path):
         monkeypatch.setenv("ADS_API_TOKEN", "tok")
+        monkeypatch.setattr("zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks")
         fake_zot = FakeZotero()
         monkeypatch.setattr(
             "zotero_mcp.tools.write._helpers._get_write_client",
@@ -203,6 +213,26 @@ class TestAddByBibcode:
             lambda *a, **k: [],
         )
         out = server.add_by_bibcode(bibcode="2003ApJ...589L..21B", ctx=ctx)
-        assert "Successfully added" in out or "Test Paper" in out
+        # Background-task mode: the tool spawns a worker and returns a task_id
+        # immediately instead of the per-item "Successfully added" report.
+        assert "started" in out.lower() or "⏳" in out
+        assert "get_batch_task_status" in out
+
+        # Poll the task status until the background worker finishes, then
+        # verify the worker actually created the item in (fake) Zotero.
+        match = re.search(r"task_id `([^`]+)`", out)
+        assert match, f"Could not parse task_id from result: {out}"
+        task_id = match.group(1)
+
+        deadline = time.time() + 5.0
+        final = None
+        while time.time() < deadline:
+            final = read_status(task_id)
+            if final is not None and final.status in ("completed", "failed"):
+                break
+            time.sleep(0.05)
+        assert final is not None, "Task status never appeared on disk"
+        assert final.status == "completed", f"Task did not complete: {final.status} (error={getattr(final, 'error', None)})"
+        assert final.succeeded == 1, f"Expected 1 succeeded, got {final.succeeded} (items={final.succeeded_items})"
         # Verify the item was created in fake Zotero.
         assert len(fake_zot.created) >= 1

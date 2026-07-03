@@ -4,10 +4,13 @@ Each test prevents a specific bug from reappearing.
 """
 
 import json
+import re
+import time
 
 from conftest import DummyContext, FakeZotero, _FakeResponse
 
 from zotero_mcp import server
+from zotero_mcp.batch_runner import read_status
 
 # ---------------------------------------------------------------------------
 # Bug 1: manage_collections passed [item_dict] (list) instead of item_dict
@@ -65,7 +68,7 @@ class _FakeHttpClient:
 class TestMergeTrashMethod:
     """Merge uses direct PATCH (not update_item) for trashing."""
 
-    def _setup(self, monkeypatch):
+    def _setup(self, monkeypatch, tmp_path=None):
         class FakeZotMerge(FakeZotero):
             def __init__(self):
                 super().__init__()
@@ -114,14 +117,29 @@ class TestMergeTrashMethod:
         fake = FakeZotMerge()
         monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
         monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake, fake))
+        if tmp_path is not None:
+            monkeypatch.setattr("zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks")
         return fake
 
-    def test_trash_uses_direct_patch_not_update_item(self, monkeypatch):
+    def test_trash_uses_direct_patch_not_update_item(self, monkeypatch, tmp_path):
         """Trashing must use client.patch with deleted:1, NOT update_item."""
-        fake = self._setup(monkeypatch)
+        fake = self._setup(monkeypatch, tmp_path)
         ctx = DummyContext()
 
-        server.merge_duplicates(keeper_key="KEEP", duplicate_keys=["DUP1"], confirm=True, ctx=ctx)
+        result = server.merge_duplicates(keeper_key="KEEP", duplicate_keys=["DUP1"], confirm=True, ctx=ctx)
+
+        # confirm=True spawns a background task
+        assert "started" in result.lower() or "⏳" in result
+        assert "get_batch_task_status" in result
+        # Wait for the background merge to finish before checking side effects
+        m = re.search(r"\*\*([^*]+)\*\*", result)
+        task_id = m.group(1)
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            s = read_status(task_id)
+            if s and s.status in ("completed", "failed"):
+                break
+            time.sleep(0.05)
 
         # update_item should NOT have been called with any "deleted" field
         for call in fake.update_calls:

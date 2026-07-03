@@ -379,19 +379,23 @@ class TestBatchCleanupNotesExecute:
 
         server.batch_cleanup_notes(dry_run=False, ctx=DummyContext())
 
-        # Wait for the background thread to finish.
+        # Wait for the background thread to finish. The task spawns a daemon
+        # thread that writes the status file; poll until it reaches a terminal
+        # state (completed/failed) so the assertions below don't race against
+        # an in-flight write.
         deadline = time.time() + 5
+        status_file = None
         while time.time() < deadline:
             files = list(tasks_dir.glob("*.json"))
             if files:
-                data = json.loads(files[0].read_text())
+                status_file = files[0]
+                data = json.loads(status_file.read_text())
                 if data["status"] in ("completed", "failed"):
                     break
             time.sleep(0.05)
 
-        files = list(tasks_dir.glob("*.json"))
-        assert len(files) >= 1
-        data = json.loads(files[0].read_text())
+        assert status_file is not None, "No status file was created by the background task"
+        data = json.loads(status_file.read_text())
         assert data["task_type"] == "batch_cleanup_notes"
         assert data["total"] == 2
         assert data["status"] in ("pending", "running", "completed")

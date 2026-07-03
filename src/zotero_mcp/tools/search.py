@@ -1026,43 +1026,42 @@ def update_search_database(
     try:
         ctx.info("Starting semantic search database update...")
 
-        # Local mode guard: the MCP tool holds a process-wide RLock for the
-        # entire update duration. In local mode the scan can take 10-60
-        # minutes (full library walk + PDF extraction + embedding HTTP
-        # calls), which wedges every other Zotero API tool behind the lock.
-        # Worse, if the MCP client spawns multiple server processes, they
-        # each hold an independent RLock and can race on the same ChromaDB,
-        # corrupting it. Redirect to the CLI, which runs without the RLock
-        # and shows a live progress bar. See README "Local Mode CLI Cheat
-        # Sheet".
-        if _utils.is_local_mode():
-            cmd = "zotero-mcp update-db"
-            if force_rebuild:
-                cmd += " --fulltext --force-rebuild"
-            elif reindex_keys:
-                keys_str = ",".join(reindex_keys)
-                cmd = f"zotero-mcp update-db --reindex-keys {keys_str}"
-                if force_reindex:
-                    cmd += " --force"
-            elif reindex_cached_mineru:
-                cmd = "zotero-mcp update-db --reindex-cached-mineru"
-                if force_reindex:
-                    cmd += " --force"
-            else:
-                cmd += " --fulltext"
-            return (
-                "⚠️ In local mode, the vector database update must be run "
-                "from your terminal — not via this MCP tool. The tool holds "
-                "a process-wide lock that can block all other Zotero "
-                "operations for the entire duration (potentially tens of "
-                "minutes), and concurrent MCP server processes can corrupt "
-                "the database.\n\n"
-                f"Run this command in your terminal:\n\n"
-                f"    {cmd}\n\n"
-                "You'll see a live progress bar and the update will complete "
-                "safely.\n"
-                "Check status anytime with: zotero-mcp db-status"
-            )
+        # Always redirect to the CLI. The MCP tool holds a process-wide
+        # RLock for the entire update duration (10-60+ minutes), which
+        # wedges every other Zotero API tool behind the lock. If the MCP
+        # client times out (~60s) and spawns a new server process, the old
+        # process keeps running with the lock held; worse, two processes
+        # racing on the same ChromaDB can corrupt it (delete-then-upsert
+        # loop gets interrupted mid-way, leaving the DB in a partial state).
+        # The CLI runs without the RLock and shows a live progress bar.
+        # See README "Local Mode CLI Cheat Sheet".
+        cmd = "zotero-mcp update-db"
+        if force_rebuild:
+            cmd += " --fulltext --force-rebuild"
+        elif reindex_keys:
+            keys_str = ",".join(reindex_keys)
+            cmd = f"zotero-mcp update-db --reindex-keys {keys_str}"
+            if force_reindex:
+                cmd += " --force"
+        elif reindex_cached_mineru:
+            cmd = "zotero-mcp update-db --reindex-cached-mineru"
+            if force_reindex:
+                cmd += " --force"
+        else:
+            cmd += " --fulltext"
+        return (
+            "⚠️ The vector database update must be run from your terminal "
+            "— not via this MCP tool. The tool holds a process-wide lock "
+            "that can block all other Zotero operations for the entire "
+            "duration (potentially tens of minutes), and if the MCP client "
+            "times out, concurrent server processes can corrupt the "
+            "database.\n\n"
+            f"Run this command in your terminal:\n\n"
+            f"    {cmd}\n\n"
+            "You'll see a live progress bar and the update will complete "
+            "safely.\n"
+            "Check status anytime with: zotero-mcp db-status"
+        )
 
         # Import semantic search module
         try:

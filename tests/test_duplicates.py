@@ -1,8 +1,12 @@
 """Tests for Features 7-8: find_duplicates and merge_duplicates."""
 
+import re
+import time
+
 from conftest import FakeZotero, _FakeResponse
 
 from zotero_mcp import server
+from zotero_mcp.batch_runner import read_status
 
 # ---------------------------------------------------------------------------
 # Helpers: item factory and extended FakeZotero for duplicates
@@ -262,7 +266,7 @@ class TestMergeDuplicatesDryRun:
 class TestMergeDuplicatesConfirm:
     """Tests for merge_duplicates with confirm=True."""
 
-    def _setup_merge(self, monkeypatch):
+    def _setup_merge(self, monkeypatch, tmp_path=None):
         """Shared setup: keeper + two duplicates with tags, collections, children."""
         fake = FakeZoteroForDuplicates()
         # Child items (must also be in _items so write_zot.item(child_key) works
@@ -307,13 +311,35 @@ class TestMergeDuplicatesConfirm:
         }
         monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
         monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake, fake))
+        if tmp_path is not None:
+            monkeypatch.setattr(
+                "zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks"
+            )
         return fake
 
-    def test_tags_merged(self, monkeypatch, dummy_ctx):
-        """All unique tags from duplicates are consolidated into keeper."""
-        fake = self._setup_merge(monkeypatch)
+    @staticmethod
+    def _wait_for_completion(result):
+        """Extract task_id from a merge start message and wait for completion."""
+        m = re.search(r"\*\*([^*]+)\*\*", result)
+        task_id = m.group(1)
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            s = read_status(task_id)
+            if s and s.status in ("completed", "failed"):
+                break
+            time.sleep(0.05)
+        return task_id
 
-        server.merge_duplicates(keeper_key="KEEP", duplicate_keys=["DUP1", "DUP2"], confirm=True, ctx=dummy_ctx)
+    def test_tags_merged(self, monkeypatch, dummy_ctx, tmp_path):
+        """All unique tags from duplicates are consolidated into keeper."""
+        fake = self._setup_merge(monkeypatch, tmp_path)
+
+        result = server.merge_duplicates(keeper_key="KEEP", duplicate_keys=["DUP1", "DUP2"], confirm=True, ctx=dummy_ctx)
+
+        # confirm=True spawns a background task
+        assert "started" in result.lower() or "⏳" in result
+        assert "get_batch_task_status" in result
+        self._wait_for_completion(result)
 
         # Find the keeper update that has tags
         keeper_updates = [u for u in fake.update_calls if u.get("key") == "KEEP"]
@@ -324,11 +350,15 @@ class TestMergeDuplicatesConfirm:
         assert "dup1Only" in merged_tags
         assert "dup2Only" in merged_tags
 
-    def test_children_reparented(self, monkeypatch, dummy_ctx):
+    def test_children_reparented(self, monkeypatch, dummy_ctx, tmp_path):
         """Child items (notes, attachments, annotations) get parentItem set to keeper."""
-        fake = self._setup_merge(monkeypatch)
+        fake = self._setup_merge(monkeypatch, tmp_path)
 
-        server.merge_duplicates(keeper_key="KEEP", duplicate_keys=["DUP1", "DUP2"], confirm=True, ctx=dummy_ctx)
+        result = server.merge_duplicates(keeper_key="KEEP", duplicate_keys=["DUP1", "DUP2"], confirm=True, ctx=dummy_ctx)
+
+        assert "started" in result.lower() or "⏳" in result
+        assert "get_batch_task_status" in result
+        self._wait_for_completion(result)
 
         # Collect all child reparenting updates
         child_keys = {"NOTE1", "ATT1", "ANNOT1"}
@@ -338,14 +368,18 @@ class TestMergeDuplicatesConfirm:
         for child_update in reparented:
             assert child_update["data"]["parentItem"] == "KEEP"
 
-    def test_duplicates_trashed_not_deleted(self, monkeypatch, dummy_ctx):
+    def test_duplicates_trashed_not_deleted(self, monkeypatch, dummy_ctx, tmp_path):
         """Duplicates are trashed via direct PATCH (deleted:1), NOT permanently deleted."""
-        fake = self._setup_merge(monkeypatch)
+        fake = self._setup_merge(monkeypatch, tmp_path)
         # Ensure delete_item is NOT called (that would permanently delete)
         delete_calls = []
         fake.delete_item = lambda *a, **kw: delete_calls.append(a)
 
-        server.merge_duplicates(keeper_key="KEEP", duplicate_keys=["DUP1", "DUP2"], confirm=True, ctx=dummy_ctx)
+        result = server.merge_duplicates(keeper_key="KEEP", duplicate_keys=["DUP1", "DUP2"], confirm=True, ctx=dummy_ctx)
+
+        assert "started" in result.lower() or "⏳" in result
+        assert "get_batch_task_status" in result
+        self._wait_for_completion(result)
 
         # delete_item should never be called
         assert delete_calls == []
@@ -357,11 +391,15 @@ class TestMergeDuplicatesConfirm:
         assert len(trashed_contents) == 2
         assert all(c.get("deleted") == 1 for c in trashed_contents)
 
-    def test_collections_consolidated(self, monkeypatch, dummy_ctx):
+    def test_collections_consolidated(self, monkeypatch, dummy_ctx, tmp_path):
         """Keeper is added to every collection the duplicates belonged to."""
-        fake = self._setup_merge(monkeypatch)
+        fake = self._setup_merge(monkeypatch, tmp_path)
 
-        server.merge_duplicates(keeper_key="KEEP", duplicate_keys=["DUP1", "DUP2"], confirm=True, ctx=dummy_ctx)
+        result = server.merge_duplicates(keeper_key="KEEP", duplicate_keys=["DUP1", "DUP2"], confirm=True, ctx=dummy_ctx)
+
+        assert "started" in result.lower() or "⏳" in result
+        assert "get_batch_task_status" in result
+        self._wait_for_completion(result)
 
         # Keeper was already in COL_A, so addto_collection should be called for COL_B and COL_C
         added_colls = {call[0] for call in fake.addto_calls}
@@ -369,7 +407,7 @@ class TestMergeDuplicatesConfirm:
         assert "COL_B" in added_colls
         assert "COL_C" in added_colls
 
-    def test_keeper_in_duplicate_keys_removed_with_warning(self, monkeypatch, dummy_ctx):
+    def test_keeper_in_duplicate_keys_removed_with_warning(self, monkeypatch, dummy_ctx, tmp_path):
         """If keeper_key appears in duplicate_keys, it is removed (not trashed)."""
         fake = FakeZoteroForDuplicates()
         fake._items = [
@@ -379,19 +417,23 @@ class TestMergeDuplicatesConfirm:
         fake._children = {"KEEP": [], "DUP1": []}
         monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
         monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake, fake))
+        monkeypatch.setattr("zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks")
 
         # Pass keeper_key inside duplicate_keys too
         result = server.merge_duplicates(
             keeper_key="KEEP", duplicate_keys=["KEEP", "DUP1"], confirm=True, ctx=dummy_ctx
         )
 
+        # confirm=True spawns a background task
+        assert "started" in result.lower() or "⏳" in result
+        assert "get_batch_task_status" in result
+        self._wait_for_completion(result)
+
         # Keeper should NOT be trashed — check the direct PATCH calls
         trashed_urls = [c["url"] for c in fake.client.patch_calls]
         assert not any("KEEP" in url for url in trashed_urls)
         # DUP1 should be trashed
         assert any("DUP1" in url for url in trashed_urls)
-        # Merge should complete successfully (keeper removal warning goes to ctx.warn)
-        assert "merge" in result.lower() or "trashed" in result.lower() or "complete" in result.lower()
 
     def test_empty_duplicate_list_error(self, monkeypatch, dummy_ctx):
         """Empty duplicate_keys returns an error, no writes performed."""
@@ -418,7 +460,7 @@ class TestMergeDuplicatesConfirm:
         assert "no duplicate" in result.lower() or "empty" in result.lower() or "error" in result.lower()
         assert fake.update_calls == []
 
-    def test_partial_reparent_failure_aborts(self, monkeypatch, dummy_ctx):
+    def test_partial_reparent_failure_aborts(self, monkeypatch, dummy_ctx, tmp_path):
         """If a child re-parent fails, stop immediately and don't trash anything."""
         fake = FakeZoteroForDuplicates()
         child_ok = {
@@ -448,6 +490,7 @@ class TestMergeDuplicatesConfirm:
         }
         monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
         monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake, fake))
+        monkeypatch.setattr("zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks")
 
         # Make update_item fail for the second child
         original_update = fake.update_item
@@ -464,12 +507,14 @@ class TestMergeDuplicatesConfirm:
 
         result = server.merge_duplicates(keeper_key="KEEP", duplicate_keys=["DUP1"], confirm=True, ctx=dummy_ctx)
 
-        # Should report the failure
-        assert "fail" in result.lower() or "error" in result.lower() or "CHILD_FAIL" in result
+        assert "started" in result.lower() or "⏳" in result
+        assert "get_batch_task_status" in result
+        self._wait_for_completion(result)
+
         # Duplicates should NOT be trashed because re-parenting failed
         assert len(fake.client.patch_calls) == 0
 
-    def test_version_refetch_after_operations(self, monkeypatch, dummy_ctx):
+    def test_version_refetch_after_operations(self, monkeypatch, dummy_ctx, tmp_path):
         """Keeper is re-fetched after tag update and collection adds for fresh version."""
         fake = FakeZoteroForDuplicates()
         fake._items = [
@@ -479,6 +524,7 @@ class TestMergeDuplicatesConfirm:
         fake._children = {"DUP1": []}
         monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
         monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake, fake))
+        monkeypatch.setattr("zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks")
 
         # Track item() fetches to verify re-fetching
         fetch_log = []
@@ -490,7 +536,11 @@ class TestMergeDuplicatesConfirm:
 
         fake.item = tracking_item
 
-        server.merge_duplicates(keeper_key="KEEP", duplicate_keys=["DUP1"], confirm=True, ctx=dummy_ctx)
+        result = server.merge_duplicates(keeper_key="KEEP", duplicate_keys=["DUP1"], confirm=True, ctx=dummy_ctx)
+
+        assert "started" in result.lower() or "⏳" in result
+        assert "get_batch_task_status" in result
+        self._wait_for_completion(result)
 
         # Keeper should be fetched multiple times: initial + after tag update + after collection add
         keeper_fetches = [k for k in fetch_log if k == "KEEP"]
@@ -498,7 +548,7 @@ class TestMergeDuplicatesConfirm:
             f"Expected keeper to be re-fetched after updates, got {len(keeper_fetches)} fetches"
         )
 
-    def test_duplicate_keys_as_string_normalized(self, monkeypatch, dummy_ctx):
+    def test_duplicate_keys_as_string_normalized(self, monkeypatch, dummy_ctx, tmp_path):
         """duplicate_keys can be a single string (normalized via _normalize_str_list_input)."""
         fake = FakeZoteroForDuplicates()
         fake._items = [
@@ -508,9 +558,14 @@ class TestMergeDuplicatesConfirm:
         fake._children = {"DUP1": []}
         monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
         monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake, fake))
+        monkeypatch.setattr("zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks")
 
         # Pass a single string instead of a list
-        server.merge_duplicates(keeper_key="KEEP", duplicate_keys="DUP1", confirm=True, ctx=dummy_ctx)
+        result = server.merge_duplicates(keeper_key="KEEP", duplicate_keys="DUP1", confirm=True, ctx=dummy_ctx)
+
+        assert "started" in result.lower() or "⏳" in result
+        assert "get_batch_task_status" in result
+        self._wait_for_completion(result)
 
         # Should succeed — DUP1 trashed via direct PATCH
         assert any("DUP1" in c["url"] for c in fake.client.patch_calls)

@@ -1,8 +1,30 @@
 """Integration tests for the zotero_add_by_bibtex MCP tool."""
 
+import re
+import time
+
 from conftest import FakeZotero
 
 from zotero_mcp import server
+from zotero_mcp.batch_runner import read_status
+
+
+def _wait_for_task(result):
+    """Extract task_id from a background-task return string and wait for completion.
+
+    Returns the final TaskStatus (or None if the result isn't a task-start string).
+    """
+    m = re.search(r"\*\*([^*]+)\*\*", result)
+    if not m:
+        return None
+    task_id = m.group(1)
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        s = read_status(task_id)
+        if s and s.status in ("completed", "failed"):
+            return s
+        time.sleep(0.05)
+    return read_status(task_id)
 
 
 class FakeZoteroWithAttach(FakeZotero):
@@ -41,7 +63,10 @@ def _disable_oa_pdf(monkeypatch):
 
 
 class TestSingleEntry:
-    def test_creates_journal_article(self, monkeypatch, dummy_ctx):
+    def test_creates_journal_article(self, monkeypatch, dummy_ctx, tmp_path):
+        monkeypatch.setattr(
+            "zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks"
+        )
         fake = _patch_hybrid(monkeypatch)
         _disable_oa_pdf(monkeypatch)
 
@@ -56,6 +81,10 @@ class TestSingleEntry:
         """
         result = server.add_by_bibtex(bibtex=bib, ctx=dummy_ctx)
 
+        assert "started" in result.lower() or "⏳" in result
+        assert "get_batch_task_status" in result
+        _wait_for_task(result)
+
         assert len(fake.created) == 1
         created = fake.created[0]
         assert created["itemType"] == "journalArticle"
@@ -63,15 +92,17 @@ class TestSingleEntry:
         assert created["publicationTitle"] == "Nature"
         assert created["DOI"] == "10.1234/x"
         assert "Citation Key: smith2020" in created["extra"]
-        assert "Successfully added" in result
-        assert "KEY0000" in result
 
-    def test_citekey_preserved_in_extra(self, monkeypatch, dummy_ctx):
+    def test_citekey_preserved_in_extra(self, monkeypatch, dummy_ctx, tmp_path):
+        monkeypatch.setattr(
+            "zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks"
+        )
         fake = _patch_hybrid(monkeypatch)
         _disable_oa_pdf(monkeypatch)
         bib = "@book{MyCite2021, title={B}, author={A, B}, publisher={P}, year=2021}"
 
-        server.add_by_bibtex(bibtex=bib, ctx=dummy_ctx)
+        result = server.add_by_bibtex(bibtex=bib, ctx=dummy_ctx)
+        _wait_for_task(result)
 
         assert "Citation Key: MyCite2021" in fake.created[0]["extra"]
 
@@ -82,7 +113,10 @@ class TestSingleEntry:
 
 
 class TestMultipleEntries:
-    def test_creates_multiple_items(self, monkeypatch, dummy_ctx):
+    def test_creates_multiple_items(self, monkeypatch, dummy_ctx, tmp_path):
+        monkeypatch.setattr(
+            "zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks"
+        )
         fake = _patch_hybrid(monkeypatch)
         _disable_oa_pdf(monkeypatch)
 
@@ -92,10 +126,13 @@ class TestMultipleEntries:
         """
         result = server.add_by_bibtex(bibtex=bib, ctx=dummy_ctx)
 
+        assert "started" in result.lower() or "⏳" in result
+        assert "get_batch_task_status" in result
+        _wait_for_task(result)
+
         assert len(fake.created) == 2
         assert fake.created[0]["itemType"] == "journalArticle"
         assert fake.created[1]["itemType"] == "book"
-        assert "Added 2/2 items" in result
 
 
 # ---------------------------------------------------------------------------
@@ -104,7 +141,10 @@ class TestMultipleEntries:
 
 
 class TestTagsAndCollections:
-    def test_caller_tags_merged_with_source_keywords(self, monkeypatch, dummy_ctx):
+    def test_caller_tags_merged_with_source_keywords(self, monkeypatch, dummy_ctx, tmp_path):
+        monkeypatch.setattr(
+            "zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks"
+        )
         fake = _patch_hybrid(monkeypatch)
         _disable_oa_pdf(monkeypatch)
 
@@ -112,13 +152,17 @@ class TestTagsAndCollections:
         @article{x, title={T}, author={A, B}, year={2020},
           keywords={source1, source2}}
         """
-        server.add_by_bibtex(bibtex=bib, tags=["caller1", "source1"], ctx=dummy_ctx)
+        result = server.add_by_bibtex(bibtex=bib, tags=["caller1", "source1"], ctx=dummy_ctx)
+        _wait_for_task(result)
 
         tags = [t["tag"] for t in fake.created[0]["tags"]]
         # source1 should only appear once (case-insensitive dedup)
         assert tags == ["source1", "source2", "caller1"]
 
-    def test_collections_applied(self, monkeypatch, dummy_ctx):
+    def test_collections_applied(self, monkeypatch, dummy_ctx, tmp_path):
+        monkeypatch.setattr(
+            "zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks"
+        )
         fake = _patch_hybrid(monkeypatch)
         fake._collections = [
             {"key": "COL00001", "data": {"name": "One", "parentCollection": False}},
@@ -127,16 +171,20 @@ class TestTagsAndCollections:
         _disable_oa_pdf(monkeypatch)
 
         bib = "@article{x, title={T}, author={A, B}, year={2020}}"
-        server.add_by_bibtex(
+        result = server.add_by_bibtex(
             bibtex=bib,
             collections=["COL00001", "COL00002"],
             ctx=dummy_ctx,
         )
+        _wait_for_task(result)
 
         assert fake.created[0]["collections"] == ["COL00001", "COL00002"]
 
-    def test_collection_names_resolved(self, monkeypatch, dummy_ctx):
+    def test_collection_names_resolved(self, monkeypatch, dummy_ctx, tmp_path):
         """Collection names resolve to keys once, before the entry loop."""
+        monkeypatch.setattr(
+            "zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks"
+        )
         fake = _patch_hybrid(monkeypatch)
         fake._collections = [
             {"key": "COL00001", "data": {"name": "Reading List", "parentCollection": False}},
@@ -144,11 +192,12 @@ class TestTagsAndCollections:
         _disable_oa_pdf(monkeypatch)
 
         bib = "@article{x, title={T}, author={A, B}, year={2020}}"
-        server.add_by_bibtex(
+        result = server.add_by_bibtex(
             bibtex=bib,
             collections=["reading list"],
             ctx=dummy_ctx,
         )
+        _wait_for_task(result)
 
         assert fake.created[0]["collections"] == ["COL00001"]
 
@@ -159,7 +208,10 @@ class TestTagsAndCollections:
 
 
 class TestOaPdfAttempt:
-    def test_doi_triggers_oa_attempt(self, monkeypatch, dummy_ctx):
+    def test_doi_triggers_oa_attempt(self, monkeypatch, dummy_ctx, tmp_path):
+        monkeypatch.setattr(
+            "zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks"
+        )
         _patch_hybrid(monkeypatch)
         called = {"count": 0, "doi": None}
 
@@ -171,7 +223,8 @@ class TestOaPdfAttempt:
         monkeypatch.setattr("zotero_mcp.tools._helpers._try_attach_oa_pdf", stub)
 
         bib = "@article{a, title={T}, author={A, B}, year=2020, doi={10.1234/x}}"
-        server.add_by_bibtex(bibtex=bib, ctx=dummy_ctx)
+        result = server.add_by_bibtex(bibtex=bib, ctx=dummy_ctx)
+        _wait_for_task(result)
 
         assert called["count"] == 1
         assert called["doi"] == "10.1234/x"
@@ -199,6 +252,9 @@ class TestOaPdfAttempt:
 
 class TestFilePath:
     def test_reads_bib_file(self, monkeypatch, dummy_ctx, tmp_path):
+        monkeypatch.setattr(
+            "zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks"
+        )
         fake = _patch_hybrid(monkeypatch)
         _disable_oa_pdf(monkeypatch)
 
@@ -210,18 +266,25 @@ class TestFilePath:
 
         result = server.add_by_bibtex(file_path=str(bib_file), ctx=dummy_ctx)
 
+        assert "started" in result.lower() or "⏳" in result
+        assert "get_batch_task_status" in result
+        _wait_for_task(result)
+
         assert len(fake.created) == 1
         assert fake.created[0]["title"] == "T"
-        assert "Successfully added" in result
 
     def test_reads_bibtex_extension(self, monkeypatch, dummy_ctx, tmp_path):
+        monkeypatch.setattr(
+            "zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks"
+        )
         fake = _patch_hybrid(monkeypatch)
         _disable_oa_pdf(monkeypatch)
 
         f = tmp_path / "refs.bibtex"
         f.write_text("@book{b, title={B}, author={P, Q}, publisher={Pub}, year=2020}", encoding="utf-8")
 
-        server.add_by_bibtex(file_path=str(f), ctx=dummy_ctx)
+        result = server.add_by_bibtex(file_path=str(f), ctx=dummy_ctx)
+        _wait_for_task(result)
         assert len(fake.created) == 1
 
     def test_rejects_wrong_extension(self, monkeypatch, dummy_ctx, tmp_path):
@@ -294,8 +357,11 @@ class TestErrorPaths:
         result = server.add_by_bibtex(bibtex="@a{x, title=T}", ctx=dummy_ctx)
         assert "local-only" in result.lower()
 
-    def test_partial_failure_continues(self, monkeypatch, dummy_ctx):
+    def test_partial_failure_continues(self, monkeypatch, dummy_ctx, tmp_path):
         """If one entry fails conversion, others should still be created."""
+        monkeypatch.setattr(
+            "zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks"
+        )
         fake = _patch_hybrid(monkeypatch)
         _disable_oa_pdf(monkeypatch)
 
@@ -318,5 +384,15 @@ class TestErrorPaths:
         """
         result = server.add_by_bibtex(bibtex=bib, ctx=dummy_ctx)
 
-        assert "Added 2/3 items" in result
-        assert "simulated write failure" in result
+        assert "started" in result.lower() or "⏳" in result
+        assert "get_batch_task_status" in result
+        s = _wait_for_task(result)
+        assert s is not None
+
+        # 2 succeeded, 1 failed (simulated write failure on the second create).
+        assert s.succeeded == 2
+        assert s.failed == 1
+        assert s.result_summary is not None
+        assert "simulated write failure" in str(s.failed_items) or any(
+            "simulated write failure" in (it.get("detail") or "") for it in s.failed_items
+        )
