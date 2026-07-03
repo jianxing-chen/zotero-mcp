@@ -4658,15 +4658,18 @@ def upgrade_preprints(limit: int | None = None, *, ctx: Context) -> str:
     description=(
         "Scan arXiv preprint items, upgrade their metadata to journalArticle, "
         "and replace the arXiv PDF with the publisher version. For each "
-        "itemType=preprint item: (1) upgrade metadata via _upgrade_single_preprint "
-        "(itemType->journalArticle, volume/issue/pages/DOI), (2) download the "
-        "publisher PDF via the Sci-Hub -> ADS -> arXiv cascade, (3) only if the "
-        "download succeeds, trash the old arXiv PDF attachment. If no published "
-        "version is found or the PDF download fails, the item is left untouched. "
-        "Requires ADS_API_TOKEN. Enable scihub.enabled in config.json to get the "
-        "publisher version; without Sci-Hub the cascade falls back to the arXiv "
-        "preprint (same as the existing PDF). Pass item_keys to process specific "
-        "items instead of scanning the whole library."
+        "itemType=preprint item with a bibcode in Extra: (1) upgrade metadata "
+        "via _upgrade_single_preprint (itemType->journalArticle, volume/issue/"
+        "pages/DOI), (2) download the publisher PDF via the Sci-Hub -> ADS -> "
+        "arXiv cascade, (3) only if the download succeeds, trash the old arXiv "
+        "PDF attachment. If no published version is found or the PDF download "
+        "fails, the item is left untouched. Requires ADS_API_TOKEN. Enable "
+        "scihub.enabled in config.json to get the publisher version; without "
+        "Sci-Hub the cascade falls back to the arXiv preprint (same as the "
+        "existing PDF). Pass item_keys to process specific items instead of "
+        "scanning the whole library. Only preprints with a bibcode in Extra "
+        "are processed in scan mode — run zotero_enrich_batch first to "
+        "populate bibcodes on preprints that only have an arXiv ID."
     ),
 )
 @with_zotero_api_lock
@@ -4729,8 +4732,11 @@ def upgrade_preprint_pdfs(
                 break
             for it in items:
                 data = it.get("data", {})
-                # Only process preprints with an arXiv identifier in Extra.
-                if _parse_arxiv_id_from_extra(data.get("extra")):
+                # Only process preprints that already have a bibcode in Extra
+                # (typically imported via add_by_bibcode or enriched). Preprints
+                # with only an arXiv ID are skipped — they can be processed
+                # after running enrich/upgrade_preprints to populate the bibcode.
+                if _parse_bibcode_from_extra(data.get("extra")):
                     preprints.append(it)
             start += batch_size
             if len(items) < batch_size:

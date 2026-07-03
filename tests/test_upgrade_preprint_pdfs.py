@@ -99,14 +99,14 @@ class TestTrashPdfAttachments:
 class TestUpgradePreprintPdfs:
     """Test the upgrade_preprint_pdfs tool's branching logic."""
 
-    def _make_preprint_item(self, key="PRE1", title="Test Paper", arxiv_id="2401.12345"):
+    def _make_preprint_item(self, key="PRE1", title="Test Paper", arxiv_id="2401.12345", bibcode="2013ApJ...769..127L"):
         return {
             "key": key,
             "version": 1,
             "data": {
                 "itemType": "preprint",
                 "title": title,
-                "extra": f"arXiv:{arxiv_id}",
+                "extra": f"arXiv:{arxiv_id}\nbibcode: {bibcode}",
             },
         }
 
@@ -308,19 +308,23 @@ class TestUpgradePreprintPdfs:
 
     @patch("zotero_mcp.tools.write._upgrade_single_preprint")
     @patch("zotero_mcp.tools.write._helpers._get_write_client")
-    def test_filters_preprints_without_arxiv_id(self, mock_get_client, mock_upgrade, dummy_ctx, monkeypatch):
-        """Only preprints with an arXiv: line in Extra are processed."""
-        # One with arXiv, one without
-        with_arxiv = {
+    def test_filters_preprints_without_bibcode(self, mock_get_client, mock_upgrade, dummy_ctx, monkeypatch):
+        """Only preprints with a bibcode: line in Extra are processed in scan mode."""
+        # One with bibcode, one with only arXiv ID (no bibcode)
+        with_bibcode = {
             "key": "PRE1",
-            "data": {"itemType": "preprint", "title": "Has arXiv", "extra": "arXiv:2401.12345"},
+            "data": {
+                "itemType": "preprint",
+                "title": "Has bibcode",
+                "extra": "arXiv:2401.12345\nbibcode: 2013ApJ...769..127L",
+            },
         }
-        without_arxiv = {
+        without_bibcode = {
             "key": "PRE2",
-            "data": {"itemType": "preprint", "title": "No arXiv", "extra": "some other text"},
+            "data": {"itemType": "preprint", "title": "Only arXiv", "extra": "arXiv:2401.99999"},
         }
         read_zot = MagicMock()
-        read_zot.items.return_value = [with_arxiv, without_arxiv]
+        read_zot.items.return_value = [with_bibcode, without_bibcode]
         mock_get_client.return_value = (read_zot, MagicMock())
 
         mock_upgrade.return_value = {"key": "PRE1", "status": "not_published", "details": "", "error": ""}
@@ -336,7 +340,7 @@ class TestUpgradePreprintPdfs:
         from zotero_mcp.tools.write import upgrade_preprint_pdfs
 
         result = upgrade_preprint_pdfs(ctx=dummy_ctx)
-        # Only 1 preprint checked (the one with arXiv)
+        # Only 1 preprint checked (the one with bibcode)
         assert "Total preprints checked:** 1" in result
         # _upgrade_single_preprint called only once (for PRE1)
         mock_upgrade.assert_called_once()
