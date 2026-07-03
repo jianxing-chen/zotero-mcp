@@ -32,6 +32,86 @@
 
 ---
 
+## ⌨️ Local Mode CLI Cheat Sheet
+
+> **Why a separate section?** In local/hybrid mode the MCP `zotero_update_search_database` tool can time out at the client layer while the server-side job keeps running and holds an in-process lock — every subsequent tool call then fails with *"Another Zotero API operation is still in progress"*. Running these commands directly in your terminal avoids that entirely: no client timeout, no lock, and you get a live progress bar.
+
+All commands below read `client_env` from `~/.config/zotero-mcp/config.json` automatically, so you do **not** need to prefix them with `ZOTERO_LOCAL=true ZOTERO_API_KEY=...` etc.
+
+### Check status (no lock, safe to run anytime)
+
+```bash
+# Show vector DB stats: document count, last update time, embedding model,
+# MinerU cache count, and whether the DB needs updating.
+zotero-mcp db-status
+
+# Inspect indexed documents — search by title/author, show aggregate stats,
+# or peek at the first chars of stored document text. Useful for verifying
+# that a specific paper is actually in the vector DB.
+zotero-mcp db-inspect --stats
+zotero-mcp db-inspect --filter "Spergel" --show-documents
+```
+
+### Update the vector database
+
+```bash
+# Metadata-only index (title, abstract, authors, tags). Fast — no PDF text.
+# Use this when you don't need full-text semantic search.
+zotero-mcp update-db
+
+# Full-text index: extracts PDF text from your local Zotero storage and
+# embeds it. This is the recommended command for local/hybrid mode.
+# It is slow on the first run (minutes to hours for a large library) but
+# subsequent runs skip items already up to date.
+zotero-mcp update-db --fulltext
+
+# Force a complete rebuild — deletes the existing collection and re-embeds
+# EVERYTHING from scratch. Use only when you changed the embedding model
+# (different vector dimensions), the chunk_size/overlap, or the DB is
+# corrupted. This costs the most embedding API calls.
+zotero-mcp update-db --fulltext --force-rebuild
+
+# Re-embed specific items only (e.g. after editing metadata or replacing a
+# PDF). Reuses MinerU '精读' cache when available. Much faster than a full
+# scan because it skips the library walk.
+zotero-mcp update-db --reindex-keys ABC12345,DEF67890
+
+# Re-embed every paper you've ever '精读'd (read via zotero_read_pdf_pages).
+# Idempotent — skips items already indexed from a valid MinerU cache.
+# Use --force to bypass the idempotency guard (e.g. after changing
+# chunk_size/overlap or the embedding model).
+zotero-mcp update-db --reindex-cached-mineru
+zotero-mcp update-db --reindex-cached-mineru --force
+```
+
+### When to run which command
+
+| Situation | Command |
+|-----------|---------|
+| First time enabling semantic search | `update-db --fulltext` |
+| Added/removed papers in Zotero | `update-db --fulltext` (skips up-to-date items) |
+| Edited a paper's metadata or replaced its PDF | `update-db --reindex-keys <KEY>` |
+| Want page-level search after 精读-ing papers | `update-db --reindex-cached-mineru` |
+| Changed embedding model / chunk_size | `update-db --fulltext --force-rebuild` |
+| Just want to check if DB needs updating | `db-status` (no write, no lock) |
+| Vector DB seems inconsistent / corrupted | `update-db --fulltext --force-rebuild` |
+| Want cheap async embeddings (OpenAI only) | `update-db --openai-batch`, then `openai-batch-status` / `openai-batch-import` |
+
+### OpenAI Batch API (async, cheaper)
+
+If you have a large library and want to save on embedding costs, submit the
+batch asynchronously and import later:
+
+```bash
+zotero-mcp update-db --fulltext --openai-batch   # submit, returns immediately
+zotero-mcp openai-batch-status                    # check progress
+zotero-mcp openai-batch-import                    # import completed embeddings
+```
+
+> **⚠️ Never trigger `zotero_update_search_database` from an AI assistant in local mode.** The MCP client times out (~60s) while the server-side job keeps running and holds a process-wide lock, blocking all other tools. Run `zotero-mcp update-db --fulltext` in your terminal instead — you'll see a live progress bar and the lock won't wedge.
+
+---
+
 ## ✨ Features
 
 ### 🧠 AI-Powered Semantic Search
