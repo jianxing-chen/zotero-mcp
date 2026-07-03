@@ -284,7 +284,7 @@ Integrate NASA ADS (Astrophysics Data System) for literature search, import, and
 **`zotero_add_by_bibcode`** — import by bibcode:
 ```
 bibcode → ADS search API → structured fields → CSL-JSON → reuse existing batch pipeline
-→ bibcode stored in Extra field → PDF cascade: ADS (PUB_PDF first, EPRINT_PDF fallback) → Sci-Hub (if enabled) → arXiv → Unpaywall → S2 → PMC
+→ bibcode stored in Extra field → PDF cascade: Sci-Hub (if enabled, publisher PDF) → ADS (PUB_PDF then EPRINT_PDF) → arXiv → Unpaywall → S2 → PMC
 ```
 
 **`zotero_search_ads`** — fielded search:
@@ -310,8 +310,8 @@ identifier="2003ApJ...589L..21B" direction="both"
 
 When importing a paper with a DOI (via `add_by_doi`, `add_by_bibcode`, `add_by_bibtex`, `add_by_csl_json`), the server tries these PDF sources in order and stops at the first that yields a downloadable file:
 
-1. **ADS link_gateway** (requires `ADS_API_TOKEN`) — prefers the publisher PDF (`PUB_PDF`) when `prefer_pub_pdf=True`, falling back to the arXiv preprint (`EPRINT_PDF`). On networks with institutional subscription access, the publisher PDF usually downloads directly.
-2. **Sci-Hub** (opt-in, disabled by default — see below)
+1. **Sci-Hub** (opt-in, disabled by default — see below). Tried first because it's the only source that returns the **publisher version** (paywalled PDF).
+2. **ADS link_gateway** (requires `ADS_API_TOKEN`) — prefers the publisher PDF (`PUB_PDF`) when `prefer_pub_pdf=True`, falling back to the arXiv preprint (`EPRINT_PDF`). In practice the publisher PDF is usually blocked by a WAF/captcha, so ADS effectively returns the arXiv preprint.
 3. **arXiv** (via CrossRef relations — always open access)
 4. **Unpaywall**
 5. **Semantic Scholar**
@@ -332,7 +332,7 @@ Sci-Hub is a shadow library providing free access to paywalled papers. It is **o
 }
 ```
 
-When enabled, Sci-Hub is the second source tried (after ADS, before arXiv). When disabled, the cascade skips it entirely and degrades to the original arXiv → Unpaywall → S2 → PMC chain.
+When enabled, Sci-Hub is the **first** source tried (before ADS and arXiv). This is because Sci-Hub is the only source that returns the **publisher version** (paywalled PDF); ADS and arXiv both return the arXiv preprint. When disabled, the cascade skips it and starts with ADS → arXiv → Unpaywall → S2 → PMC.
 
 > ⚠️ **Compliance**: Sci-Hub's legal status varies by jurisdiction. Enabling it is your own choice; this repo provides the capability but does not enable it for you and offers no legal advice. Confirm your jurisdiction's regulations before turning it on.
 

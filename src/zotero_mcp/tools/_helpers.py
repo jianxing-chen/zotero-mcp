@@ -1056,13 +1056,19 @@ def _try_attach_oa_pdf(
 
     Sources are tried in priority order:
 
-    1. **ADS** (when an ``ADS_API_TOKEN`` is configured) — uses the bibcode if
+    1. **Sci-Hub** (opt-in via ``config.json``'s ``scihub.enabled``). Disabled
+       by default; confirm your jurisdiction's regulations before enabling.
+       Sci-Hub returns the **publisher version** (paywalled PDF), which is
+       why it's tried first — it's the only source that can get the final
+       published version automatically.
+    2. **ADS** (when an ``ADS_API_TOKEN`` is configured) — uses the bibcode if
        the caller already has one, otherwise resolves via ``doi:<doi>``. With
        ``prefer_pub_pdf=True`` the publisher PDF is tried first (useful on
        networks with institutional subscription), falling back to the arXiv
-       preprint inside ``ads_client.get_pdf_url``.
-    2. **Sci-Hub** (opt-in via ``config.json``'s ``scihub.enabled``). Disabled
-       by default; confirm your jurisdiction's regulations before enabling.
+       preprint inside ``ads_client.get_pdf_urls``. In practice the publisher
+       PDF is usually blocked by a WAF/captcha, so ADS effectively returns the
+       arXiv preprint (EPRINT_PDF) — the same version the arXiv source below
+       would find.
     3. **arXiv** (via CrossRef relations — always open access).
     4. **Unpaywall**.
     5. **Semantic Scholar**.
@@ -1074,18 +1080,20 @@ def _try_attach_oa_pdf(
     """
     sources: list[tuple[str, object]] = []
 
-    # 1. ADS — top priority when configured.
+    # 1. Sci-Hub — opt-in via config.json. Tried first because it's the only
+    #    source that can return the publisher (paywalled) version. find_pdf_url()
+    #    self-gates on the enabled flag, but we check it here too so the source
+    #    name doesn't appear in the cascade at all when disabled.
+    if _scihub.is_scihub_enabled(_scihub.load_scihub_config()):
+        sources.append(("Sci-Hub", lambda: _scihub.find_pdf_url(doi, ctx)))
+
+    # 2. ADS — top priority when configured. PUB_PDF first (publisher version),
+    #    then EPRINT_PDF (arXiv preprint) within the same source.
     if _ads_client.is_available():
         if bibcode:
             sources.append(("ADS", lambda: _try_ads_pdf_url(bibcode, prefer_pub_pdf, ctx)))
         elif doi:
             sources.append(("ADS", lambda: _try_ads_pdf_url_by_doi(doi, prefer_pub_pdf, ctx)))
-
-    # 2. Sci-Hub — opt-in via config.json. find_pdf_url() self-gates on the
-    #    enabled flag, but we check it here too so the source name doesn't
-    #    appear in the cascade at all when disabled.
-    if _scihub.is_scihub_enabled(_scihub.load_scihub_config()):
-        sources.append(("Sci-Hub", lambda: _scihub.find_pdf_url(doi, ctx)))
 
     # 3. arXiv (via CrossRef relations — always OA).
     sources.append(("arXiv (via CrossRef)", lambda: _try_arxiv_from_crossref(crossref_metadata, ctx)))
