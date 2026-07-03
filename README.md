@@ -327,7 +327,7 @@ Sci-Hub is a shadow library providing free access to paywalled papers. It is **o
 {
   "scihub": {
     "enabled": true,
-    "domain": "sci-hub.ru"   // override when the domain rotates
+    "domain": "sci-hub.ee"   // override when the domain rotates
   }
 }
 ```
@@ -336,7 +336,7 @@ When enabled, Sci-Hub is the second source tried (after ADS, before arXiv). When
 
 > ⚠️ **Compliance**: Sci-Hub's legal status varies by jurisdiction. Enabling it is your own choice; this repo provides the capability but does not enable it for you and offers no legal advice. Confirm your jurisdiction's regulations before turning it on.
 
-The `domain` field is configurable because Sci-Hub's primary domain rotates frequently; change it in config at any time without touching code. The client resolves the PDF URL by querying `{domain}/{doi}` and parsing the returned HTML for an `<iframe>`/`<embed>`/JS-redirect pointing at the PDF — it does not download the bytes itself, so the existing SSRF guard applies uniformly.
+The `domain` field is configurable because Sci-Hub's primary domain rotates frequently; change it in config at any time without touching code. The default `sci-hub.ee` is used because its POST-form endpoint does not trigger the altcha JS captcha that the `sci-hub.ru`/`sci-hub.jp` mirrors deploy against plain GET requests. The client first POSTs to the domain's form with a `request=<doi>` payload and a randomized browser User-Agent (mirroring the upstream `scihub` PyPI library), parsing the `#pdf` element from the response for the direct PDF URL; if POST yields nothing, a GET fallback (parsing `<iframe>`/`<embed>`/JS-redirect) is attempted. It does not download the bytes itself, so the existing SSRF guard applies uniformly.
 
 ## 🖥️ Setup & Usage
 
@@ -611,7 +611,7 @@ Start Zotero desktop (for local API), then launch your MCP client. Try these:
   },
   "scihub": {
     "enabled": false,
-    "domain": "sci-hub.ru"
+    "domain": "sci-hub.ee"
   },
   "client_env": {
     "ZOTERO_LOCAL": "true",
