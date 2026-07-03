@@ -330,10 +330,13 @@ def _batch_update_tags_worker(status, items, add_tags, remove_tags) -> None:
     updated_count = 0
     skipped_count = 0
     total = len(items)
+    succeeded_items: list[dict] = []
+    failed_items: list[dict] = []
 
     for i, item in enumerate(items):
         if item["data"].get("itemType") == "attachment":
             skipped_count += 1
+            failed_items.append({"key": item.get("key", "unknown"), "detail": "skipped"})
             continue
 
         current_tags = item["data"].get("tags", [])
@@ -372,13 +375,17 @@ def _batch_update_tags_worker(status, items, add_tags, remove_tags) -> None:
                 result = _with_api_lock(_do_update)
                 if _helpers._handle_write_response(result, None):
                     updated_count += 1
+                    succeeded_items.append({"key": item_key})
                 else:
                     skipped_count += 1
+                    failed_items.append({"key": item_key, "detail": "skipped"})
             except Exception as e:
                 logger.warning(f"Failed to update item {item.get('key', 'unknown')}: {e}")
                 skipped_count += 1
+                failed_items.append({"key": item.get("key", "unknown"), "detail": str(e)})
         else:
             skipped_count += 1
+            failed_items.append({"key": item.get("key", "unknown"), "detail": "skipped"})
 
         if (i + 1) % 10 == 0 or i + 1 == total:
             update_status(
@@ -386,6 +393,8 @@ def _batch_update_tags_worker(status, items, add_tags, remove_tags) -> None:
                 processed=i + 1,
                 succeeded=updated_count,
                 failed=skipped_count,
+                succeeded_items=succeeded_items,
+                failed_items=failed_items,
             )
 
     update_status(
@@ -393,6 +402,8 @@ def _batch_update_tags_worker(status, items, add_tags, remove_tags) -> None:
         processed=total,
         succeeded=updated_count,
         failed=skipped_count,
+        succeeded_items=succeeded_items,
+        failed_items=failed_items,
         result_summary=f"Updated {updated_count} items, {skipped_count} skipped.",
     )
 
@@ -570,6 +581,8 @@ def _batch_update_extra_worker(
     updated_count = 0
     skipped_count = 0
     total = len(item_keys)
+    succeeded_items: list[dict] = []
+    failed_items: list[dict] = []
 
     for i, item_key in enumerate(item_keys):
         try:
@@ -577,19 +590,23 @@ def _batch_update_extra_worker(
         except Exception as e:
             logger.warning(f"Failed to fetch item {item_key}: {e}")
             skipped_count += 1
+            failed_items.append({"key": item_key, "detail": str(e)})
             continue
         if not item:
             skipped_count += 1
+            failed_items.append({"key": item_key, "detail": "skipped"})
             continue
 
         if item["data"].get("itemType") in ("attachment", "note", "annotation"):
             skipped_count += 1
+            failed_items.append({"key": item_key, "detail": "skipped"})
             continue
 
         extra = item["data"].get("extra", "") or ""
         new_extra, changed = _apply_extra_edits(extra, set_keys, remove_keys, replace)
         if not changed:
             skipped_count += 1
+            failed_items.append({"key": item_key, "detail": "skipped"})
             continue
 
         try:
@@ -605,11 +622,14 @@ def _batch_update_extra_worker(
             result = _with_api_lock(_do_update)
             if _helpers._handle_write_response(result, None):
                 updated_count += 1
+                succeeded_items.append({"key": item_key})
             else:
                 skipped_count += 1
+                failed_items.append({"key": item_key, "detail": "skipped"})
         except Exception as e:
             logger.warning(f"Failed to update item {item_key}: {e}")
             skipped_count += 1
+            failed_items.append({"key": item_key, "detail": str(e)})
 
         if (i + 1) % 10 == 0 or i + 1 == total:
             update_status(
@@ -617,6 +637,8 @@ def _batch_update_extra_worker(
                 processed=i + 1,
                 succeeded=updated_count,
                 failed=skipped_count,
+                succeeded_items=succeeded_items,
+                failed_items=failed_items,
             )
 
     update_status(
@@ -624,6 +646,8 @@ def _batch_update_extra_worker(
         processed=total,
         succeeded=updated_count,
         failed=skipped_count,
+        succeeded_items=succeeded_items,
+        failed_items=failed_items,
         result_summary=f"Updated {updated_count} items, {skipped_count} skipped.",
     )
 
@@ -4380,6 +4404,8 @@ def _enrich_batch_worker(status, candidates, wanted, force) -> None:
     total = len(candidates)
     enriched = 0
     failed = 0
+    succeeded_items: list[dict] = []
+    failed_items: list[dict] = []
 
     for idx, it in enumerate(candidates, 1):
         key = it.get("key", "")
@@ -4389,11 +4415,14 @@ def _enrich_batch_worker(status, candidates, wanted, force) -> None:
             r = _with_api_lock(lambda k=key: _enrich_single_item(write_zot, k, wanted, force))
             if r["status"] == "enriched":
                 enriched += 1
+                succeeded_items.append({"key": key, "detail": "enriched"})
             else:
                 failed += 1
+                succeeded_items.append({"key": key, "detail": r["status"]})
         except Exception as e:
             logger.warning(f"Failed to enrich item {key}: {e}")
             failed += 1
+            failed_items.append({"key": key, "detail": str(e)})
         # Be gentle with ADS rate limits.
         _time.sleep(0.2)
 
@@ -4403,6 +4432,8 @@ def _enrich_batch_worker(status, candidates, wanted, force) -> None:
                 processed=idx,
                 succeeded=enriched,
                 failed=failed,
+                succeeded_items=succeeded_items,
+                failed_items=failed_items,
             )
 
     update_status(
@@ -4410,6 +4441,8 @@ def _enrich_batch_worker(status, candidates, wanted, force) -> None:
         processed=total,
         succeeded=enriched,
         failed=failed,
+        succeeded_items=succeeded_items,
+        failed_items=failed_items,
         result_summary=f"Enriched {enriched} items, {failed} skipped/failed.",
     )
 
@@ -4714,6 +4747,8 @@ def _upgrade_preprints_worker(status, preprints) -> None:
     total = len(preprints)
     upgraded = 0
     failed = 0
+    succeeded_items: list[dict] = []
+    failed_items: list[dict] = []
 
     for idx, it in enumerate(preprints, 1):
         key = it.get("key", "")
@@ -4723,11 +4758,14 @@ def _upgrade_preprints_worker(status, preprints) -> None:
             r = _with_api_lock(lambda k=key: _upgrade_single_preprint(write_zot, k))
             if r["status"] == "upgraded":
                 upgraded += 1
+                succeeded_items.append({"key": key, "detail": "upgraded"})
             else:
                 failed += 1
+                succeeded_items.append({"key": key, "detail": r["status"]})
         except Exception as e:
             logger.warning(f"Failed to upgrade preprint {key}: {e}")
             failed += 1
+            failed_items.append({"key": key, "detail": str(e)})
         _time.sleep(0.3)
 
         if idx % 10 == 0 or idx == total:
@@ -4736,6 +4774,8 @@ def _upgrade_preprints_worker(status, preprints) -> None:
                 processed=idx,
                 succeeded=upgraded,
                 failed=failed,
+                succeeded_items=succeeded_items,
+                failed_items=failed_items,
             )
 
     update_status(
@@ -4743,6 +4783,8 @@ def _upgrade_preprints_worker(status, preprints) -> None:
         processed=total,
         succeeded=upgraded,
         failed=failed,
+        succeeded_items=succeeded_items,
+        failed_items=failed_items,
         result_summary=f"Upgraded {upgraded} preprints, {failed} not published/failed.",
     )
 
@@ -4949,6 +4991,8 @@ def _upgrade_preprint_pdfs_worker(status, preprints) -> None:
     total = len(preprints)
     succeeded = 0  # pdf_replaced
     failed = 0     # not_published + pdf_not_found + error
+    succeeded_items: list[dict] = []
+    failed_items: list[dict] = []
 
     for idx, it in enumerate(preprints, 1):
         key = it.get("key", "")
@@ -4959,6 +5003,7 @@ def _upgrade_preprint_pdfs_worker(status, preprints) -> None:
             upg = _with_api_lock(lambda k=key: _upgrade_single_preprint(write_zot, k))
             if upg["status"] != "upgraded":
                 failed += 1
+                succeeded_items.append({"key": key, "detail": "not published"})
                 _time.sleep(0.3)
                 continue
 
@@ -4976,6 +5021,7 @@ def _upgrade_preprint_pdfs_worker(status, preprints) -> None:
 
             if not pub_doi:
                 failed += 1
+                succeeded_items.append({"key": key, "detail": "metadata upgraded but no DOI"})
                 _time.sleep(0.3)
                 continue
 
@@ -4991,11 +5037,14 @@ def _upgrade_preprint_pdfs_worker(status, preprints) -> None:
             if "attached" in (pdf_status or "").lower():
                 _with_api_lock(lambda: _helpers._trash_pdf_attachments(write_zot, key, None))
                 succeeded += 1
+                succeeded_items.append({"key": key, "detail": "PDF replaced"})
             else:
                 failed += 1
+                failed_items.append({"key": key, "detail": "PDF not found"})
         except Exception as e:
             logger.warning(f"Failed to process preprint {key}: {e}")
             failed += 1
+            failed_items.append({"key": key, "detail": str(e)})
         _time.sleep(0.3)
 
         if idx % 5 == 0 or idx == total:
@@ -5004,6 +5053,8 @@ def _upgrade_preprint_pdfs_worker(status, preprints) -> None:
                 processed=idx,
                 succeeded=succeeded,
                 failed=failed,
+                succeeded_items=succeeded_items,
+                failed_items=failed_items,
             )
 
     update_status(
@@ -5011,5 +5062,7 @@ def _upgrade_preprint_pdfs_worker(status, preprints) -> None:
         processed=total,
         succeeded=succeeded,
         failed=failed,
+        succeeded_items=succeeded_items,
+        failed_items=failed_items,
         result_summary=f"PDFs replaced: {succeeded}, not replaced/failed: {failed}.",
     )

@@ -219,6 +219,49 @@ class TestFormatStatus:
         assert "9" in md
         assert "Trashed 9 notes" in md
 
+    def test_shows_succeeded_and_failed_items(self):
+        s = TaskStatus(
+            task_id="test456",
+            task_type="batch_cleanup_notes",
+            status="completed",
+            created_at="2026-01-01",
+            total=3,
+            processed=3,
+            succeeded=2,
+            failed=1,
+            succeeded_items=[
+                {"key": "AAA11111"},
+                {"key": "BBB22222", "detail": "trashed"},
+            ],
+            failed_items=[
+                {"key": "CCC33333", "detail": "HTTP 500"},
+            ],
+        )
+        md = format_status_markdown(s)
+        assert "Succeeded (2)" in md
+        assert "`AAA11111`" in md
+        assert "`BBB22222`" in md
+        assert "trashed" in md
+        assert "Failed (1)" in md
+        assert "`CCC33333`" in md
+        assert "HTTP 500" in md
+
+    def test_truncates_long_item_lists(self):
+        s = TaskStatus(
+            task_id="test789",
+            task_type="batch_cleanup_notes",
+            status="completed",
+            created_at="2026-01-01",
+            total=60,
+            processed=60,
+            succeeded=55,
+            failed=5,
+            succeeded_items=[{"key": f"K{i:04d}"} for i in range(55)],
+            failed_items=[{"key": f"F{i:04d}", "detail": "err"} for i in range(5)],
+        )
+        md = format_status_markdown(s)
+        assert "and 5 more" in md  # 55 - 50 = 5 truncated
+
 
 # ---------------------------------------------------------------------------
 # batch_cleanup_notes integration

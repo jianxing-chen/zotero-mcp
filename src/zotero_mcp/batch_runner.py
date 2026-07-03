@@ -47,6 +47,10 @@ class TaskStatus:
     failed: int = 0
     error: str | None = None
     result_summary: str | None = None
+    # Per-item results: list of {"key": ..., "status": ..., "detail": ...}
+    # so the poll tool can show which items succeeded/failed and why.
+    succeeded_items: list[dict] = field(default_factory=list)
+    failed_items: list[dict] = field(default_factory=list)
     # The work items (e.g. [{"key": "ABCD1234"}, ...]). Stored in the
     # status file so the background thread can read them without
     # re-scanning the Zotero library.
@@ -205,6 +209,34 @@ def format_status_markdown(status: TaskStatus) -> str:
         lines.append(f"- **Completed:** {status.completed_at}")
     if status.error:
         lines.append(f"- **Error:** {status.error}")
+
+    # Per-item results (shown when completed, or partially while running).
+    if status.succeeded_items:
+        lines.append("")
+        lines.append(f"## Succeeded ({len(status.succeeded_items)})")
+        for item in status.succeeded_items[:50]:
+            key = item.get("key", "?")
+            detail = item.get("detail", "")
+            if detail:
+                lines.append(f"- `{key}` — {detail}")
+            else:
+                lines.append(f"- `{key}`")
+        if len(status.succeeded_items) > 50:
+            lines.append(f"... and {len(status.succeeded_items) - 50} more")
+
+    if status.failed_items:
+        lines.append("")
+        lines.append(f"## Failed ({len(status.failed_items)})")
+        for item in status.failed_items[:50]:
+            key = item.get("key", "?")
+            detail = item.get("detail", item.get("error", ""))
+            if detail:
+                lines.append(f"- `{key}` — {detail}")
+            else:
+                lines.append(f"- `{key}`")
+        if len(status.failed_items) > 50:
+            lines.append(f"... and {len(status.failed_items) - 50} more")
+
     if status.result_summary:
         lines.append("")
         lines.append(status.result_summary)

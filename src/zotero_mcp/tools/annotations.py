@@ -1375,6 +1375,8 @@ def _batch_cleanup_worker(status: "TaskStatus") -> None:
 
     succeeded = 0
     failed = 0
+    succeeded_items: list[dict] = []
+    failed_items: list[dict] = []
     total = len(status.work_items)
 
     for i, item in enumerate(status.work_items):
@@ -1414,13 +1416,15 @@ def _batch_cleanup_worker(status: "TaskStatus") -> None:
 
             if resp.status_code in (200, 204):
                 succeeded += 1
+                succeeded_items.append({"key": item_key})
             else:
                 failed += 1
-                logger.warning(
-                    f"Failed to trash note {item_key}: HTTP {resp.status_code}"
-                )
+                detail = f"HTTP {resp.status_code}"
+                failed_items.append({"key": item_key, "detail": detail})
+                logger.warning(f"Failed to trash note {item_key}: {detail}")
         except Exception as e:
             failed += 1
+            failed_items.append({"key": item_key, "detail": str(e)})
             logger.warning(f"Failed to trash note {item_key}: {e}")
 
         # Update progress every 10 items or on the last item.
@@ -1430,6 +1434,8 @@ def _batch_cleanup_worker(status: "TaskStatus") -> None:
                 processed=i + 1,
                 succeeded=succeeded,
                 failed=failed,
+                succeeded_items=succeeded_items,
+                failed_items=failed_items,
             )
 
     update_status(
@@ -1437,6 +1443,8 @@ def _batch_cleanup_worker(status: "TaskStatus") -> None:
         processed=total,
         succeeded=succeeded,
         failed=failed,
+        succeeded_items=succeeded_items,
+        failed_items=failed_items,
         result_summary=f"Trashed {succeeded} notes, {failed} failed.",
     )
 
