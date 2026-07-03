@@ -981,6 +981,8 @@ def semantic_search(query: str, limit: int = 10, filters: dict[str, str] | str |
         "skipped. Watermark is NOT advanced by a reindex_keys run. "
         "reindex_cached_mineru=True: reindex EVERY item with a MinerU cache "
         "on disk (all 精读'd papers) in one call — no need to list keys. "
+        "CURRENTLY DISABLED to keep a uniform-dim build path; use "
+        "reindex_keys for individual papers instead. "
         "Idempotent; mutually exclusive with reindex_keys. "
         "force_reindex=True: bypass idempotency, re-embed already-MinerU-"
         "indexed items (use after changing chunk_size/overlap or model). "

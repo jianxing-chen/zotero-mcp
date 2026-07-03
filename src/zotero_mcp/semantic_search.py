@@ -1807,16 +1807,20 @@ class ZoteroSemanticSearch:
             # directory is scanned for attachment keys, reverse-mapped to
             # parent item keys via the local Zotero sqlite. The idempotency
             # guard then re-embeds only those not yet indexed from MinerU.
+            #
+            # DISABLED: batch MinerU reindex is intentionally turned off to
+            # keep the vector DB on a uniform 1024-dim build path. Per-item
+            # reindex_keys (single papers) still works. Re-enable by removing
+            # this guard when MinerU-sourced vectors are wanted again.
             if reindex_cached_mineru and not reindex_keys:
-                reindex_keys = self._resolve_cached_mineru_keys()
-                if not reindex_keys:
-                    try:
-                        sys.stderr.write(
-                            "No MinerU caches found — nothing to reindex. "
-                            "Read papers with zotero_read_pdf_pages first.\n"
-                        )
-                    except Exception:
-                        pass
+                try:
+                    sys.stderr.write(
+                        "reindex_cached_mineru is disabled (uniform-dim build path). "
+                        "Use reindex_keys=[...] to reindex individual papers.\n"
+                    )
+                except Exception:
+                    pass
+                reindex_cached_mineru = False
             _is_reindex = bool(reindex_keys)
             if _is_reindex:
                 extract_fulltext = True
