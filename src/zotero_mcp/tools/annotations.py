@@ -1549,7 +1549,12 @@ def create_annotation(
                         debug_lines.append(f"  (Found on page {position_data['page_found']})")
                     debug_lines.append("=" * 50)
                     debug_lines.append("")
-                    debug_lines.append("TIP: Copy the exact text from the PDF instead of paraphrasing.")
+                    debug_lines.append(
+                        "TIP: If your text came from MinerU Markdown (精读), it may "
+                        "contain LaTeX ($...$) or HTML tags that don't exist in the "
+                        "PDF text layer. Try selecting a plain-text sentence (no "
+                        "formulas/tables) as the highlight text."
+                    )
                 elif best_score > 0:
                     debug_lines.append("")
                     debug_lines.append("Debug info:")
@@ -1575,6 +1580,8 @@ def create_annotation(
                             f"- Copy the exact text from the {file_type.upper()} (don't paraphrase)",
                             "- Try a shorter, unique phrase from the beginning",
                             f"- Check that the {location_type} number is correct",
+                            "- If text came from MinerU Markdown (精读), avoid formulas "
+                            "($...$) and HTML tables — they don't match the PDF text layer",
                         ]
                     )
 

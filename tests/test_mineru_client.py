@@ -160,6 +160,70 @@ class TestCliFallback:
         monkeypatch.setattr(M.shutil, "which", lambda _n: None)
         assert M.read_cached_or_parse("ATTKEY", pdf, config, force_rebuild=True) is None
 
+    # ----- backend_override: pinned single backend, no cross-backend fallback -----
+
+    def test_pinned_hybrid_no_pipeline_fallback(self, tmp_path, monkeypatch):
+        """backend_override='hybrid' + hybrid fails → None, NOT retried as pipeline."""
+        pdf = tmp_path / "paper.pdf"
+        pdf.write_bytes(b"%PDF-1.4 fake")
+        config = {"enabled": True, "backend": "pipeline", "timeout": 30}  # config says pipeline...
+        monkeypatch.setattr(M.shutil, "which", lambda _n: "/usr/local/bin/mineru")
+
+        calls = []
+
+        def _run(cmd, **kwargs):
+            calls.append(cmd[cmd.index("-b") + 1] if "-b" in cmd else "?")
+            return subprocess.CompletedProcess(cmd, returncode=1, stderr="OOM")
+
+        monkeypatch.setattr(M.subprocess, "run", _run)
+        # ...but override forces hybrid, and hybrid fails → no pipeline retry
+        parsed = M.read_cached_or_parse("ATTKEY", pdf, config, force_rebuild=True, backend_override="hybrid")
+        assert parsed is None
+        # Only hybrid was tried; pipeline was NOT attempted (override pinned it).
+        assert calls == ["hybrid-auto-engine"]
+
+    def test_pinned_pipeline_no_hybrid_attempt(self, tmp_path, monkeypatch):
+        """backend_override='pipeline' → only pipeline runs, hybrid never tried."""
+        pdf = tmp_path / "paper.pdf"
+        pdf.write_bytes(b"%PDF-1.4 fake")
+        config = {"enabled": True, "backend": "hybrid", "timeout": 30}  # config says hybrid...
+        monkeypatch.setattr(M.shutil, "which", lambda _n: "/usr/local/bin/mineru")
+        monkeypatch.setattr(M.subprocess, "run", self._make_completed(md_content="pipeline ok"))
+        # ...but override forces pipeline only
+        parsed = M.read_cached_or_parse("ATTKEY", pdf, config, force_rebuild=True, backend_override="pipeline")
+        assert parsed is not None
+        assert parsed.source == "mineru:pipeline"
+
+    def test_pinned_cloud_failure_no_local_fallback(self, tmp_path, monkeypatch):
+        """backend_override='cloud' + cloud fails → None, NOT retried via local CLI."""
+        pdf = tmp_path / "paper.pdf"
+        pdf.write_bytes(b"%PDF-1.4 fake")
+        config = {"enabled": True, "backend": "pipeline", "cloud_token": "tok", "timeout": 30}
+        # Cloud returns None (failure)
+        monkeypatch.setattr(M, "_call_mineru_cloud", lambda *a, **k: None)
+        # Local CLI would succeed — but it must NOT be called when pinned to cloud.
+        local_called = []
+        monkeypatch.setattr(
+            M,
+            "_call_cli_with_fallback",
+            lambda *a, **k: local_called.append("called") or ("md", None, "mineru:pipeline"),
+        )
+        parsed = M.read_cached_or_parse("ATTKEY", pdf, config, force_rebuild=True, backend_override="cloud")
+        assert parsed is None  # cloud failed, no fallback
+        assert local_called == []  # local CLI never invoked
+
+    def test_no_override_keeps_full_fallback_chain(self, tmp_path, monkeypatch):
+        """Without backend_override (None), the full fallback chain is intact."""
+        pdf = tmp_path / "paper.pdf"
+        pdf.write_bytes(b"%PDF-1.4 fake")
+        config = {"enabled": True, "backend": "cloud", "cloud_token": "tok", "timeout": 30}
+        # Cloud fails; local CLI should be tried (full fallback preserved).
+        monkeypatch.setattr(M, "_call_mineru_cloud", lambda *a, **k: None)
+        monkeypatch.setattr(M, "_call_cli_with_fallback", lambda *a, **k: ("md", None, "mineru:pipeline"))
+        parsed = M.read_cached_or_parse("ATTKEY", pdf, config, force_rebuild=True)
+        assert parsed is not None
+        assert parsed.source == "mineru:pipeline"
+
 
 # --------------------------------------------------------------------------- #
 # Cache hit / invalidation

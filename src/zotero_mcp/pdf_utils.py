@@ -128,6 +128,60 @@ def normalize_for_matching(text: str) -> str:
     return text.lower()
 
 
+# Regex patterns for stripping MinerU markdown formatting that has no
+# counterpart in the PDF text layer. Used by strip_latex_and_html() so
+# anchor extraction can land on plain-text sentences that PyMuPDF can find.
+_BRACKET_MATH = re.compile(r"\\\[(?:[^\\]|\\.)*?\\\]", re.DOTALL)
+_PAREN_MATH = re.compile(r"\\\((?:[^\\]|\\.)*?\\\)", re.DOTALL)
+_INLINE_MATH = re.compile(r"\${1,2}.*?\${1,2}", re.DOTALL)
+_HTML_TAG = re.compile(r"<[^>]+>")
+_LATEX_CMD = re.compile(r"\\([a-zA-Z]+)")
+_LATEX_BRACE = re.compile(r"[{}]")
+
+
+def strip_latex_and_html(text: str) -> str:
+    """Strip LaTeX math delimiters and HTML tags from MinerU markdown text.
+
+    MinerU emits formulas as ``$...$`` / ``$$...$$`` / ``\\(...\\)`` /
+    ``\\[...\\]`` and tables as HTML (``<table><tr><td>...``). None of these
+    markers exist in the PDF text layer that PyMuPDF extracts, so an anchor
+    whose first/last ~40 chars land on a formula or HTML tag will fail
+    ``cumulative.find()`` in :func:`_anchor_based_search`.
+
+    This function rewrites such text to be closer to what PyMuPDF would
+    extract from the rendered PDF, so anchor-based annotation matching
+    succeeds on formula-heavy passages:
+
+    - Replace math blocks (``$$...$$``, ``$...$``, ``\\(...\\)``, ``\\[...\\]``)
+      with a single space. Formulas do not round-trip to the PDF text layer
+      verbatim (``$$E=mc^2$$`` may render as ``E=mc²``, ``E = mc2``, etc.), so
+      keeping their LaTeX content would only hurt matching. Anchor strategy
+      only needs the start/end ~40 chars to be plain text; the middle can be
+      blanked without affecting the highlight span range.
+    - Strip HTML tags (MinerU emits ``<table><tr><td>...``).
+    - Convert ``\\command`` → ``command`` (e.g. ``\\alpha`` → ``alpha``):
+      some PDFs contain the rendered symbol name as an English word.
+    - Remove residual braces ``{`` ``}``.
+    - Collapse whitespace.
+
+    Args:
+        text: MinerU markdown text (may contain LaTeX/HTML)
+
+    Returns:
+        Text with LaTeX math and HTML markup removed, closer to the PDF
+        text layer. May be shorter or empty if the input was mostly formulas.
+    """
+    s = text
+    s = _BRACKET_MATH.sub(" ", s)   # \[...\]
+    s = _PAREN_MATH.sub(" ", s)     # \(...\)
+    s = _INLINE_MATH.sub(" ", s)    # $...$ and $$...$$
+    s = _HTML_TAG.sub(" ", s)       # <table><tr>...
+    s = _LATEX_CMD.sub(r"\1", s)   # \alpha → alpha
+    s = _LATEX_BRACE.sub(" ", s)    # { } → space
+    s = re.sub(r"\s+", " ", s)
+    return s.strip()
+
+
 # =============================================================================
 # Page Text Extraction
 # =============================================================================
@@ -397,33 +451,46 @@ def _extract_anchor(text: str, from_start: bool) -> str:
     """
     Extract an anchor phrase from the start or end of text.
 
-    Tries to break at word boundaries for better matching.
+    Tries to break at word boundaries for better matching. When the input
+    comes from MinerU markdown, LaTeX math (``$...$``) and HTML tags are
+    stripped first so the anchor lands on plain text that also exists in
+    the PDF text layer (otherwise the anchor would begin with ``$$`` or
+    ``<td>`` and fail to match).
 
     Args:
         text: Full text to extract from
         from_start: If True, extract from start; if False, from end
 
     Returns:
-        Anchor string, or empty string if text is too short
+        Anchor string, or empty string if text is too short (or too
+        formula-heavy to yield a reliable plain-text anchor)
     """
     text = text.strip()
 
     if len(text) < ANCHOR_TARGET_LENGTH * 2:
         return ""
 
+    # Strip LaTeX math and HTML markup so the anchor lands on text that
+    # also exists in the PDF text layer. MinerU markdown preserves these
+    # markers but PyMuPDF's page text does not, so an anchor whose first/
+    # last ~40 chars land on a formula or <td> tag would never match.
+    cleaned = strip_latex_and_html(text)
+    if len(cleaned) < ANCHOR_TARGET_LENGTH * 2:
+        return ""  # almost entirely formulas/HTML — no reliable anchor
+
     if from_start:
-        anchor = text[:ANCHOR_TARGET_LENGTH]
+        anchor = cleaned[:ANCHOR_TARGET_LENGTH]
         # Extend to word boundary
-        next_space = text.find(" ", ANCHOR_TARGET_LENGTH)
+        next_space = cleaned.find(" ", ANCHOR_TARGET_LENGTH)
         if 0 < next_space < ANCHOR_TARGET_LENGTH + ANCHOR_WORD_BOUNDARY_TOLERANCE:
-            anchor = text[:next_space]
+            anchor = cleaned[:next_space]
     else:
-        anchor = text[-ANCHOR_TARGET_LENGTH:]
+        anchor = cleaned[-ANCHOR_TARGET_LENGTH:]
         # Find word boundary
-        remaining = text[:-ANCHOR_TARGET_LENGTH]
+        remaining = cleaned[:-ANCHOR_TARGET_LENGTH]
         last_space = remaining.rfind(" ")
         if last_space != -1 and len(remaining) - last_space < ANCHOR_WORD_BOUNDARY_TOLERANCE:
-            anchor = text[last_space + 1 :]
+            anchor = cleaned[last_space + 1 :]
 
     return anchor.strip()
 

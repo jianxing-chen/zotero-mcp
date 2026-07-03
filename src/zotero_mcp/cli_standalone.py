@@ -514,18 +514,31 @@ def cmd_db(args):
         reindex_keys: list[str] | None = None
         if getattr(args, "reindex_keys", None):
             reindex_keys = [k.strip() for k in args.reindex_keys.split(",") if k.strip()]
-        if fulltext or reindex_keys:
+        reindex_cached_mineru = getattr(args, "reindex_cached_mineru", False)
+        force_reindex = getattr(args, "force_reindex", False)
+        if fulltext or reindex_keys or reindex_cached_mineru:
             from zotero_mcp.utils import is_local_mode
 
             if not is_local_mode():
-                print("Error: --fulltext/--reindex-keys requires local mode (ZOTERO_LOCAL=true).", file=sys.stderr)
+                print(
+                    "Error: --fulltext/--reindex-keys/--reindex-cached-mineru requires local mode (ZOTERO_LOCAL=true).",
+                    file=sys.stderr,
+                )
                 sys.exit(1)
+        if reindex_keys and reindex_cached_mineru:
+            print(
+                "Error: --reindex-cached-mineru and --reindex-keys are mutually exclusive.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         stats = search.update_database(
             force_full_rebuild=args.force_rebuild,
             limit=args.limit,
             extract_fulltext=fulltext,
             use_openai_batch=getattr(args, "openai_batch", None),
             reindex_keys=reindex_keys,
+            reindex_cached_mineru=reindex_cached_mineru,
+            force_reindex=force_reindex,
         )
         _print_update_stats(stats)
         if stats.get("error"):
@@ -909,6 +922,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--reindex-keys",
         dest="reindex_keys",
         help="Comma-separated Zotero item keys to force re-embedding (reuses MinerU cache).",
+    )
+    dbu.add_argument(
+        "--reindex-cached-mineru",
+        dest="reindex_cached_mineru",
+        action="store_true",
+        help="Reindex every item with a MinerU cache on disk (the 精读'd papers). "
+        "Idempotent: skips items already indexed from MinerU cache.",
+    )
+    dbu.add_argument(
+        "--force",
+        dest="force_reindex",
+        action="store_true",
+        help="With --reindex-keys/--reindex-cached-mineru, re-embed items already "
+        "indexed from MinerU cache (bypass idempotency guard).",
     )
     dbu.add_argument("--config-path")
     dbu.add_argument("--db-path")

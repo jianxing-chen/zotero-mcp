@@ -312,3 +312,116 @@ def test_get_feed_items_includes_doi(tmp_path):
         reader.close()
 
     assert items[0]["DOI"] == "10.1234/example.doi"
+
+
+def _create_attachments_db(db_path: Path) -> None:
+    """Minimal schema for get_parent_keys_for_attachments: items + itemAttachments."""
+    import sqlite3
+
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE items (
+            itemID INTEGER PRIMARY KEY,
+            key TEXT,
+            itemTypeID INTEGER,
+            libraryID INTEGER,
+            dateAdded TEXT
+        );
+        CREATE TABLE itemAttachments (
+            itemID INTEGER PRIMARY KEY,
+            parentItemID INTEGER,
+            path TEXT,
+            contentType TEXT
+        );
+        """
+    )
+    # Parent item 1 (key PARENT1) with two attachments
+    conn.execute(
+        "INSERT INTO items (itemID, key, itemTypeID, libraryID, dateAdded) VALUES (1, 'PARENT1', 7, 1, '2024-01-01')"
+    )
+    conn.execute(
+        "INSERT INTO items (itemID, key, itemTypeID, libraryID, dateAdded) VALUES (2, 'ATTAAA', 14, 1, '2024-01-01')"
+    )
+    conn.execute(
+        "INSERT INTO items (itemID, key, itemTypeID, libraryID, dateAdded) VALUES (3, 'ATTBBB', 14, 1, '2024-01-01')"
+    )
+    conn.execute(
+        "INSERT INTO itemAttachments (itemID, parentItemID, path, contentType) VALUES (2, 1, 'storage:aaa.pdf', 'application/pdf')"
+    )
+    conn.execute(
+        "INSERT INTO itemAttachments (itemID, parentItemID, path, contentType) VALUES (3, 1, 'storage:bbb.pdf', 'application/pdf')"
+    )
+    # Parent item 4 (key PARENT2) with one attachment
+    conn.execute(
+        "INSERT INTO items (itemID, key, itemTypeID, libraryID, dateAdded) VALUES (4, 'PARENT2', 7, 1, '2024-01-01')"
+    )
+    conn.execute(
+        "INSERT INTO items (itemID, key, itemTypeID, libraryID, dateAdded) VALUES (5, 'ATTCCC', 14, 1, '2024-01-01')"
+    )
+    conn.execute(
+        "INSERT INTO itemAttachments (itemID, parentItemID, path, contentType) VALUES (5, 4, 'storage:ccc.pdf', 'application/pdf')"
+    )
+    # Standalone attachment 6 (no parent) — should be excluded
+    conn.execute(
+        "INSERT INTO items (itemID, key, itemTypeID, libraryID, dateAdded) VALUES (6, 'ATTORPH', 14, 1, '2024-01-01')"
+    )
+    conn.execute(
+        "INSERT INTO itemAttachments (itemID, parentItemID, path, contentType) VALUES (6, NULL, 'storage:orphan.pdf', 'application/pdf')"
+    )
+    conn.commit()
+    conn.close()
+
+
+class TestGetParentKeysForAttachments:
+    """Reverse-lookup attachment keys → parent item keys."""
+
+    def test_maps_attachment_keys_to_parents(self, tmp_path):
+        db_path = tmp_path / "zotero.sqlite"
+        _create_attachments_db(db_path)
+        reader = LocalZoteroReader(db_path=str(db_path))
+        try:
+            result = reader.get_parent_keys_for_attachments({"ATTAAA", "ATTCCC"})
+        finally:
+            reader.close()
+        assert result == {"ATTAAA": "PARENT1", "ATTCCC": "PARENT2"}
+
+    def test_excludes_standalone_attachments(self, tmp_path):
+        db_path = tmp_path / "zotero.sqlite"
+        _create_attachments_db(db_path)
+        reader = LocalZoteroReader(db_path=str(db_path))
+        try:
+            result = reader.get_parent_keys_for_attachments({"ATTORPH"})
+        finally:
+            reader.close()
+        assert result == {}
+
+    def test_returns_empty_for_no_matches(self, tmp_path):
+        db_path = tmp_path / "zotero.sqlite"
+        _create_attachments_db(db_path)
+        reader = LocalZoteroReader(db_path=str(db_path))
+        try:
+            result = reader.get_parent_keys_for_attachments({"NOPE123"})
+        finally:
+            reader.close()
+        assert result == {}
+
+    def test_empty_input_returns_empty(self, tmp_path):
+        db_path = tmp_path / "zotero.sqlite"
+        _create_attachments_db(db_path)
+        reader = LocalZoteroReader(db_path=str(db_path))
+        try:
+            assert reader.get_parent_keys_for_attachments(set()) == {}
+        finally:
+            reader.close()
+
+    def test_case_insensitive_lookup(self, tmp_path):
+        """Keys are upper-cased for the IN lookup so casing doesn't matter."""
+        db_path = tmp_path / "zotero.sqlite"
+        _create_attachments_db(db_path)
+        reader = LocalZoteroReader(db_path=str(db_path))
+        try:
+            result = reader.get_parent_keys_for_attachments({"attaaa"})
+        finally:
+            reader.close()
+        assert result == {"ATTAAA": "PARENT1"}

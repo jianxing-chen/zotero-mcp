@@ -966,39 +966,39 @@ def semantic_search(query: str, limit: int = 10, filters: dict[str, str] | str |
         "Build or refresh the semantic search embedding database from "
         "Zotero items. Run this: (a) after first install, (b) after adding "
         "items via zotero_add_by_doi / add_by_url / add_from_file, "
-        "(c) after deleting items — deleted items are pruned from the "
-        "index on the next update, or "
-        "(d) after editing item metadata (title/abstract/tags) or "
-        "replacing a PDF, since changed items are re-embedded automatically. "
-        "By default the update is INCREMENTAL — only new or changed items "
-        "are re-embedded and items no longer in the library are pruned, "
-        "so repeated calls are cheap. "
-        "force_rebuild=True re-embeds ALL items from scratch (slow; use "
-        "when changing the embedding model or recovering from corruption). "
-        "reindex_keys: a list of specific Zotero item keys (e.g. "
-        "['AB123456','CD789012']) to force re-embedding of just those "
-        "items from their latest local full-text source. Use this after "
-        "精读 (zotero_read_pdf_pages) to build a MinerU-powered vector "
-        "index: when a MinerU cache exists for an item, the reindex uses "
-        "MinerU's per-page text with form-feed separators — giving "
-        "accurate page numbers in search results and full-document "
-        "chunking (no 20-chunk cap, so a 500-page book is fully "
-        "searchable). Items without a MinerU cache fall back to pdfminer "
-        "as before. The incremental watermark is NOT advanced by a "
-        "reindex_keys run. "
-        "limit: optional cap on items processed (useful for smoke-testing). "
-        "Progress is reported via the MCP context; on large libraries an "
-        "incremental update is seconds, a full rebuild can take minutes. "
-        "Requires the [semantic] optional dependency and a configured "
-        "embedding provider (see config.json). Check status with "
-        "zotero_get_search_database_status. "
-        "Example: zotero_update_search_database() after adding a batch of "
-        "papers."
+        "(c) after deleting items — pruned on the next update, or "
+        "(d) after editing metadata or replacing a PDF (changed items "
+        "re-embed automatically). "
+        "Default is INCREMENTAL — only new/changed items re-embed; cheap "
+        "to repeat. "
+        "force_rebuild=True re-embeds ALL items (slow; for model change or "
+        "corruption recovery). "
+        "reindex_keys: list of item keys to force re-embed from their local "
+        "full-text source. After 精读 (zotero_read_pdf_pages), this builds a "
+        "MinerU-powered vector index — per-page text gives page numbers in "
+        "search results and lifts the 20-chunk cap (full book searchable). "
+        "Idempotent: items already indexed from a valid MinerU cache are "
+        "skipped. Watermark is NOT advanced by a reindex_keys run. "
+        "reindex_cached_mineru=True: reindex EVERY item with a MinerU cache "
+        "on disk (all 精读'd papers) in one call — no need to list keys. "
+        "Idempotent; mutually exclusive with reindex_keys. "
+        "force_reindex=True: bypass idempotency, re-embed already-MinerU-"
+        "indexed items (use after changing chunk_size/overlap or model). "
+        "limit: cap on items processed (smoke-testing). "
+        "Requires [semantic] and a configured embedding provider. "
+        "Check status with zotero_get_search_database_status. "
+        "Example: zotero_update_search_database() after adding papers."
     ),
 )
 @with_zotero_api_lock
 def update_search_database(
-    force_rebuild: bool = False, limit: int | None = None, reindex_keys: list[str] | None = None, *, ctx: Context
+    force_rebuild: bool = False,
+    limit: int | None = None,
+    reindex_keys: list[str] | None = None,
+    reindex_cached_mineru: bool = False,
+    force_reindex: bool = False,
+    *,
+    ctx: Context,
 ) -> str:
     """
     Update the semantic search database.
@@ -1008,6 +1008,11 @@ def update_search_database(
         limit: Limit number of items to process (useful for testing)
         reindex_keys: Optional list of Zotero item keys to force
             re-embedding from their latest local full-text source
+        reindex_cached_mineru: Reindex every item with a MinerU cache on
+            disk (all 精读'd papers). Idempotent. Mutually exclusive with
+            reindex_keys.
+        force_reindex: With reindex_keys/reindex_cached_mineru, bypass the
+            MinerU idempotency guard and re-embed already-indexed items.
         ctx: MCP context
 
     Returns:
@@ -1033,13 +1038,16 @@ def update_search_database(
         search = create_semantic_search(str(config_path))
 
         # Use fulltext extraction when in local mode (has access to PDFs),
-        # or always when reindex_keys is set (needs local PDFs/ft-cache).
-        extract_fulltext = _utils.is_local_mode() or bool(reindex_keys)
+        # or always when reindex_keys / reindex_cached_mineru is set
+        # (needs local PDFs/ft-cache).
+        extract_fulltext = _utils.is_local_mode() or bool(reindex_keys) or reindex_cached_mineru
         stats = search.update_database(
             force_full_rebuild=force_rebuild,
             limit=limit,
             extract_fulltext=extract_fulltext,
             reindex_keys=reindex_keys,
+            reindex_cached_mineru=reindex_cached_mineru,
+            force_reindex=force_reindex,
         )
 
         # Format results
@@ -1149,6 +1157,26 @@ def get_search_database_status(*, ctx: Context) -> str:
         frequency = update_config.get("update_frequency", "manual")
         if frequency.startswith("every_") and update_config.get("update_days"):
             output.append(f"**Update Interval:** Every {update_config['update_days']} days")
+
+        # MinerU cache count — lightweight (scans cache dir, no model load).
+        # Shows how many papers have been 精读'd and are candidates for
+        # --reindex-cached-mineru. The full indexed/pending breakdown needs
+        # a ChromaDB query (see the db-status CLI command) and is omitted here
+        # to keep this tool model-free and fast.
+        try:
+            from zotero_mcp.mineru_client import list_cached_attachment_keys
+
+            cached = len(list_cached_attachment_keys())
+            if cached:
+                output.append("")
+                output.append("## MinerU Cache")
+                output.append(f"**Cached parses:** {cached}")
+                output.append(
+                    "Run `zotero_update_search_database` with "
+                    "`reindex_cached_mineru=true` to index them with page numbers."
+                )
+        except Exception:
+            pass
 
         return "\n".join(output)
 

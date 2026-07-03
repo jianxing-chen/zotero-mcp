@@ -296,8 +296,18 @@ def _call_cli_with_fallback(
     end_page_0: int,
     config: dict[str, Any],
     timeout: int,
+    *,
+    backend: str | None = None,
+    no_pipeline_fallback: bool = False,
 ) -> tuple[str, list[dict] | None, str] | None:
     """Try the configured local backend, falling GPU→pipeline on failure.
+
+    Args:
+        backend: When set, use this backend instead of ``config['backend']``
+            (used by the ``backend_override`` path from ``_dispatch_parse``).
+        no_pipeline_fallback: When True, do NOT retry with pipeline if the
+            GPU backend fails — return None. Used when the caller pinned a
+            single backend and wants no cross-backend degradation.
 
     Returns (markdown, content_list, source_label) or None.
     """
@@ -305,7 +315,7 @@ def _call_cli_with_fallback(
     if not executable:
         return None
 
-    backend = _normalize_backend(config.get("backend"))
+    backend = _normalize_backend(backend or config.get("backend"))
     if backend in ("api", "cloud"):
         # API/cloud handled elsewhere; if we reach the local CLI from those
         # backends (e.g. cloud failed and fell through), start the local
@@ -321,7 +331,7 @@ def _call_cli_with_fallback(
             md, content_list = result
             return md, content_list, f"mineru:{backend}"
         # GPU backend failed (likely OOM / unsupported) → retry with pipeline.
-        if _is_gpu_backend(backend):
+        if _is_gpu_backend(backend) and not no_pipeline_fallback:
             logger.info(f"MinerU {backend} failed; retrying with pipeline backend.")
             # Fresh out dir to avoid reading stale hybrid output.
             with tempfile.TemporaryDirectory(prefix="zotero_mineru_") as out2:
@@ -845,11 +855,23 @@ def read_cached_or_parse(
     config: dict[str, Any],
     *,
     force_rebuild: bool = False,
+    backend_override: str | None = None,
 ) -> ParseResult | None:
     """Return a (possibly cached) MinerU parse of the whole PDF.
 
     Always parses the *entire* document (not a page range) so that subsequent
     reads of other pages hit the cache. Page-range slicing is the caller's job.
+
+    Args:
+        attachment_key: Zotero attachment key (the MinerU cache directory name).
+        pdf_path: Path to the PDF on disk.
+        config: The ``mineru`` config block from config.json.
+        force_rebuild: Ignore any valid cache and re-parse.
+        backend_override: Pin a single backend (e.g. ``"cloud"``, ``"pipeline"``,
+            ``"hybrid"``) and skip the cross-backend fallback chain. None (the
+            default) uses the configured backend with the full degradation chain.
+            The cloud backend's internal vlm→pipeline model downgrade still
+            applies — that is a model choice within cloud, not a backend crossing.
 
     Returns None if MinerU is unavailable or parsing fails — the caller should
     then fall back to PyMuPDF.
@@ -857,7 +879,8 @@ def read_cached_or_parse(
     if not attachment_key or not pdf_path.exists():
         return None
 
-    # 1. Cache hit?
+    # 1. Cache hit? (Cache validity is backend-agnostic — a cached parse is
+    #    reused regardless of which backend produced it or is being overridden.)
     if not force_rebuild and _cache_is_valid(attachment_key, pdf_path, config):
         cached = _read_cache(attachment_key, config)
         if cached is not None:
@@ -866,7 +889,7 @@ def read_cached_or_parse(
         _invalidate_cache(attachment_key, config)
 
     # 2. Parse whole document (start_page=0, end_page unset = all pages).
-    parsed = _dispatch_parse(pdf_path, -1, -1, config)
+    parsed = _dispatch_parse(pdf_path, -1, -1, config, backend_override=backend_override)
     if parsed is None:
         return None
     markdown, content_list, source = parsed
@@ -886,26 +909,40 @@ def _dispatch_parse(
     start_page_0: int,
     end_page_0: int,
     config: dict[str, Any],
+    *,
+    backend_override: str | None = None,
 ) -> tuple[str, list[dict] | None, str] | None:
     """Route to cloud / api / local-CLI backend per config.
 
-    Degradation chain (most-preferred first):
+    Degradation chain (most-preferred first), when ``backend_override`` is
+    None (the default — full fallback):
       1. ``cloud`` — MinerU online API (mineru.net, vlm→pipeline), if token set
       2. ``api`` — local mineru-api server (/file_parse), if api_url set
       3. local CLI — hybrid-auto-engine → pipeline (inside _call_cli_with_fallback)
 
+    When ``backend_override`` is set, the caller pinned a single backend and
+    NO cross-backend fallback occurs — only that path runs, and a failure
+    returns None (cloud's internal vlm→pipeline model downgrade still applies,
+    since that is a model choice within the cloud backend, not a backend
+    crossing). This lets 精读 callers force a specific extraction method.
+
     Returns (markdown, content_list, source_label) or None.
     """
-    backend = _normalize_backend(config.get("backend"))
+    backend = _normalize_backend(backend_override or config.get("backend"))
     timeout = _resolve_timeout(config)
+    pinned = backend_override is not None
 
-    # 1. Cloud backend (highest priority when token is configured).
+    # 1. Cloud backend.
     cloud_token = config.get("cloud_token") or os.getenv("MINERU_API_TOKEN")
-    if cloud_token and backend == "cloud":
+    if backend == "cloud" and cloud_token:
         cloud_model = config.get("cloud_model", "vlm")
         result = _call_mineru_cloud(pdf_path, start_page_0, end_page_0, cloud_token, cloud_model, timeout)
         if result is not None:
             return result
+        if pinned:
+            # Pinned cloud: don't fall through to local CLI.
+            logger.info("MinerU cloud failed (pinned backend); not falling back.")
+            return None
         logger.info("MinerU cloud failed; falling back to local CLI.")
 
     # 2. Local mineru-api backend (legacy /file_parse).
@@ -915,10 +952,26 @@ def _dispatch_parse(
             result = _call_mineru_api(pdf_path, start_page_0, end_page_0, api_url, timeout)
             if result is not None:
                 return result
+            if pinned:
+                logger.info("MinerU api failed (pinned backend); not falling back.")
+                return None
             logger.info("MinerU api backend failed; falling back to local CLI.")
         else:
             logger.warning("MinerU backend=api but no api_url configured; trying local CLI.")
-        # Fall through to local CLI.
+        # Fall through to local CLI (only when not pinned).
+
+    if pinned:
+        # Pinned local backend (hybrid/pipeline/etc.): run only that, no
+        # GPU→pipeline fallback within the local CLI either.
+        return _call_cli_with_fallback(
+            pdf_path,
+            start_page_0,
+            end_page_0,
+            config,
+            timeout,
+            backend=backend,
+            no_pipeline_fallback=True,
+        )
 
     return _call_cli_with_fallback(pdf_path, start_page_0, end_page_0, config, timeout)
 
@@ -964,3 +1017,41 @@ def read_cached_pages_joined(attachment_key: str, config: dict[str, Any] | None 
     # blank page in the middle still counts as a page boundary.
     joined = "\f".join(p if isinstance(p, str) else "" for p in pages)
     return joined if joined.strip() else None
+
+
+def list_cached_attachment_keys(config: dict[str, Any] | None = None) -> set[str]:
+    """Return the set of attachment keys that have a usable MinerU cache.
+
+    Scans the MinerU cache root for subdirectories containing a non-empty
+    ``pages.json`` (a parse that produced at least one page). Keys with only
+    a partial/failed parse (no ``pages.json`` or empty list) are excluded so
+    the batch reindex path doesn't try to build an index from nothing.
+
+    Used by ``reindex_cached_mineru`` to find every item the user has 精读'd
+    without keeping a separate registry: the cache directory *is* the registry.
+    """
+    cfg = config if config is not None else load_mineru_config()
+    try:
+        root = _resolve_cache_dir(cfg)
+    except Exception:
+        return set()
+    if not root.is_dir():
+        return set()
+    keys: set[str] = set()
+    for child in root.iterdir():
+        if not child.is_dir():
+            continue
+        pages_path = child / "pages.json"
+        if not pages_path.exists():
+            continue
+        # Mirror read_cached_pages_joined's validity gate: a cache entry
+        # only counts when pages.json holds a non-empty list. This keeps
+        # the "pending reindex" count honest — a half-written or corrupt
+        # cache won't be reported as ready.
+        try:
+            pages = json.loads(pages_path.read_text(encoding="utf-8", errors="replace"))
+            if isinstance(pages, list) and pages and any((p if isinstance(p, str) else "").strip() for p in pages):
+                keys.add(child.name)
+        except Exception:
+            continue
+    return keys

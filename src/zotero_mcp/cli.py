@@ -328,6 +328,24 @@ def main():
         "(e.g. AB123456,CD789012). Reuses MinerU '精读' cache "
         "when available. Requires local mode (ZOTERO_LOCAL=true).",
     )
+    update_db_parser.add_argument(
+        "--reindex-cached-mineru",
+        dest="reindex_cached_mineru",
+        action="store_true",
+        help="Reindex every item that has a MinerU cache on disk (the set "
+        "of papers 精读'd via zotero_read_pdf_pages). Idempotent: skips "
+        "items already indexed from MinerU cache. Requires local mode. "
+        "Mutually exclusive with --reindex-keys.",
+    )
+    update_db_parser.add_argument(
+        "--force",
+        dest="force_reindex",
+        action="store_true",
+        help="With --reindex-keys or --reindex-cached-mineru, bypass the "
+        "MinerU idempotency guard and re-embed items already indexed from "
+        "MinerU cache. Use after changing chunk_size/overlap or the "
+        "embedding model.",
+    )
     update_db_parser.add_argument("--config-path", help="Path to semantic search configuration file")
     update_db_parser.add_argument("--db-path", help="Path to Zotero database file (zotero.sqlite), overrides config")
     openai_batch_group = update_db_parser.add_mutually_exclusive_group()
@@ -553,6 +571,22 @@ def main():
                         )
                         sys.exit(1)
                     print(f"Reindexing {len(reindex_keys)} specific item(s): {', '.join(reindex_keys)}")
+            reindex_cached_mineru = getattr(args, "reindex_cached_mineru", False)
+            if reindex_cached_mineru:
+                from zotero_mcp.utils import is_local_mode
+
+                if not is_local_mode():
+                    print(
+                        "Error: --reindex-cached-mineru requires local mode (ZOTERO_LOCAL=true).",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+                if reindex_keys:
+                    print(
+                        "Error: --reindex-cached-mineru and --reindex-keys are mutually exclusive.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
             if args.fulltext:
                 from zotero_mcp.utils import is_local_mode
 
@@ -571,6 +605,8 @@ def main():
                 extract_fulltext=args.fulltext,
                 use_openai_batch=args.openai_batch,
                 reindex_keys=reindex_keys,
+                reindex_cached_mineru=reindex_cached_mineru,
+                force_reindex=getattr(args, "force_reindex", False),
             )
 
             _print_update_stats(stats)
@@ -647,6 +683,17 @@ def main():
             print(f"- Last update: {update_config.get('last_update', 'Never')}")
             print(f"- Should update: {status.get('should_update', False)}")
             print(f"- OpenAI Batch API: {'active' if batch_config.get('active') else 'inactive'}")
+
+            mineru_cache = status.get("mineru_cache", {})
+            if mineru_cache.get("cached_attachment_keys") or mineru_cache.get("indexed_from_mineru"):
+                print("\nMinerU cache:")
+                print(f"- Cached parses (精读'd): {mineru_cache.get('cached_attachment_keys', 0)}")
+                print(f"- Indexed from MinerU: {mineru_cache.get('indexed_from_mineru', 0)}")
+                pending = mineru_cache.get("pending")
+                if pending is not None:
+                    print(f"- Pending reindex: {pending}")
+                    if pending > 0:
+                        print("  → run 'zotero-mcp update-db --reindex-cached-mineru' to index them")
 
             if collection_info.get("error"):
                 print(f"\nError: {collection_info['error']}")

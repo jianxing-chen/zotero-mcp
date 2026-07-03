@@ -54,8 +54,8 @@
 ### 📄 MinerU Structured PDF Reading (new `[mineru]` extra)
 - **Extract formulas as LaTeX and tables as HTML** — impossible with plain PyMuPDF text-layer extraction
 - When an LLM calls `zotero_read_pdf_pages` to read a paper, MinerU returns correct formulas like `$\text{Attention}(Q,K,V)=\text{softmax}(\frac{QK^T}{\sqrt{d_k}})V$`
-- **Split by use case**: semantic search (bulk analysis) keeps PyMuPDF's millisecond speed; only precise single-paper reading uses MinerU
-- Three backends: `api` (remote service, zero local deps), `hybrid` (local GPU), `pipeline` (local CPU fallback) — hybrid auto-degrades to pipeline on OOM
+- **MinerU cache → vector index**: after reading a paper once, `reindex_keys` builds a full-document vector index from MinerU's per-page text — with **page numbers in search results** and **no 20-chunk cap** (every page of a 500-page book is searchable). Enables "semantic search定位 → read_pdf_pages精读验证" workflow.
+- Three backends: `cloud` (mineru.net API, recommended), `api` (remote service), `hybrid` (local GPU), `pipeline` (local CPU fallback) — hybrid auto-degrades to pipeline on OOM
 - Results cached per attachment key to avoid re-parsing
 - Any failure silently falls back to PyMuPDF — no MinerU installed = 100% original behavior
 
@@ -177,10 +177,12 @@ zotero-mcp setup --semantic-config-only
 zotero-mcp update-db                       # Build database (fast, metadata-only)
 zotero-mcp update-db --fulltext            # With full-text extraction (slower, comprehensive)
 zotero-mcp update-db --force-rebuild       # Force complete rebuild
+zotero-mcp update-db --reindex-keys KEY1,KEY2  # Re-embed specific items (MinerU cache if available)
+zotero-mcp update-db --reindex-cached-mineru   # Re-embed ALL 精读'd papers (idempotent)
 zotero-mcp update-db --openai-batch        # Submit via OpenAI Batch API (cheaper, async)
 zotero-mcp openai-batch-status             # Check batch status
 zotero-mcp openai-batch-import             # Import completed batches
-zotero-mcp db-status                       # Show database status
+zotero-mcp db-status                       # Show database status (incl. MinerU cache progress)
 ```
 
 **Example queries in your AI assistant:**
@@ -206,6 +208,16 @@ The wizard guides you through choosing a backend:
 
 Fallback chain (all automatic): `cloud-vlm → cloud-pipeline → local hybrid → local pipeline → PyMuPDF`.
 
+**Pin a single backend per call.** The `zotero_read_pdf_pages` tool accepts an optional `backend` parameter (`cloud` / `pipeline` / `hybrid` / `api`) to use ONLY that extractor and skip the cross-backend fallback chain — more precise when you know which method you want. Omit it (the default) to use the configured backend with the full degradation chain:
+
+```
+# Force cloud only (no fallback to local CLI on failure):
+zotero_read_pdf_pages(item_key="AB123456", start_page=1, end_page=10, backend="cloud")
+
+# Force local pipeline only:
+zotero_read_pdf_pages(item_key="AB123456", start_page=1, backend="pipeline")
+```
+
 ```json
 // mineru block in ~/.config/zotero-mcp/config.json
 {
@@ -220,14 +232,42 @@ Fallback chain (all automatic): `cloud-vlm → cloud-pipeline → local hybrid �
 }
 ```
 
-### Why split by use case?
+### Two extraction engines, one cache
 
 | Scenario | Engine | Reason |
 |----------|--------|--------|
-| Semantic search (bulk analysis of dozens/hundreds) | PyMuPDF | Milliseconds; embeddings tolerate garbled formulas |
+| Semantic search (bulk, most items) | PyMuPDF / .zotero-ft-cache | Milliseconds; embeddings tolerate garbled formulas |
 | Precise reading of one paper (LLM reads formulas/tables) | MinerU | Seconds–minutes, but formulas/tables are accurate |
+| **Full-document vector index for a thick book** | **MinerU cache → reindex_keys** | MinerU's per-page text (with `\f` separators) gives accurate page numbers in search results + full chunking (no 20-chunk cap) |
 
 MinerU results are cached per attachment key (`~/.cache/zotero-mcp/mineru/<key>/`) — only `.md` and split data are stored; MinerU's other byproducts (model JSON, layout PDFs, images) are discarded. Any failure silently falls back to PyMuPDF.
+
+### MinerU-powered vector index (for long documents)
+
+When you've read a paper or book via `zotero_read_pdf_pages` (triggering a MinerU parse), the per-page cache (`pages.json`) is available to the semantic-search build path. Running `zotero_update_search_database(reindex_keys=["ITEM_KEY"])` builds a **full-document vector index** from the MinerU text:
+
+- **Page numbers in search results** — MinerU's per-page text is joined with form-feed separators, so `zotero_semantic_search` results include `p. N` in the Location field. The agent can then call `zotero_read_pdf_pages(item_key, start_page=N)` to精读 that exact page.
+- **No 20-chunk cap** — a 500-page book produces ~800+ chunks, making every page searchable. Items without a MinerU cache keep the default 20-chunk limit.
+- **Transparent fallback** — if no MinerU cache exists for an item, `reindex_keys` falls back to pdfminer as before.
+- **Idempotent** — re-running `reindex_keys` skips items already indexed from a still-valid MinerU cache (no redundant embedding cost). Use `--force` to bypass and re-embed anyway (e.g. after changing `chunk_size`/`overlap` or the embedding model).
+
+This enables a **"embedding定位 → MinerU精读验证"** workflow: semantic search finds the relevant page, then `read_pdf_pages` returns the structured Markdown (formulas as LaTeX) for that page — all from cache, instant.
+
+```bash
+# After reading a paper once (MinerU cache created):
+zotero-mcp update-db --reindex-keys ITEM_KEY        # build MinerU-powered vector index
+
+# Index ALL papers you've 精读'd in one call (idempotent — skips ones already done):
+zotero-mcp update-db --reindex-cached-mineru
+
+# Force re-embed even items already indexed from MinerU cache:
+zotero-mcp update-db --reindex-cached-mineru --force
+
+# See how many papers are cached / indexed / pending:
+zotero-mcp db-status
+```
+
+`--reindex-cached-mineru` scans the MinerU cache directory for every paper you've 精读'd, reverse-maps attachment keys to parent item keys, and re-indexes only those not yet built from MinerU — so it's safe to run repeatedly.
 
 ## 🔭 NASA ADS Astrophysics Literature
 

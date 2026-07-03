@@ -97,7 +97,7 @@ class TestMineruPreferred:
             pages=["page 0 content", "$$formula$$", "page 2"],
             source="mineru:hybrid",
         )
-        monkeypatch.setattr(mineru_client, "read_cached_or_parse", lambda _key, _path, _cfg: parsed)
+        monkeypatch.setattr(mineru_client, "read_cached_or_parse", lambda _key, _path, _cfg, **_kw: parsed)
 
         out = read_pdf.read_pdf_pages("ITEM1", 2, 2, ctx=ctx)
         assert "MinerU (hybrid)" in out
@@ -186,6 +186,53 @@ class TestMineruPreferred:
         out = read_pdf.read_pdf_pages("ITEM1", 1, 1, ctx=ctx)
         assert "PyMuPDF (fallback)" in out
         assert parse_called["n"] == 0  # MinerU not invoked without a cache key
+
+    def test_backend_param_passed_through(self, tmp_path, monkeypatch, ctx):
+        """backend='pipeline' is forwarded to read_cached_or_parse as backend_override."""
+        pdf = tmp_path / "paper.pdf"
+        pdf.write_bytes(b"%PDF-1.4 fake")
+        _patch_path(monkeypatch, pdf, "Paper", "ATTKEY")
+        monkeypatch.setattr(read_pdf, "_probe_total_pages", lambda _p: 3)
+        monkeypatch.setitem(sys.modules, "fitz", type("F", (), {"open": staticmethod(lambda _p: _FakeFitzDoc(["X"]))}))
+
+        monkeypatch.setattr(mineru_client, "load_mineru_config", lambda: {"enabled": True})
+        monkeypatch.setattr(mineru_client, "is_mineru_enabled", lambda _c: True)
+        monkeypatch.setattr(mineru_client, "is_mineru_available", lambda _c: True)
+
+        captured = {}
+
+        def _capture(_key, _path, _cfg, *, backend_override=None):
+            captured["backend_override"] = backend_override
+            return mineru_client.ParseResult(markdown="md", pages=["p1", "p2", "p3"], source="mineru:pipeline")
+
+        monkeypatch.setattr(mineru_client, "read_cached_or_parse", _capture)
+
+        out = read_pdf.read_pdf_pages("ITEM1", 1, 1, backend="pipeline", ctx=ctx)
+        assert captured["backend_override"] == "pipeline"
+        assert "MinerU (pipeline)" in out
+
+    def test_no_backend_passes_none_override(self, tmp_path, monkeypatch, ctx):
+        """Omitting backend forwards None (uses configured backend + fallback)."""
+        pdf = tmp_path / "paper.pdf"
+        pdf.write_bytes(b"%PDF-1.4 fake")
+        _patch_path(monkeypatch, pdf, "Paper", "ATTKEY")
+        monkeypatch.setattr(read_pdf, "_probe_total_pages", lambda _p: 3)
+        monkeypatch.setitem(sys.modules, "fitz", type("F", (), {"open": staticmethod(lambda _p: _FakeFitzDoc(["X"]))}))
+
+        monkeypatch.setattr(mineru_client, "load_mineru_config", lambda: {"enabled": True})
+        monkeypatch.setattr(mineru_client, "is_mineru_enabled", lambda _c: True)
+        monkeypatch.setattr(mineru_client, "is_mineru_available", lambda _c: True)
+
+        captured = {}
+
+        def _capture(_key, _path, _cfg, *, backend_override=None):
+            captured["backend_override"] = backend_override
+            return mineru_client.ParseResult(markdown="md", pages=["p1"], source="mineru:cloud-vlm")
+
+        monkeypatch.setattr(mineru_client, "read_cached_or_parse", _capture)
+
+        read_pdf.read_pdf_pages("ITEM1", 1, 1, ctx=ctx)
+        assert captured["backend_override"] is None
 
 
 class TestRangeValidation:

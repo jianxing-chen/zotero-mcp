@@ -884,6 +884,37 @@ class LocalZoteroReader:
             )
         return out
 
+    def get_parent_keys_for_attachments(self, attachment_keys: set[str]) -> dict[str, str]:
+        """Reverse-lookup: given attachment keys, return ``{att_key: parent_key}``.
+
+        Used by the batch ``reindex_cached_mineru`` path: MinerU caches are
+        keyed by *attachment* key (a child item), but ``reindex_keys`` expects
+        *parent* item keys. This bridges the gap with a single SQL query
+        rather than a per-key round-trip.
+
+        Attachments with no parent (standalone attachments) are omitted —
+        they have no metadata document to index anyway.
+        """
+        if not attachment_keys:
+            return {}
+        # Normalize to upper-case strings for the IN (...) placeholder list.
+        keys = [str(k).strip().upper() for k in attachment_keys if k and str(k).strip()]
+        if not keys:
+            return {}
+        conn = self._get_connection()
+        placeholders = ",".join("?" * len(keys))
+        rows = conn.execute(
+            f"""
+            SELECT att.key as att_key, parent.key as parent_key
+            FROM itemAttachments ia
+            JOIN items att ON att.itemID = ia.itemID
+            LEFT JOIN items parent ON parent.itemID = ia.parentItemID
+            WHERE upper(att.key) IN ({placeholders})
+            """,
+            keys,
+        ).fetchall()
+        return {row["att_key"]: row["parent_key"] for row in rows if row["parent_key"]}
+
     def get_item_by_key(self, key: str) -> ZoteroItem | None:
         """
         Get a specific item by its Zotero key.

@@ -165,10 +165,12 @@ zotero-mcp setup --semantic-config-only
 zotero-mcp update-db                       # 构建数据库（快速，仅元数据）
 zotero-mcp update-db --fulltext            # 含全文提取（更慢但更全面）
 zotero-mcp update-db --force-rebuild       # 强制完全重建
+zotero-mcp update-db --reindex-keys KEY1,KEY2  # 重新 embed 指定条目（有 MinerU 缓存则用）
+zotero-mcp update-db --reindex-cached-mineru   # 一次性重建所有精读过的论文（幂等）
 zotero-mcp update-db --openai-batch        # 通过 OpenAI Batch API 提交（更便宜，异步）
 zotero-mcp openai-batch-status             # 查看批次状态
 zotero-mcp openai-batch-import             # 导入完成的批次
-zotero-mcp db-status                       # 查看数据库状态
+zotero-mcp db-status                       # 查看数据库状态（含 MinerU 缓存进度）
 ```
 
 **在 AI 助手中的语义搜索示例：**
@@ -205,14 +207,42 @@ zotero-mcp setup   # 向导会询问是否配置 MinerU
 }
 ```
 
-### 为什么按场景分流？
+### 两个提取引擎，一个缓存
 
 | 场景 | 用什么 | 原因 |
 |------|--------|------|
-| 语义搜索（批量分析几十上百篇） | PyMuPDF | 毫秒级，embedding 对错乱公式容忍度够用 |
+| 语义搜索（批量，大部分条目） | PyMuPDF / .zotero-ft-cache | 毫秒级，embedding 对错乱公式容忍度够用 |
 | 精读单篇（LLM 读公式表格） | MinerU | 秒~分钟级，但公式/表格准确 |
+| **厚书/长文的完整向量索引** | **MinerU 缓存 → reindex_keys** | MinerU 的按页文本（带 `\f` 分页符）让搜索结果带页码 + 完整切片（不受 20-chunk 上限限制） |
 
 MinerU 结果按 attachment key 缓存（`~/.cache/zotero-mcp/mineru/<key>/`），只存 `.md` 和切分数据，MinerU 的其他副产物（模型 JSON、可视化 PDF、图片）自动丢弃。任何失败都静默回退 PyMuPDF。
+
+### MinerU 驱动的向量索引（用于长文档）
+
+当你通过 `zotero_read_pdf_pages` 精读过一篇论文/书（触发 MinerU 解析）后，按页缓存（`pages.json`）就可用于语义搜索构建路径。运行 `zotero_update_search_database(reindex_keys=["ITEM_KEY"])` 会基于 MinerU 文本构建**完整向量索引**：
+
+- **搜索结果带页码** — MinerU 的按页文本用 `\f` 分页符拼接，`zotero_semantic_search` 结果会包含 `p. N` 定位信息。agent 可直接调 `zotero_read_pdf_pages(item_key, start_page=N)` 精读那一页。
+- **不受 20-chunk 上限限制** — 一本 500 页的书会切出 ~800+ 个 chunk，每一页都可被搜索到。没有 MinerU 缓存的条目仍保持默认 20-chunk 上限。
+- **透明回退** — 如果某条目没有 MinerU 缓存，`reindex_keys` 自动回退到 pdfminer。
+- **幂等** — 重复运行 `reindex_keys` 会跳过已基于有效 MinerU 缓存建过索引的条目（不重复花 embedding 费用）。用 `--force` 可绕过守卫强制重建（如改了 `chunk_size`/`overlap` 或 embedding 模型后）。
+
+这实现了 **"embedding 定位 → MinerU 精读验证"** 闭环工作流：语义搜索找到相关页 → `read_pdf_pages` 返回该页的结构化 Markdown（公式 LaTeX）——全部走缓存，秒回。
+
+```bash
+# 精读过一次后（MinerU 缓存已生成）：
+zotero-mcp update-db --reindex-keys ITEM_KEY        # 构建 MinerU 驱动的向量索引
+
+# 一次性重建所有精读过的论文（幂等 —— 跳过已建过的）：
+zotero-mcp update-db --reindex-cached-mineru
+
+# 强制重新 embed 即使已基于 MinerU 建过索引的条目：
+zotero-mcp update-db --reindex-cached-mineru --force
+
+# 查看有多少论文已缓存 / 已建索引 / 待处理：
+zotero-mcp db-status
+```
+
+`--reindex-cached-mineru` 扫描 MinerU 缓存目录找到所有你精读过的论文，把 attachment key 反查为 parent item key，只重建那些还没基于 MinerU 索引的条目 —— 所以重复运行是安全的。
 
 ## 🔭 NASA ADS 天体物理文献
 
@@ -439,6 +469,16 @@ MinerU 让 `zotero_read_pdf_pages` 输出正确的公式（LaTeX）和表格（H
 | `"pipeline"` | 较慢（CPU） | 高（85+） | 本地 `mineru` CLI |
 
 **降级链**（全自动）：`cloud-vlm → cloud-pipeline → 本地 hybrid → 本地 pipeline → PyMuPDF`。完全不配 MinerU 时，`zotero_read_pdf_pages` 用 PyMuPDF（快，但 LaTeX 论文的公式/表格可能错乱）。
+
+**单次调用指定后端。** `zotero_read_pdf_pages` 工具接受可选的 `backend` 参数（`cloud` / `pipeline` / `hybrid` / `api`），只用指定的方法解析、**跳过跨后端降级链**——当你明确知道用哪个方法时更精确。不传则用配置的后端 + 完整降级链：
+
+```
+# 只用 cloud（失败也不退到本地 CLI）：
+zotero_read_pdf_pages(item_key="AB123456", start_page=1, end_page=10, backend="cloud")
+
+# 只用本地 pipeline：
+zotero_read_pdf_pages(item_key="AB123456", start_page=1, backend="pipeline")
+```
 
 > **缓存**：MinerU 结果缓存在 `~/.cache/zotero-mcp/mineru/<附件key>/`（只存 `fulltext.md` + `pages.json` + `meta.json`，每篇约 50KB）。首次读一篇触发全篇解析；后续读任意页命中缓存 <0.1 秒。PDF 大小变化时缓存失效。
 

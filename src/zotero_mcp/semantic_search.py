@@ -793,6 +793,7 @@ class ZoteroSemanticSearch:
         force_rebuild: bool = False,
         include_fulltext_via_api: bool = False,
         reindex_keys: list[str] | None = None,
+        force_reindex: bool = False,
     ) -> list[dict[str, Any]]:
         """
         Get items from either local database or API.
@@ -816,6 +817,9 @@ class ZoteroSemanticSearch:
             reindex_keys: Optional list of Zotero item keys to force
                 re-extraction/re-embedding (bypasses the "already indexed"
                 skip). Only meaningful with extract_fulltext.
+            force_reindex: With reindex_keys, bypass the MinerU idempotency
+                guard to force re-embedding of items already indexed from
+                MinerU cache. See _get_items_from_local_db.
 
         Returns:
             List of items in API-compatible format
@@ -832,9 +836,68 @@ class ZoteroSemanticSearch:
                 chroma_client=chroma_client,
                 force_rebuild=force_rebuild,
                 reindex_keys=reindex_keys,
+                force_reindex=force_reindex,
             )
         else:
             return self._get_items_from_api(limit, include_fulltext=include_fulltext_via_api)
+
+    def _mineru_index_current(
+        self, chroma_client: ChromaClient, reader: "LocalZoteroReader", item_key: str, item_id: int
+    ) -> bool:
+        """True iff this item is already indexed from a still-valid MinerU cache.
+
+        The idempotency check for ``reindex_keys`` runs: it returns True only
+        when BOTH hold —
+        (a) the stored chunk-0 metadata reports ``fulltext_source='mineru-cache'``
+            (so the index was built from the high-precision parse, not pdfminer),
+        (b) a MinerU cache for one of the item's attachments is still readable
+            on disk (so the PDF hasn't been replaced since the index was built;
+            a replaced PDF would have a size-mismatched cache and re-parsing is
+            desired).
+
+        Returning True means "skip re-embedding — nothing to gain".
+        """
+        chunk0_meta = chroma_client.get_document_metadata(f"{item_key}#0")
+        if not chunk0_meta or chunk0_meta.get("fulltext_source") != "mineru-cache":
+            return False
+        for _akey, _apath, _actype in reader._iter_parent_attachments(item_id):
+            if reader._read_mineru_cache(_akey) is not None:
+                return True
+        return False
+
+    def _resolve_cached_mineru_keys(self) -> list[str]:
+        """Return parent item keys for every attachment with a MinerU cache.
+
+        Scans the MinerU cache directory for attachment keys (each subdir
+        with a usable ``pages.json``), then reverse-maps them to parent
+        item keys via the local Zotero sqlite. Attachments without a
+        parent (standalone) are dropped — they have no metadata document
+        to index. Returns an empty list when MinerU is unconfigured, the
+        cache dir is empty, or local mode is off.
+        """
+        try:
+            from .mineru_client import list_cached_attachment_keys
+
+            att_keys = list_cached_attachment_keys()
+        except Exception as e:
+            logger.warning(f"list_cached_attachment_keys failed: {e}")
+            return []
+        if not att_keys:
+            return []
+        try:
+            with LocalZoteroReader(db_path=self.db_path) as reader:
+                mapping = reader.get_parent_keys_for_attachments(att_keys)
+        except Exception as e:
+            logger.warning(f"get_parent_keys_for_attachments failed: {e}")
+            return []
+        # Deduplicate (one parent may have several cached attachments) and
+        # drop standalone attachments (no parent key returned).
+        parent_keys: list[str] = list(dict.fromkeys(mapping.values()))
+        try:
+            sys.stderr.write(f"Found {len(att_keys)} MinerU cache(s) → {len(parent_keys)} parent item(s) to reindex.\n")
+        except Exception:
+            pass
+        return parent_keys
 
     def _get_items_from_local_db(
         self,
@@ -843,6 +906,7 @@ class ZoteroSemanticSearch:
         chroma_client: ChromaClient | None = None,
         force_rebuild: bool = False,
         reindex_keys: list[str] | None = None,
+        force_reindex: bool = False,
     ) -> list[dict[str, Any]]:
         """
         Get items from local Zotero database.
@@ -856,6 +920,13 @@ class ZoteroSemanticSearch:
                 re-extraction. When set, only these items are returned and
                 the "already indexed" skip is bypassed (they are always
                 re-extracted and re-embedded).
+            force_reindex: When True with reindex_keys, bypass the
+                MinerU idempotency guard too — re-embed even items already
+                indexed from a valid MinerU cache. Use this to force a
+                refresh after changing chunk_size/overlap or the embedding
+                model. Default False: a reindex_keys run skips items that
+                are already ``fulltext_source='mineru-cache'`` with a
+                still-valid cache, saving embedding API cost on repeats.
 
         Returns:
             List of items in API-compatible format
@@ -1007,6 +1078,10 @@ class ZoteroSemanticSearch:
                     extracted = 0
                     skipped_existing = 0
                     updated_existing = 0
+                    # reindex_keys idempotency: items already indexed from a
+                    # still-valid MinerU cache are skipped to avoid redundant
+                    # embedding API calls on repeated reindex runs.
+                    skipped_mineru_up_to_date = 0
                     items_to_process = []
 
                     consecutive_timeouts = 0
@@ -1117,6 +1192,29 @@ class ZoteroSemanticSearch:
                                     should_extract = False
                                     skipped_existing += 1
 
+                        # reindex_keys idempotency guard. The normal skip
+                        # block above is bypassed for reindex_keys (it
+                        # forces re-extraction), but re-running the same
+                        # reindex would then re-embed items already built
+                        # from a valid MinerU cache — pure embedding-API
+                        # waste. So, on a reindex_keys run that is NOT
+                        # force_reindex, skip items whose stored chunk-0
+                        # metadata already reports fulltext_source=
+                        # 'mineru-cache' AND whose MinerU cache is still
+                        # valid (PDF hasn't been replaced). A stale cache
+                        # (size mismatch) falls through to a real reindex,
+                        # which is the desired refresh-on-PDF-replace.
+                        if (
+                            should_extract
+                            and reindex_keys
+                            and chroma_client
+                            and not force_rebuild
+                            and not force_reindex
+                            and self._mineru_index_current(chroma_client, reader, it.key, it.item_id)
+                        ):
+                            should_extract = False
+                            skipped_mineru_up_to_date += 1
+
                         if should_extract:
                             # Extract fulltext if item doesn't have it yet
                             # (skip if circuit breaker has tripped)
@@ -1172,6 +1270,11 @@ class ZoteroSemanticSearch:
                         sys.stderr.write(", ".join(parts) + "\n")
                         if updated_existing > 0:
                             sys.stderr.write(f"  ({updated_existing} items updated with new fulltext)\n")
+                        if skipped_mineru_up_to_date > 0:
+                            sys.stderr.write(
+                                f"  ({skipped_mineru_up_to_date} already indexed from MinerU cache — "
+                                f"up to date, skipped. Use --force to re-embed.)\n"
+                            )
                         if _skipped_pdfs:
                             sys.stderr.write(f"  Skipped {len(_skipped_pdfs)} PDF(s) (timed out):\n")
                             for name in _skipped_pdfs:
@@ -1602,6 +1705,8 @@ class ZoteroSemanticSearch:
         include_fulltext: bool | None = None,
         use_openai_batch: bool | None = None,
         reindex_keys: list[str] | None = None,
+        reindex_cached_mineru: bool = False,
+        force_reindex: bool = False,
     ) -> dict[str, Any]:
         """
         Update the semantic search database with Zotero items.
@@ -1625,6 +1730,19 @@ class ZoteroSemanticSearch:
                 their latest local full-text source. The watermark is
                 NOT promoted on a reindex_keys run (it's a targeted
                 refresh, not a library-version advance).
+            reindex_cached_mineru: When True, expand reindex_keys to every
+                item whose attachment has a MinerU cache on disk (the set of
+                papers the user has 精读'd). The MinerU cache directory is
+                scanned for attachment keys, which are reverse-mapped to
+                parent item keys via the local Zotero sqlite. Combined with
+                the idempotency guard, this re-embeds only items not yet
+                indexed from MinerU — safe to run repeatedly.
+            force_reindex: With reindex_keys / reindex_cached_mineru,
+                bypass the MinerU idempotency guard so items already
+                indexed from a still-valid MinerU cache are re-embedded
+                anyway. Use after changing chunk_size/overlap or the
+                embedding model. Default False: repeat reindex runs are
+                no-ops for already-MinerU-indexed items.
 
         Returns:
             Update statistics
@@ -1684,6 +1802,21 @@ class ZoteroSemanticSearch:
             # reindex_keys: targeted refresh of specific items from their
             # latest local full-text source. Forces the local-extraction
             # path and bypasses the incremental watermark.
+            # reindex_cached_mineru expands reindex_keys to every item that
+            # has a MinerU cache on disk (the set of 精读'd papers). The cache
+            # directory is scanned for attachment keys, reverse-mapped to
+            # parent item keys via the local Zotero sqlite. The idempotency
+            # guard then re-embeds only those not yet indexed from MinerU.
+            if reindex_cached_mineru and not reindex_keys:
+                reindex_keys = self._resolve_cached_mineru_keys()
+                if not reindex_keys:
+                    try:
+                        sys.stderr.write(
+                            "No MinerU caches found — nothing to reindex. "
+                            "Read papers with zotero_read_pdf_pages first.\n"
+                        )
+                    except Exception:
+                        pass
             _is_reindex = bool(reindex_keys)
             if _is_reindex:
                 extract_fulltext = True
@@ -1783,6 +1916,7 @@ class ZoteroSemanticSearch:
                     force_rebuild=force_full_rebuild,
                     include_fulltext_via_api=include_fulltext_via_api,
                     reindex_keys=reindex_keys,
+                    force_reindex=force_reindex,
                 )
                 # A reindex_keys run is a targeted refresh, not a
                 # library-version advance — never promote the watermark so
@@ -2431,6 +2565,47 @@ class ZoteroSemanticSearch:
         """Get status information about the semantic search database."""
         collection_info = self.chroma_client.get_collection_info()
 
+        # MinerU cache observability: how many caches exist on disk, how many
+        # items in the vector DB are already indexed from MinerU, and how many
+        # are pending (have a cache but the index isn't MinerU-sourced yet).
+        # The "pending" count is what --reindex-cached-mineru would process.
+        mineru_cache: dict[str, Any] = {
+            "cached_attachment_keys": 0,
+            "indexed_from_mineru": 0,
+            "pending": None,  # None = unknown (needs local mode to map att→parent)
+        }
+        try:
+            from .mineru_client import list_cached_attachment_keys
+
+            att_keys = list_cached_attachment_keys()
+            mineru_cache["cached_attachment_keys"] = len(att_keys)
+        except Exception:
+            att_keys = set()
+
+        # Count items in the vector DB whose chunk-0 is mineru-cache. We scan
+        # chunk-0 ids only (one per item) to get an item-granular count rather
+        # than a per-chunk count.
+        try:
+            indexed_mineru_keys = self._count_mineru_indexed_items()
+            mineru_cache["indexed_from_mineru"] = indexed_mineru_keys
+        except Exception:
+            indexed_mineru_keys = 0
+
+        # Pending count requires mapping cached attachment keys → parent item
+        # keys (local-mode only) so we can compare against the indexed set.
+        if att_keys and is_local_mode():
+            try:
+                with LocalZoteroReader(db_path=self.db_path) as reader:
+                    mapping = reader.get_parent_keys_for_attachments(att_keys)
+                cached_parents = set(mapping.values())
+                # Items indexed from MinerU that also still have a cache: not pending.
+                # Pending = cached parents NOT already in indexed_mineru_keys.
+                # indexed_mineru_keys is a count here; recompute the key set.
+                pending = len(cached_parents) - indexed_mineru_keys
+                mineru_cache["pending"] = max(0, pending)
+            except Exception:
+                pass
+
         return {
             "collection_info": collection_info,
             "update_config": self.update_config,
@@ -2440,7 +2615,29 @@ class ZoteroSemanticSearch:
             },
             "should_update": self.should_update_database(),
             "last_update": self.update_config.get("last_update"),
+            "mineru_cache": mineru_cache,
         }
+
+    def _count_mineru_indexed_items(self) -> int:
+        """Count distinct items in the vector DB indexed from MinerU cache.
+
+        Scans chunk-0 metadatas (id ends with ``#0``) for
+        ``fulltext_source == 'mineru-cache'``. One chunk-0 per item keeps this
+        item-granular rather than per-chunk.
+        """
+        try:
+            all_res = self.chroma_client.collection.get(include=["metadatas"])
+        except Exception as e:
+            logger.debug(f"_count_mineru_indexed_items query failed: {e}")
+            return 0
+        ids = all_res.get("ids", []) or []
+        metas = all_res.get("metadatas", []) or []
+        count = 0
+        for _id, meta in zip(ids, metas, strict=False):
+            if isinstance(_id, str) and _id.endswith("#0"):
+                if isinstance(meta, dict) and meta.get("fulltext_source") == "mineru-cache":
+                    count += 1
+        return count
 
     def delete_item(self, item_key: str) -> bool:
         """Delete an item from the semantic search database."""

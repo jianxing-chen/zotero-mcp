@@ -201,10 +201,12 @@ def read_paper(item_key: str, focus: str = "") -> str:
             "every page is covered. Do NOT stop after the first batch unless "
             "the paper is ≤50 pages. MinerU caches the parsed PDF after the "
             "first call, so later batches are fast.",
-            f"   After the first read, you'll see a hint to run "
-            f"`zotero_update_search_database(reindex_keys=['{item_key}'])` — "
-            f"do this if the document is long (>50 pages) so future queries "
-            f"can use Strategy A.",
+            f"   After reading the full paper, run "
+            f"`zotero_update_search_database(reindex_keys=['{item_key}'])` to "
+            f"build a MinerU-powered vector index from this high-precision "
+            f"Markdown — the whole PDF has been parsed, so every page becomes "
+            f"searchable with accurate page numbers (增量构建, idempotent). "
+            f"This lets future read_paper calls use Strategy A.",
             "",
             "4. After reading the relevant pages (via either strategy), produce a structured summary:",
             "   - **Research question & motivation**",
@@ -212,6 +214,11 @@ def read_paper(item_key: str, focus: str = "") -> str:
             "   - **Key results** (cite specific numbers, formulas, figures)",
             "   - **Conclusions & limitations**",
             "   Reference page numbers for important findings (e.g. 'p. 12').",
+            "",
+            "If the user later asks to highlight (zotero_create_annotation) text "
+            "from a MinerU-parsed page, prefer plain-text sentences — formulas "
+            "($...$) and HTML tables in MinerU Markdown don't match the PDF text "
+            "layer exactly, so the highlight may fail to locate them.",
             "",
             "If the paper is very long (>200 pages, e.g. a thesis or book) and "
             "Strategy A is unavailable, first use the outline to identify the "

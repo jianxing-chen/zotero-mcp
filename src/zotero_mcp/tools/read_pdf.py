@@ -141,6 +141,10 @@ def _get_pdf_path(item_key: str, ctx: Context) -> tuple[str, str, str | None] | 
         "After the first read, a hint appears suggesting "
         "zotero_update_search_database(reindex_keys=[...]) to build a "
         "page-aware vector index for semantic search. "
+        "backend: optional — pin a single MinerU method ('cloud', 'pipeline', "
+        "'hybrid', 'api') to skip the cross-backend fallback chain and use "
+        "ONLY that extractor (more precise when you know which one you want). "
+        "None (default) uses the configured backend with the full fallback. "
         "Otherwise falls back to PyMuPDF text layer. "
         "Requires PyMuPDF: pip install zotero-mcp-server[pdf]"
     ),
@@ -150,6 +154,7 @@ def read_pdf_pages(
     start_page: int,
     end_page: int | None = None,
     *,
+    backend: str | None = None,
     ctx: Context,
 ) -> str:
     """Extract and return text from a specific page range of a PDF.
@@ -158,6 +163,12 @@ def read_pdf_pages(
         item_key: Zotero item key/ID of the paper or its PDF attachment.
         start_page: First page to read (1-indexed).
         end_page: Last page to read (1-indexed). If omitted, reads only start_page.
+        backend: Pin a single MinerU backend — ``"cloud"``, ``"pipeline"``,
+            ``"hybrid"``, or ``"api"``. When set, MinerU uses ONLY that method
+            and skips the cross-backend fallback chain (more precise; use when
+            you know which extractor you want). None (default) uses the
+            configured backend with the full degradation chain. Ignored when
+            MinerU is disabled or a cache hit serves the request.
         ctx: MCP context.
 
     Returns:
@@ -205,7 +216,9 @@ def read_pdf_pages(
             return f"Requested {page_count} pages (max 50). Please narrow your page range."
 
         # --- MinerU preferred path (structured: formulas as LaTeX, tables as HTML) ---
-        mineru_output = _try_mineru(attachment_key, pdf_path, start_page, actual_end, total_pages, title, item_key, ctx)
+        mineru_output = _try_mineru(
+            attachment_key, pdf_path, start_page, actual_end, total_pages, title, item_key, ctx, backend=backend
+        )
         if mineru_output is not None:
             _cleanup_path(pdf_path)
             return mineru_output
@@ -240,11 +253,16 @@ def _try_mineru(
     title: str,
     item_key: str,
     ctx: Context,
+    *,
+    backend: str | None = None,
 ) -> str | None:
     """Attempt MinerU structured extraction. Returns Markdown str, or None to fall back.
 
     None is returned when MinerU is disabled, unavailable, or fails — the caller
     then falls back to PyMuPDF. This guarantees reading always works.
+
+    ``backend`` pins a single MinerU backend (no cross-backend fallback) when
+    set; None uses the configured backend with the full degradation chain.
     """
     config = mineru_client.load_mineru_config()
     if not mineru_client.is_mineru_enabled(config):
@@ -258,9 +276,10 @@ def _try_mineru(
         ctx.warning("MinerU enabled but attachment key unknown; using PyMuPDF fallback.")
         return None
 
-    ctx.info("Extracting with MinerU (structured: formulas + tables)...")
+    backend_label = f" ({backend})" if backend else ""
+    ctx.info(f"Extracting with MinerU{backend_label} (structured: formulas + tables)...")
     try:
-        parsed = mineru_client.read_cached_or_parse(attachment_key, Path(pdf_path), config)
+        parsed = mineru_client.read_cached_or_parse(attachment_key, Path(pdf_path), config, backend_override=backend)
     except Exception as e:
         ctx.warning(f"MinerU parse raised an error; using PyMuPDF fallback: {e}")
         return None
@@ -288,12 +307,16 @@ def _try_mineru(
         )
     # When MinerU just parsed the full document (not a cache hit), the
     # per-page cache is now available for the semantic-search build path.
-    # Nudge the agent to build a complete, page-aware vector index.
+    # Nudge the agent to build a complete, page-aware vector index from
+    # this high-precision Markdown — the whole-PDF parse above means every
+    # page is now searchable (no 20-chunk cap) with accurate page numbers.
     if parsed.source != "mineru:cached":
         output.append(
-            f"**MinerU cache created.** To make this document fully "
-            f"searchable in the semantic index (with page numbers), "
-            f"call: `zotero_update_search_database(reindex_keys=['{item_key}'])`"
+            f"**MinerU cache created (全本 PDF 已解析为高精度 Markdown).** "
+            f"To make this full document searchable with page numbers in "
+            f"semantic search, call: "
+            f"`zotero_update_search_database(reindex_keys=['{item_key}'])` "
+            f"(增量构建 — 只重新 embed 这一篇，不影响其他条目；幂等，可重复调用)"
         )
     output.append("")
 
