@@ -26,6 +26,35 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+
+class DummyCtx:
+    """No-op MCP context for background worker threads.
+
+    Background workers can't use the real MCP ``Context`` — once the
+    tool function returns, the MCP request is complete and ``ctx.info()``
+    calls are no-ops or raise. This class provides the same method
+    signatures (``info``, ``warning``, ``error``) as no-ops, so it can
+    be passed anywhere a ``ctx`` is expected (e.g.
+    ``_try_attach_oa_pdf(..., ctx, ...)``, ``_handle_write_response(resp, ctx)``)
+    without crashing on ``ctx.info(...)``.
+
+    Workers should use this instead of passing ``None`` — ``None`` would
+    crash any helper that calls ``ctx.info()`` without a ``None`` guard
+    (and there are ~39 such call sites in ``_helpers.py`` alone).
+    """
+
+    def info(self, *_args, **_kwargs) -> None:
+        pass
+
+    def warning(self, *_args, **_kwargs) -> None:
+        pass
+
+    def error(self, *_args, **_kwargs) -> None:
+        pass
+
+    def report_progress(self, *_args, **_kwargs) -> None:
+        pass
+
 _TASKS_DIR = Path.home() / ".config" / "zotero-mcp" / "batch_tasks"
 _active_lock = threading.Lock()  # guards the in-memory registry
 _active_tasks: dict[str, threading.Thread] = {}

@@ -23,6 +23,12 @@ from zotero_mcp.tools import _helpers
 
 logger = logging.getLogger(__name__)
 
+# No-op context for background workers — safe drop-in for real MCP ctx.
+# Workers can't use the real Context (request is complete after the tool
+# returns), and passing None crashes helpers that call ctx.info() without
+# a None guard (~39 call sites in _helpers.py).
+from zotero_mcp.batch_runner import DummyCtx  # noqa: E402
+
 # Accessed as _helpers.X so that monkeypatch/mock on the module attribute works.
 CROSSREF_TYPE_MAP = _helpers.CROSSREF_TYPE_MAP
 
@@ -373,7 +379,7 @@ def _batch_update_tags_worker(status, items, add_tags, remove_tags) -> None:
                         return write_zot.update_item(item)
 
                 result = _with_api_lock(_do_update)
-                if _helpers._handle_write_response(result, None):
+                if _helpers._handle_write_response(result, DummyCtx()):
                     updated_count += 1
                     succeeded_items.append({"key": item_key})
                 else:
@@ -620,7 +626,7 @@ def _batch_update_extra_worker(
                     return write_zot.update_item(item)
 
             result = _with_api_lock(_do_update)
-            if _helpers._handle_write_response(result, None):
+            if _helpers._handle_write_response(result, DummyCtx()):
                 updated_count += 1
                 succeeded_items.append({"key": item_key})
             else:
@@ -2590,7 +2596,7 @@ def _merge_duplicates_worker(status, data) -> None:
                 keeper_data["tags"] = [{"tag": t} for t in sorted(set(existing_tags) | all_tags)]
                 _helpers._strip_unwritable_fields(keeper)
                 resp = write_zot.update_item(keeper)
-                return _helpers._handle_write_response(resp, None)
+                return _helpers._handle_write_response(resp, DummyCtx())
 
             if not _with_api_lock(_update_tags):
                 failed_items.append({"key": keeper_key, "detail": "Failed to merge tags"})
@@ -2608,7 +2614,7 @@ def _merge_duplicates_worker(status, data) -> None:
             def _add_coll(ck=coll_key):
                 k = write_zot.item(keeper_key)
                 resp = write_zot.addto_collection(ck, k)
-                return _helpers._handle_write_response(resp, None)
+                return _helpers._handle_write_response(resp, DummyCtx())
 
             if not _with_api_lock(_add_coll):
                 failed_items.append({"key": keeper_key, "detail": f"Collection {coll_key} failed"})
@@ -2642,7 +2648,7 @@ def _merge_duplicates_worker(status, data) -> None:
                     fresh_child.get("data", {})["parentItem"] = keeper_key
                     _helpers._strip_unwritable_fields(fresh_child)
                     resp = write_zot.update_item(fresh_child)
-                    return "moved" if _helpers._handle_write_response(resp, None) else "failed"
+                    return "moved" if _helpers._handle_write_response(resp, DummyCtx()) else "failed"
 
                 result = _with_api_lock(_reparent)
                 if result == "moved":
@@ -3638,7 +3644,7 @@ def _add_by_bibtex_worker(status, entries, coll_keys, tags, attach_mode, if_exis
 
         try:
             reused = _with_api_lock(
-                lambda: _maybe_reuse_existing(read_zot, write_zot, item_data, coll_keys, tags, if_exists, None)
+                lambda: _maybe_reuse_existing(read_zot, write_zot, item_data, coll_keys, tags, if_exists, DummyCtx())
             )
             if reused is not None:
                 succeeded += 1
@@ -3654,7 +3660,7 @@ def _add_by_bibtex_worker(status, entries, coll_keys, tags, attach_mode, if_exis
                         write_zot,
                         item_data,
                         attach_mode,
-                        None,
+                        DummyCtx(),
                         prefer_pub_pdf=True,
                     )
                 )
@@ -3910,7 +3916,7 @@ def _add_by_bibcode_worker(status, bibcodes, coll_keys, tags, attach_mode, if_ex
             #    run before _maybe_reuse_existing (which only checks DOI).
             if if_exists != "duplicate":
                 existing = _with_api_lock(
-                    lambda b=bc: _helpers.find_existing_items(read_zot, bibcode=b, ctx=None)
+                    lambda b=bc: _helpers.find_existing_items(read_zot, bibcode=b, ctx=DummyCtx())
                 )
                 if existing:
                     item = existing[0]
@@ -3921,7 +3927,7 @@ def _add_by_bibcode_worker(status, bibcodes, coll_keys, tags, attach_mode, if_ex
                         )
                     else:
                         summary = _with_api_lock(
-                            lambda it=item: _converge_existing_item(write_zot, it, coll_keys, tags, None)
+                            lambda it=item: _converge_existing_item(write_zot, it, coll_keys, tags, DummyCtx())
                         )
                         bits = []
                         if summary["colls_added"]:
@@ -3940,7 +3946,7 @@ def _add_by_bibcode_worker(status, bibcodes, coll_keys, tags, attach_mode, if_ex
                     continue
 
             reused = _with_api_lock(
-                lambda idata=item_data: _maybe_reuse_existing(read_zot, write_zot, idata, coll_keys, tags, if_exists, None)
+                lambda idata=item_data: _maybe_reuse_existing(read_zot, write_zot, idata, coll_keys, tags, if_exists, DummyCtx())
             )
             if reused is not None:
                 succeeded += 1
@@ -3960,7 +3966,7 @@ def _add_by_bibcode_worker(status, bibcodes, coll_keys, tags, attach_mode, if_ex
                     write_zot,
                     idata,
                     attach_mode,
-                    None,
+                    DummyCtx(),
                     bibcode=b,
                     prefer_pub_pdf=True,
                 )
@@ -4127,7 +4133,7 @@ def _add_by_csl_json_worker(status, entries, coll_keys, tags, attach_mode, if_ex
 
         try:
             reused = _with_api_lock(
-                lambda: _maybe_reuse_existing(read_zot, write_zot, item_data, coll_keys, tags, if_exists, None)
+                lambda: _maybe_reuse_existing(read_zot, write_zot, item_data, coll_keys, tags, if_exists, DummyCtx())
             )
             if reused is not None:
                 succeeded += 1
@@ -4143,7 +4149,7 @@ def _add_by_csl_json_worker(status, entries, coll_keys, tags, attach_mode, if_ex
                         write_zot,
                         item_data,
                         attach_mode,
-                        None,
+                        DummyCtx(),
                         prefer_pub_pdf=True,
                     )
                 )
@@ -5383,14 +5389,14 @@ def _upgrade_preprint_pdfs_worker(status, preprints) -> None:
             # Step 2: download publisher PDF via the cascade.
             pdf_status = _with_api_lock(
                 lambda: _helpers._try_attach_oa_pdf(
-                    write_zot, key, pub_doi, None,
+                    write_zot, key, pub_doi, DummyCtx(),
                     bibcode=pub_bibcode, prefer_pub_pdf=True,
                 )
             )
 
             # Step 3: trash old arXiv PDF if download succeeded.
             if "attached" in (pdf_status or "").lower():
-                _with_api_lock(lambda: _helpers._trash_pdf_attachments(write_zot, key, None))
+                _with_api_lock(lambda: _helpers._trash_pdf_attachments(write_zot, key, DummyCtx()))
                 succeeded += 1
                 succeeded_items.append({"key": key, "detail": "PDF replaced"})
             else:

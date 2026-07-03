@@ -508,3 +508,52 @@ class TestGetBatchTaskStatus:
             assert "Filtered by type: type_a" in result
         finally:
             monkeypatch.undo()
+
+
+# ---------------------------------------------------------------------------
+# DummyCtx — ensures background workers can call ctx.info() without crashing
+# ---------------------------------------------------------------------------
+
+
+class TestDummyCtx:
+    """Verify DummyCtx is a safe drop-in for real ctx in background workers.
+
+    This is the regression test for the bug where background workers passed
+    ctx=None to helpers like _try_attach_oa_pdf, which call ctx.info()
+    without None-guards, causing AttributeError on every PDF cascade hit.
+    """
+
+    def test_info_warning_error_are_noops(self):
+        from zotero_mcp.batch_runner import DummyCtx
+
+        ctx = DummyCtx()
+        # These must not raise
+        ctx.info("test message")
+        ctx.warning("test warning")
+        ctx.error("test error")
+        ctx.report_progress(1, 10, "processing")
+
+    def test_handle_write_response_with_dummy_ctx(self):
+        """_handle_write_response must not crash with DummyCtx."""
+        from zotero_mcp.batch_runner import DummyCtx
+        from zotero_mcp.tools._helpers import _handle_write_response
+
+        # A failed response triggers ctx.error() internally
+        class FakeResp:
+            status_code = 409
+            text = "Conflict"
+
+        # Must not raise — DummyCtx.error() is a no-op
+        result = _handle_write_response(FakeResp(), DummyCtx())
+        assert result is not None
+
+    def test_dummy_ctx_not_none(self):
+        """DummyCtx is truthy and not None — passing it avoids NoneType errors."""
+        from zotero_mcp.batch_runner import DummyCtx
+
+        ctx = DummyCtx()
+        assert ctx is not None
+        assert hasattr(ctx, "info")
+        assert hasattr(ctx, "warning")
+        assert hasattr(ctx, "error")
+
