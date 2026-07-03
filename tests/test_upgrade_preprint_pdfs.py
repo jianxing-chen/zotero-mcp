@@ -436,3 +436,66 @@ class TestUpgradePreprintPdfs:
         assert "Total preprints checked:** 1" in result
         mock_upgrade.assert_called_once()
         assert mock_upgrade.call_args[0][1] == "GOOD111"
+
+    @patch("zotero_mcp.tools.write._helpers.resolve_collection_specs")
+    @patch("zotero_mcp.tools.write._upgrade_single_preprint")
+    @patch("zotero_mcp.tools.write._helpers._get_write_client")
+    def test_collection_scans_named_collection(
+        self, mock_get_client, mock_upgrade, mock_resolve, dummy_ctx, monkeypatch
+    ):
+        """collection='MyFolder' resolves to a key and scans only that collection."""
+        read_zot = MagicMock()
+        preprint_in_coll = self._make_preprint_item(key="INCOLL1")
+        read_zot.collection_items.return_value = [preprint_in_coll]
+        mock_get_client.return_value = (read_zot, MagicMock())
+        mock_resolve.return_value = ["COLLKEY"]
+
+        mock_upgrade.return_value = {"key": "INCOLL1", "status": "not_published", "details": "", "error": ""}
+
+        from zotero_mcp import ads_client
+
+        monkeypatch.setattr(ads_client, "is_available", lambda: True)
+
+        from zotero_mcp import scihub_client
+
+        monkeypatch.setattr(scihub_client, "is_scihub_enabled", lambda cfg: False)
+
+        from zotero_mcp.tools.write import upgrade_preprint_pdfs
+
+        result = upgrade_preprint_pdfs(collection="MyFolder", ctx=dummy_ctx)
+        assert "Total preprints checked:** 1" in result
+        # read_zot.items() (full scan) must NOT be called
+        read_zot.items.assert_not_called()
+        # read_zot.collection_items() was called with the resolved key
+        read_zot.collection_items.assert_called()
+        mock_upgrade.assert_called_once()
+
+    @patch("zotero_mcp.tools.write._upgrade_single_preprint")
+    @patch("zotero_mcp.tools.write._helpers._get_write_client")
+    def test_collection_unfiled_skips_filed_items(self, mock_get_client, mock_upgrade, dummy_ctx, monkeypatch):
+        """collection='_unfiled' only processes preprints with no collections."""
+        read_zot = MagicMock()
+        unfiled_preprint = self._make_preprint_item(key="UNFILED1")
+        # Simulate a filed item (has collections list)
+        filed_preprint = self._make_preprint_item(key="FILED1", title="Filed")
+        filed_preprint["data"]["collections"] = [{"key": "COLLKEY", "name": "SomeFolder"}]
+        read_zot.items.return_value = [unfiled_preprint, filed_preprint]
+        mock_get_client.return_value = (read_zot, MagicMock())
+
+        mock_upgrade.return_value = {"key": "UNFILED1", "status": "not_published", "details": "", "error": ""}
+
+        from zotero_mcp import ads_client
+
+        monkeypatch.setattr(ads_client, "is_available", lambda: True)
+
+        from zotero_mcp import scihub_client
+
+        monkeypatch.setattr(scihub_client, "is_scihub_enabled", lambda cfg: False)
+
+        from zotero_mcp.tools.write import upgrade_preprint_pdfs
+
+        result = upgrade_preprint_pdfs(collection="_unfiled", ctx=dummy_ctx)
+        # Only the unfiled preprint is processed
+        assert "Total preprints checked:** 1" in result
+        mock_upgrade.assert_called_once()
+        assert mock_upgrade.call_args[0][1] == "UNFILED1"

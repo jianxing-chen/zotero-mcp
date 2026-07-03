@@ -4666,11 +4666,11 @@ def upgrade_preprints(limit: int | None = None, *, ctx: Context) -> str:
         "Requires ADS_API_TOKEN. Enable scihub.enabled in config.json to get the "
         "publisher version; without Sci-Hub the cascade falls back to the arXiv "
         "preprint (same as the existing PDF). "
-        "Three modes: (a) scan all preprints with require_bibcode=False (default) "
-        "— processes any preprint with an arXiv ID in Extra; (b) scan with "
-        "require_bibcode=True — only preprints that also have a bibcode in Extra "
-        "(run zotero_enrich_batch first to populate bibcodes); (c) pass item_keys "
-        "to process specific items regardless of Extra content."
+        "Trigger modes: (a) default scan — all preprints with an arXiv ID; "
+        "(b) require_bibcode=True — only preprints that also have a bibcode; "
+        "(c) item_keys=[...] — specific items; "
+        "(d) collection='name or key' — only preprints in that collection; "
+        "(e) collection='_unfiled' — only preprints not in any collection."
     ),
 )
 @with_zotero_api_lock
@@ -4678,12 +4678,16 @@ def upgrade_preprint_pdfs(
     limit: int | None = None,
     item_keys: list[str] | str | None = None,
     require_bibcode: bool = False,
+    collection: str | None = None,
     *,
     ctx: Context,
 ) -> str:
     """Upgrade arXiv preprints: metadata + publisher PDF replacement.
 
     - ``item_keys`` given: targeted mode (no scan, no Extra filter).
+    - ``collection`` given: scan only that collection (or ``_unfiled`` for
+      items not in any collection). Accepts a collection key, name, or
+      '/'-separated path — resolved via ``resolve_collection_specs``.
     - ``require_bibcode=True``: scan only preprints with a bibcode in Extra.
     - ``require_bibcode=False`` (default): scan all preprints with an arXiv ID.
     """
@@ -4719,6 +4723,67 @@ def upgrade_preprint_pdfs(
             preprints.append(item)
             if limit and len(preprints) >= limit:
                 break
+    elif collection:
+        # Collection-scoped scan.
+        if collection.strip().lower() == "_unfiled":
+            # Unfiled: fetch all preprints, filter to those with no collections.
+            ctx.info("Scanning unfiled preprints (not in any collection)...")
+            batch_size = 50
+            start = 0
+            while True:
+                try:
+                    items = read_zot.items(itemType="preprint", start=start, limit=batch_size)
+                except Exception as e:
+                    ctx.error(f"Error fetching preprint items: {e}")
+                    break
+                if not items:
+                    break
+                for it in items:
+                    data = it.get("data", {})
+                    if data.get("collections"):
+                        continue  # filed — skip
+                    extra = data.get("extra")
+                    if require_bibcode:
+                        if _parse_bibcode_from_extra(extra):
+                            preprints.append(it)
+                    else:
+                        if _parse_arxiv_id_from_extra(extra):
+                            preprints.append(it)
+                start += batch_size
+                if len(items) < batch_size:
+                    break
+                if limit and len(preprints) >= limit:
+                    preprints = preprints[:limit]
+                    break
+        else:
+            # Named collection: resolve to key, then fetch its preprints.
+            try:
+                coll_keys = _helpers.resolve_collection_specs(read_zot, [collection], ctx=ctx)
+            except ValueError as e:
+                return f"Error: {e}"
+            if not coll_keys:
+                return f"Error: Collection '{collection}' not found"
+            for coll_key in coll_keys:
+                ctx.info(f"Scanning collection {coll_key} for preprints...")
+                try:
+                    items = _helpers._paginate(
+                        read_zot.collection_items,
+                        coll_key,
+                        itemType="preprint",
+                        max_items=limit,
+                    )
+                except Exception as e:
+                    ctx.error(f"Error fetching items from collection {coll_key}: {e}")
+                    continue
+                for it in items:
+                    data = it.get("data", {})
+                    extra = data.get("extra")
+                    if require_bibcode:
+                        if _parse_bibcode_from_extra(extra):
+                            preprints.append(it)
+                    else:
+                        if _parse_arxiv_id_from_extra(extra):
+                            preprints.append(it)
     else:
         # Scan mode: paginate through all preprint items (server-side
         # itemType filter is cheaper than a client-side scan).
