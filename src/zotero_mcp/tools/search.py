@@ -989,6 +989,9 @@ def semantic_search(query: str, limit: int = 10, filters: dict[str, str] | str |
         "limit: cap on items processed (smoke-testing). "
         "Requires [semantic] and a configured embedding provider. "
         "Check status with zotero_get_search_database_status. "
+        "In local mode (ZOTERO_LOCAL=true), this tool does NOT execute — "
+        "it returns the CLI command to run in your terminal instead, "
+        "to avoid process-lock contention and database corruption. "
         "Example: zotero_update_search_database() after adding papers."
     ),
 )
@@ -1022,6 +1025,44 @@ def update_search_database(
     """
     try:
         ctx.info("Starting semantic search database update...")
+
+        # Local mode guard: the MCP tool holds a process-wide RLock for the
+        # entire update duration. In local mode the scan can take 10-60
+        # minutes (full library walk + PDF extraction + embedding HTTP
+        # calls), which wedges every other Zotero API tool behind the lock.
+        # Worse, if the MCP client spawns multiple server processes, they
+        # each hold an independent RLock and can race on the same ChromaDB,
+        # corrupting it. Redirect to the CLI, which runs without the RLock
+        # and shows a live progress bar. See README "Local Mode CLI Cheat
+        # Sheet".
+        if _utils.is_local_mode():
+            cmd = "zotero-mcp update-db"
+            if force_rebuild:
+                cmd += " --fulltext --force-rebuild"
+            elif reindex_keys:
+                keys_str = ",".join(reindex_keys)
+                cmd = f"zotero-mcp update-db --reindex-keys {keys_str}"
+                if force_reindex:
+                    cmd += " --force"
+            elif reindex_cached_mineru:
+                cmd = "zotero-mcp update-db --reindex-cached-mineru"
+                if force_reindex:
+                    cmd += " --force"
+            else:
+                cmd += " --fulltext"
+            return (
+                "⚠️ In local mode, the vector database update must be run "
+                "from your terminal — not via this MCP tool. The tool holds "
+                "a process-wide lock that can block all other Zotero "
+                "operations for the entire duration (potentially tens of "
+                "minutes), and concurrent MCP server processes can corrupt "
+                "the database.\n\n"
+                f"Run this command in your terminal:\n\n"
+                f"    {cmd}\n\n"
+                "You'll see a live progress bar and the update will complete "
+                "safely.\n"
+                "Check status anytime with: zotero-mcp db-status"
+            )
 
         # Import semantic search module
         try:
