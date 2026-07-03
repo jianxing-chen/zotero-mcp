@@ -308,9 +308,8 @@ class TestUpgradePreprintPdfs:
 
     @patch("zotero_mcp.tools.write._upgrade_single_preprint")
     @patch("zotero_mcp.tools.write._helpers._get_write_client")
-    def test_filters_preprints_without_bibcode(self, mock_get_client, mock_upgrade, dummy_ctx, monkeypatch):
-        """Only preprints with a bibcode: line in Extra are processed in scan mode."""
-        # One with bibcode, one with only arXiv ID (no bibcode)
+    def test_require_bibcode_filters_to_bibcode_only(self, mock_get_client, mock_upgrade, dummy_ctx, monkeypatch):
+        """require_bibcode=True: only preprints with a bibcode: line are processed."""
         with_bibcode = {
             "key": "PRE1",
             "data": {
@@ -339,12 +338,47 @@ class TestUpgradePreprintPdfs:
 
         from zotero_mcp.tools.write import upgrade_preprint_pdfs
 
-        result = upgrade_preprint_pdfs(ctx=dummy_ctx)
-        # Only 1 preprint checked (the one with bibcode)
+        result = upgrade_preprint_pdfs(require_bibcode=True, ctx=dummy_ctx)
         assert "Total preprints checked:** 1" in result
-        # _upgrade_single_preprint called only once (for PRE1)
         mock_upgrade.assert_called_once()
         assert mock_upgrade.call_args[0][1] == "PRE1"
+
+    @patch("zotero_mcp.tools.write._upgrade_single_preprint")
+    @patch("zotero_mcp.tools.write._helpers._get_write_client")
+    def test_default_scans_all_arxiv_preprints(self, mock_get_client, mock_upgrade, dummy_ctx, monkeypatch):
+        """require_bibcode=False (default): all preprints with arXiv ID are processed."""
+        with_bibcode = {
+            "key": "PRE1",
+            "data": {
+                "itemType": "preprint",
+                "title": "Has bibcode",
+                "extra": "arXiv:2401.12345\nbibcode: 2013ApJ...769..127L",
+            },
+        }
+        without_bibcode = {
+            "key": "PRE2",
+            "data": {"itemType": "preprint", "title": "Only arXiv", "extra": "arXiv:2401.99999"},
+        }
+        read_zot = MagicMock()
+        read_zot.items.return_value = [with_bibcode, without_bibcode]
+        mock_get_client.return_value = (read_zot, MagicMock())
+
+        mock_upgrade.return_value = {"key": "", "status": "not_published", "details": "", "error": ""}
+
+        from zotero_mcp import ads_client
+
+        monkeypatch.setattr(ads_client, "is_available", lambda: True)
+
+        from zotero_mcp import scihub_client
+
+        monkeypatch.setattr(scihub_client, "is_scihub_enabled", lambda cfg: False)
+
+        from zotero_mcp.tools.write import upgrade_preprint_pdfs
+
+        result = upgrade_preprint_pdfs(ctx=dummy_ctx)
+        # Both preprints processed (one has bibcode, one has only arXiv)
+        assert "Total preprints checked:** 2" in result
+        assert mock_upgrade.call_count == 2
 
     @patch("zotero_mcp.tools.write._upgrade_single_preprint")
     @patch("zotero_mcp.tools.write._helpers._get_write_client")
