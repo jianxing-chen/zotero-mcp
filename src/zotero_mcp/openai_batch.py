@@ -86,17 +86,20 @@ def create_openai_client(embedding_config: dict[str, Any] | None = None) -> Any:
     return openai.OpenAI(**client_kwargs)
 
 
-def build_embedding_request(record: dict[str, Any], model_name: str) -> dict[str, Any]:
+def build_embedding_request(record: dict[str, Any], model_name: str, dimensions: int | None = None) -> dict[str, Any]:
     """Build one JSONL request object for the OpenAI embeddings endpoint."""
+    body: dict[str, Any] = {
+        "model": model_name,
+        "input": record["document"],
+        "encoding_format": "float",
+    }
+    if dimensions:
+        body["dimensions"] = dimensions
     return {
         "custom_id": record["id"],
         "method": "POST",
         "url": OPENAI_BATCH_ENDPOINT,
-        "body": {
-            "model": model_name,
-            "input": record["document"],
-            "encoding_format": "float",
-        },
+        "body": body,
     }
 
 
@@ -105,6 +108,7 @@ def split_embedding_records(
     model_name: str,
     max_requests: int = OPENAI_BATCH_MAX_REQUESTS,
     max_file_bytes: int = OPENAI_BATCH_MAX_FILE_BYTES,
+    dimensions: int | None = None,
 ) -> list[tuple[list[dict[str, Any]], list[dict[str, Any]]]]:
     """Split records into JSONL-sized chunks accepted by the Batch API."""
     chunks: list[tuple[list[dict[str, Any]], list[dict[str, Any]]]] = []
@@ -113,7 +117,7 @@ def split_embedding_records(
     current_bytes = 0
 
     for record in records:
-        request = build_embedding_request(record, model_name)
+        request = build_embedding_request(record, model_name, dimensions=dimensions)
         line_bytes = len((_json_dumps(request) + "\n").encode("utf-8"))
         if line_bytes > max_file_bytes:
             raise ValueError(f"OpenAI batch request for {record['id']} exceeds the 200 MB file limit")
@@ -218,7 +222,7 @@ def submit_embedding_batches(
         "batches": [],
     }
 
-    chunks = split_embedding_records(records, model_name)
+    chunks = split_embedding_records(records, model_name, dimensions=(embedding_config or {}).get("dimensions"))
     for index, (chunk_records, requests) in enumerate(chunks, start=1):
         stem = f"batch-{index:03d}"
         input_path = run_dir / f"{stem}-input.jsonl"

@@ -444,7 +444,8 @@ Edit `~/.config/zotero-mcp/config.json` and set the `semantic_search` block. You
       "api_key": "your-api-key",
       "base_url": "https://zenmux.ai/api/v1",
       "request_batch_size": 64,
-      "rate_limit_rps": 10
+      "rate_limit_rps": 10,
+      "dimensions": 1024
     },
     "chunking": {
       "enabled": true,
@@ -480,6 +481,8 @@ Edit `~/.config/zotero-mcp/config.json` and set the `semantic_search` block. You
 | HuggingFace (local) | `"qwen"` or any HF model name | — | Runs in-process via sentence-transformers |
 | Ollama (local) | `"ollama"` | `http://localhost:11434` | `OLLAMA_BASE_URL` |
 | ChromaDB default | `"default"` | — | `all-MiniLM-L6-v2`, zero config, 256-token cap |
+
+**`dimensions` (optional)** — Matryoshka dimension reduction for `text-embedding-3-large/small`. When set, the API returns shorter vectors with near-lossless semantic quality (MTEB 64.6 @1024 vs 64.6 @3072 for `text-embedding-3-large`), dramatically reducing ChromaDB storage (~67% at 1024 vs 3072). Omit the field to use the model's default full dimensionality. Requires a `force_full_rebuild` to apply (the dimension probe auto-detects the mismatch and resets the collection). Not supported by Gemini/Ollama/HF embedding functions.
 
 **Reranker options** (set `reranker.type`):
 
@@ -557,7 +560,8 @@ Start Zotero desktop (for local API), then launch your MCP client. Try these:
       "api_key": "your-zenmux-or-openai-key",
       "base_url": "https://zenmux.ai/api/v1",
       "request_batch_size": 64,
-      "rate_limit_rps": 10
+      "rate_limit_rps": 10,
+      "dimensions": 1024
     },
     "include_fulltext": true,
     "zotero_db_path": "/Users/you/Documents/Zotero/zotero.sqlite",

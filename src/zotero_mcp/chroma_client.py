@@ -53,6 +53,7 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
         base_url: str | None = None,
         request_batch_size: int | None = None,
         rate_limit_rps: float | None = None,
+        dimensions: int | None = None,
     ):
         import threading
 
@@ -61,6 +62,11 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
         self.base_url = base_url or os.getenv("OPENAI_BASE_URL")
         self.request_batch_size = int(request_batch_size) if request_batch_size else self.DEFAULT_REQUEST_BATCH_SIZE
         self.rate_limit_rps: float | None = float(rate_limit_rps) if rate_limit_rps else None
+        # Optional Matryoshka dimension reduction (text-embedding-3-* only).
+        # When set, the API returns shorter vectors with near-lossless semantic
+        # quality, dramatically reducing ChromaDB storage (≈67% at 1024 vs
+        # 3072). None = use the model's default full dimensionality.
+        self.dimensions: int | None = int(dimensions) if dimensions else None
         self._rate_lock = threading.Lock()
         self._last_request_ts: float = 0.0
         if not self.api_key:
@@ -86,6 +92,7 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
             "base_url": self.base_url,
             "request_batch_size": self.request_batch_size,
             "rate_limit_rps": self.rate_limit_rps,
+            "dimensions": self.dimensions,
         }
 
     @staticmethod
@@ -96,6 +103,7 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
             base_url=config.get("base_url"),
             request_batch_size=config.get("request_batch_size"),
             rate_limit_rps=config.get("rate_limit_rps"),
+            dimensions=config.get("dimensions"),
         )
 
     def _wait_for_rate_limit(self) -> None:
@@ -127,15 +135,24 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
         respond deterministically.
         """
         batch_size = self.request_batch_size or self.DEFAULT_REQUEST_BATCH_SIZE
+        # Pass dimensions only when explicitly set; some OpenAI-compatible
+        # backends (e.g. certain OpenRouter models) reject the parameter, so we
+        # omit it rather than risk a 400 on backends that don't support
+        # Matryoshka dimension reduction. Use getattr for __new__-constructed
+        # instances in tests that bypass __init__.
+        dims = getattr(self, "dimensions", None)
         vecs: Embeddings = []
         for i in range(0, len(input), batch_size):
             sub = input[i : i + batch_size]
             self._wait_for_rate_limit()
-            response = self.client.embeddings.create(
-                model=self.model_name,
-                input=sub,
-                encoding_format="float",
-            )
+            create_kwargs: dict[str, Any] = {
+                "model": self.model_name,
+                "input": sub,
+                "encoding_format": "float",
+            }
+            if dims:
+                create_kwargs["dimensions"] = dims
+            response = self.client.embeddings.create(**create_kwargs)
             vecs.extend(data.embedding for data in response.data)
         return vecs
 
@@ -575,6 +592,7 @@ class ChromaClient:
                 base_url=base_url,
                 request_batch_size=self.embedding_config.get("request_batch_size"),
                 rate_limit_rps=self.embedding_config.get("rate_limit_rps"),
+                dimensions=self.embedding_config.get("dimensions"),
             )
 
         elif self.embedding_model == "gemini":

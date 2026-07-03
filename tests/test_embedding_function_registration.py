@@ -77,3 +77,20 @@ def test_openai_build_from_config_handles_persisted_config(monkeypatch):
     assert cfg["base_url"] is None
     assert cfg["request_batch_size"] == chroma_client.OpenAIEmbeddingFunction.DEFAULT_REQUEST_BATCH_SIZE
     assert cfg["rate_limit_rps"] is None
+    # Configs persisted before the dimensions field existed must rebuild with
+    # dimensions=None (model default), not raise.
+    assert cfg["dimensions"] is None
+
+
+def test_openai_build_from_config_preserves_dimensions(monkeypatch):
+    """A persisted config carrying dimensions must round-trip through build_from_config."""
+    pytest.importorskip("openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key-no-network")
+
+    persisted = {"model_name": "text-embedding-3-large", "base_url": None, "dimensions": 1024}
+    ef = known_embedding_functions["openai"].build_from_config(persisted)
+
+    assert isinstance(ef, chroma_client.OpenAIEmbeddingFunction)
+    assert ef.dimensions == 1024
+    cfg = ef.get_config()
+    assert cfg["dimensions"] == 1024

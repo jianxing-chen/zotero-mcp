@@ -11,13 +11,14 @@ import threading
 from zotero_mcp.chroma_client import OpenAIEmbeddingFunction
 
 
-def _make(batch_size=64, rps=None):
+def _make(batch_size=64, rps=None, dimensions=None):
     """Build an OpenAIEmbeddingFunction with a fake client, bypassing __init__."""
     ef = OpenAIEmbeddingFunction.__new__(OpenAIEmbeddingFunction)
     ef.model_name = "text-embedding-3-small"
     ef.base_url = None
     ef.request_batch_size = batch_size
     ef.rate_limit_rps = rps
+    ef.dimensions = dimensions
     ef._rate_lock = threading.Lock()
     ef._last_request_ts = 0.0
 
@@ -30,9 +31,9 @@ def _make(batch_size=64, rps=None):
 
     class _Embeddings:
         @staticmethod
-        def create(model, input, encoding_format):
-            calls.append({"input": list(input), "encoding_format": encoding_format})
-            return _Resp(input)
+        def create(**kwargs):
+            calls.append(kwargs)
+            return _Resp(kwargs["input"])
 
     class _Client:
         embeddings = _Embeddings()
@@ -63,6 +64,23 @@ def test_encoding_format_is_float_on_every_request():
     assert calls and all(c["encoding_format"] == "float" for c in calls)
 
 
+def test_dimensions_passed_to_create_when_set():
+    """When ef.dimensions is set, every embeddings.create call receives it."""
+    ef, calls = _make(batch_size=2, dimensions=1024)
+    ef([0, 1, 2, 3])
+    assert len(calls) == 2
+    assert all(c["dimensions"] == 1024 for c in calls)
+
+
+def test_dimensions_omitted_when_none():
+    """When ef.dimensions is None, the dimensions kwarg must NOT be sent (backends
+    that don't support Matryoshka reduction would 400)."""
+    ef, calls = _make(batch_size=64, dimensions=None)
+    ef([0, 1, 2])
+    assert len(calls) == 1
+    assert "dimensions" not in calls[0]
+
+
 def test_rate_limit_noop_when_unset():
     ef, _ = _make(rps=None)
     # Should return immediately and not raise.
@@ -77,8 +95,9 @@ def test_rate_limit_records_timestamp_when_set():
 
 
 def test_get_config_roundtrips_new_fields():
-    ef, _ = _make(batch_size=128, rps=5.0)
+    ef, _ = _make(batch_size=128, rps=5.0, dimensions=1024)
     cfg = ef.get_config()
     assert cfg["request_batch_size"] == 128
     assert cfg["rate_limit_rps"] == 5.0
     assert cfg["model_name"] == "text-embedding-3-small"
+    assert cfg["dimensions"] == 1024

@@ -37,6 +37,26 @@ def test_build_embedding_request_uses_batch_embeddings_shape():
     }
 
 
+def test_build_embedding_request_includes_dimensions_when_set():
+    """When dimensions is provided, the batch request body must carry it so the
+    async Batch API produces vectors at the reduced dimensionality."""
+    record = {"id": "ABC123", "document": "paper text", "metadata": {"title": "A"}}
+
+    request = openai_batch.build_embedding_request(record, "text-embedding-3-large", dimensions=1024)
+
+    assert request["body"]["dimensions"] == 1024
+
+
+def test_build_embedding_request_omits_dimensions_when_none():
+    """When dimensions is None, the body must NOT contain a dimensions key
+    (backends that don't support Matryoshka reduction would reject it)."""
+    record = {"id": "ABC123", "document": "paper text", "metadata": {"title": "A"}}
+
+    request = openai_batch.build_embedding_request(record, "text-embedding-3-small", dimensions=None)
+
+    assert "dimensions" not in request["body"]
+
+
 def test_split_embedding_records_respects_request_limit():
     records = [{"id": f"ID{i}", "document": f"text {i}", "metadata": {}} for i in range(3)]
 
