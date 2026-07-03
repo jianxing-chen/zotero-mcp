@@ -246,6 +246,39 @@ def get_pdf_url(bibcode: str, prefer: str = "eprint") -> str | None:
     return None
 
 
+def get_pdf_url_by_doi(doi: str, prefer: str = "pub") -> tuple[str | None, str | None]:
+    """Resolve a PDF URL from a DOI via ADS, returning ``(pdf_url, bibcode)``.
+
+    Looks up the bibcode by searching ADS with the fielded query ``doi:<doi>``
+    (the canonical resolution pattern used elsewhere in this repo), then calls
+    :func:`get_pdf_url` with that bibcode.
+
+    Args:
+        doi: a normalized DOI (e.g. ``"10.1038/nature12373"``).
+        prefer: ``"pub"`` (default — prefer the publisher PDF, useful when the
+            caller's network has an institutional subscription) or ``"eprint"``
+            (prefer the arXiv preprint, which is usually open access).
+            :func:`get_pdf_url` internally falls back from PUB_PDF to EPRINT_PDF
+            when the preferred endpoint is unavailable.
+
+    Returns:
+        ``(pdf_url, bibcode)`` on success, ``(None, None)`` if the DOI is not
+        in ADS, the token is rejected, or the request otherwise fails. The
+        bibcode is returned so callers can store it on the item without a
+        second round-trip.
+    """
+    if not doi:
+        return None, None
+    docs = search(f"doi:{doi}", fl=_FULL_FIELDS, rows=1)
+    if not docs:
+        return None, None
+    bibcode = docs[0].get("bibcode")
+    if not bibcode:
+        return None, None
+    pdf_url = get_pdf_url(bibcode, prefer=prefer)
+    return pdf_url, bibcode
+
+
 # --------------------------------------------------------------------------- #
 # Export (citation formats: BibTeX, AASTeX, etc.)
 # --------------------------------------------------------------------------- #

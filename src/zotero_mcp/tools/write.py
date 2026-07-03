@@ -1139,9 +1139,17 @@ def add_by_doi(
             missing = _helpers.ensure_collection_membership(write_zot, item_key, coll_keys, ctx=ctx)
             collections_status = _collections_status(coll_keys, missing)
 
-            # Attempt open-access PDF attachment (pass CrossRef metadata for arXiv fallback)
+            # Attempt open-access PDF attachment (pass CrossRef metadata for arXiv fallback).
+            # prefer_pub_pdf=True because a DOI import usually targets the published version,
+            # and most users enabling the ADS cascade have institutional subscription access.
             pdf_status = _helpers._try_attach_oa_pdf(
-                write_zot, item_key, normalized, ctx, crossref_metadata=cr, attach_mode=attach_mode
+                write_zot,
+                item_key,
+                normalized,
+                ctx,
+                crossref_metadata=cr,
+                attach_mode=attach_mode,
+                prefer_pub_pdf=True,
             )
 
             return (
@@ -3123,12 +3131,20 @@ def _create_and_attach(
     item_data: dict,
     attach_mode: str,
     ctx: Context,
+    *,
+    bibcode: str | None = None,
+    prefer_pub_pdf: bool = False,
 ) -> dict:
     """Create one Zotero item and, if it has a DOI, try to attach an OA PDF.
 
     Returns a dict ``{"ok": bool, "key": str|None, "doi": str|None,
     "pdf_status": str|None, "error": str|None, "title": str,
     "collections_failed": list[str]}``.
+
+    ``bibcode`` short-circuits the ADS DOI→bibcode round-trip when the caller
+    already knows it (e.g. ``add_by_bibcode``). ``prefer_pub_pdf=True`` makes
+    the ADS source prefer the publisher PDF over the arXiv preprint — useful
+    on networks with institutional subscription access.
     """
     title = item_data.get("title") or "(untitled)"
     try:
@@ -3168,7 +3184,15 @@ def _create_and_attach(
     pdf_status = None
     if doi:
         try:
-            pdf_status = _helpers._try_attach_oa_pdf(write_zot, item_key, doi, ctx, attach_mode=attach_mode)
+            pdf_status = _helpers._try_attach_oa_pdf(
+                write_zot,
+                item_key,
+                doi,
+                ctx,
+                attach_mode=attach_mode,
+                bibcode=bibcode,
+                prefer_pub_pdf=prefer_pub_pdf,
+            )
         except Exception as e:
             pdf_status = f"OA PDF attach failed: {e}"
 
@@ -3376,7 +3400,17 @@ def add_by_bibtex(
                 continue
 
             _apply_caller_tags_and_collections(item_data, tags, coll_keys)
-            results.append(_create_and_attach(write_zot, item_data, attach_mode, ctx))
+            # prefer_pub_pdf=True: entries with a DOI usually describe the
+            # published version; prefer the publisher PDF (institutional access).
+            results.append(
+                _create_and_attach(
+                    write_zot,
+                    item_data,
+                    attach_mode,
+                    ctx,
+                    prefer_pub_pdf=True,
+                )
+            )
 
         return _format_batch_result("# zotero_add_by_bibtex", results)
 
@@ -3386,7 +3420,12 @@ def add_by_bibtex(
 
 
 def _try_ads_pdf(write_zot, item_key: str, bibcode: str, ctx: Context) -> str | None:
-    """Attempt to attach a PDF via the ADS link_gateway.
+    """Attempt to attach a PDF via the ADS link_gateway (legacy direct attach).
+
+    Retained for callers that want to attach an ADS PDF to an already-created
+    item outside the OA cascade. The main bibcode import path now routes ADS
+    through ``_helpers._try_attach_oa_pdf`` (ADS is the first source in the
+    reordered cascade), so this function is currently unused at runtime.
 
     Returns a status string (for the batch result) or None. Uses
     ``_helpers._download_and_attach_pdf`` which applies SSRF guards on every
@@ -3583,18 +3622,17 @@ def add_by_bibcode(
                 continue
 
             _apply_caller_tags_and_collections(item_data, tags, coll_keys)
-            created = _create_and_attach(write_zot, item_data, attach_mode, ctx)
-
-            # If OA cascade didn't actually attach a PDF, try ADS link_gateway
-            # (arXiv EPRINT_PDF is often OA even when the publisher PDF is
-            # paywalled). _try_attach_oa_pdf returns a non-None status string
-            # even on failure (e.g. "no OA PDF could be downloaded"), so check
-            # whether a PDF was actually attached rather than just non-None.
-            pdf_attached = bool(created.get("pdf_status")) and "attached" in (created.get("pdf_status") or "").lower()
-            if created["ok"] and not pdf_attached:
-                ads_pdf = _try_ads_pdf(write_zot, created["key"], bc, ctx)
-                if ads_pdf:
-                    created["pdf_status"] = ads_pdf
+            # bibcode is known here, so pass it in to short-circuit the ADS
+            # DOI→bibcode lookup. prefer_pub_pdf=True because ADS bibcode imports
+            # are astronomy papers and most users have institutional access.
+            created = _create_and_attach(
+                write_zot,
+                item_data,
+                attach_mode,
+                ctx,
+                bibcode=bc,
+                prefer_pub_pdf=True,
+            )
 
             results.append(created)
 
@@ -3697,7 +3735,17 @@ def add_by_csl_json(
                 continue
 
             _apply_caller_tags_and_collections(item_data, tags, coll_keys)
-            results.append(_create_and_attach(write_zot, item_data, attach_mode, ctx))
+            # prefer_pub_pdf=True: entries with a DOI usually describe the
+            # published version; prefer the publisher PDF (institutional access).
+            results.append(
+                _create_and_attach(
+                    write_zot,
+                    item_data,
+                    attach_mode,
+                    ctx,
+                    prefer_pub_pdf=True,
+                )
+            )
 
         return _format_batch_result("# zotero_add_by_csl_json", results)
 

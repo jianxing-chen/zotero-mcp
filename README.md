@@ -284,7 +284,7 @@ Integrate NASA ADS (Astrophysics Data System) for literature search, import, and
 **`zotero_add_by_bibcode`** — import by bibcode:
 ```
 bibcode → ADS search API → structured fields → CSL-JSON → reuse existing batch pipeline
-→ bibcode stored in Extra field → OA PDF cascade (Unpaywall/arXiv) + ADS link_gateway fallback
+→ bibcode stored in Extra field → PDF cascade: ADS (PUB_PDF first, EPRINT_PDF fallback) → Sci-Hub (if enabled) → arXiv → Unpaywall → S2 → PMC
 ```
 
 **`zotero_search_ads`** — fielded search:
@@ -305,6 +305,38 @@ identifier="2003ApJ...589L..21B" direction="both"
 - ADS unreachable / rate-limited → exponential backoff retry (2s/4s/8s), reads `X-RateLimit-Reset`
 - PDF paywalled → silently skipped, import still succeeds (metadata without PDF)
 - All third-party PDF URLs pass through SSRF guards (rejects private/loopback/cloud-metadata hosts, re-validates each redirect hop)
+
+### PDF download cascade
+
+When importing a paper with a DOI (via `add_by_doi`, `add_by_bibcode`, `add_by_bibtex`, `add_by_csl_json`), the server tries these PDF sources in order and stops at the first that yields a downloadable file:
+
+1. **ADS link_gateway** (requires `ADS_API_TOKEN`) — prefers the publisher PDF (`PUB_PDF`) when `prefer_pub_pdf=True`, falling back to the arXiv preprint (`EPRINT_PDF`). On networks with institutional subscription access, the publisher PDF usually downloads directly.
+2. **Sci-Hub** (opt-in, disabled by default — see below)
+3. **arXiv** (via CrossRef relations — always open access)
+4. **Unpaywall**
+5. **Semantic Scholar**
+6. **PubMed Central**
+
+All sources return only a URL; the bytes are fetched through `_download_and_attach_pdf`, which applies the same SSRF guards (private-host rejection, per-redirect re-validation) to every source including Sci-Hub.
+
+### Sci-Hub integration (opt-in, disabled by default)
+
+Sci-Hub is a shadow library providing free access to paywalled papers. It is **off by default**; you must explicitly enable it in `~/.config/zotero-mcp/config.json`:
+
+```jsonc
+{
+  "scihub": {
+    "enabled": true,
+    "domain": "sci-hub.ru"   // override when the domain rotates
+  }
+}
+```
+
+When enabled, Sci-Hub is the second source tried (after ADS, before arXiv). When disabled, the cascade skips it entirely and degrades to the original arXiv → Unpaywall → S2 → PMC chain.
+
+> ⚠️ **Compliance**: Sci-Hub's legal status varies by jurisdiction. Enabling it is your own choice; this repo provides the capability but does not enable it for you and offers no legal advice. Confirm your jurisdiction's regulations before turning it on.
+
+The `domain` field is configurable because Sci-Hub's primary domain rotates frequently; change it in config at any time without touching code. The client resolves the PDF URL by querying `{domain}/{doi}` and parsing the returned HTML for an `<iframe>`/`<embed>`/JS-redirect pointing at the PDF — it does not download the bytes itself, so the existing SSRF guard applies uniformly.
 
 ## 🖥️ Setup & Usage
 
@@ -576,6 +608,10 @@ Start Zotero desktop (for local API), then launch your MCP client. Try these:
   "mineru": {
     "enabled": true, "backend": "cloud", "cloud_token": "your-mineru-token",
     "cloud_model": "vlm", "executable": "/usr/local/bin/mineru", "timeout": 600
+  },
+  "scihub": {
+    "enabled": false,
+    "domain": "sci-hub.ru"
   },
   "client_env": {
     "ZOTERO_LOCAL": "true",

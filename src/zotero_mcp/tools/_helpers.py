@@ -11,7 +11,9 @@ from urllib.parse import urljoin, urlparse
 
 import requests
 
+from zotero_mcp import ads_client as _ads_client
 from zotero_mcp import client as _client
+from zotero_mcp import scihub_client as _scihub
 from zotero_mcp import utils as _utils
 
 # ---------------------------------------------------------------------------
@@ -1001,14 +1003,97 @@ def _try_pmc(doi, ctx):
         return None
 
 
-def _try_attach_oa_pdf(write_zot, item_key, doi, ctx, crossref_metadata=None, attach_mode="auto"):
-    """Attempt to find and attach an open-access PDF for a DOI."""
-    sources = [
-        ("Unpaywall", lambda: _try_unpaywall(doi, ctx)),
-        ("arXiv (via CrossRef)", lambda: _try_arxiv_from_crossref(crossref_metadata, ctx)),
-        ("Semantic Scholar", lambda: _try_semantic_scholar(doi, ctx)),
-        ("PubMed Central", lambda: _try_pmc(doi, ctx)),
-    ]
+def _try_ads_pdf_url(bibcode, prefer_pub_pdf, ctx):
+    """Return an ADS link_gateway PDF URL for a known bibcode, or None.
+
+    Thin wrapper around ``ads_client.get_pdf_url`` so the cascade treats ADS
+    like the other URL resolvers (Unpaywall, arXiv, …) — it returns a URL,
+    and the cascade's download step (``_download_and_attach_pdf``) handles the
+    actual fetch with SSRF guards.
+    """
+    try:
+        prefer = "pub" if prefer_pub_pdf else "eprint"
+        url = _ads_client.get_pdf_url(bibcode, prefer=prefer)
+        if url:
+            ctx.info(f"ADS: link_gateway PDF for {bibcode} ({prefer})")
+        return url
+    except Exception as e:
+        ctx.info(f"ADS URL lookup failed: {e}")
+        return None
+
+
+def _try_ads_pdf_url_by_doi(doi, prefer_pub_pdf, ctx):
+    """Resolve an ADS PDF URL from a DOI via ``ads_client.get_pdf_url_by_doi``.
+
+    Used when the cascade has a DOI but no bibcode (the common case for
+    ``add_by_doi`` and the batch importers). Returns only the PDF URL — the
+    resolved bibcode is discarded here since the caller has no use for it.
+    """
+    try:
+        prefer = "pub" if prefer_pub_pdf else "eprint"
+        url, _bibcode = _ads_client.get_pdf_url_by_doi(doi, prefer=prefer)
+        if url:
+            ctx.info(f"ADS: resolved PDF via DOI lookup ({prefer})")
+        return url
+    except Exception as e:
+        ctx.info(f"ADS DOI lookup failed: {e}")
+        return None
+
+
+def _try_attach_oa_pdf(
+    write_zot,
+    item_key,
+    doi,
+    ctx,
+    crossref_metadata=None,
+    attach_mode="auto",
+    *,
+    bibcode=None,
+    prefer_pub_pdf=False,
+):
+    """Attempt to find and attach an open-access PDF for a DOI.
+
+    Sources are tried in priority order:
+
+    1. **ADS** (when an ``ADS_API_TOKEN`` is configured) — uses the bibcode if
+       the caller already has one, otherwise resolves via ``doi:<doi>``. With
+       ``prefer_pub_pdf=True`` the publisher PDF is tried first (useful on
+       networks with institutional subscription), falling back to the arXiv
+       preprint inside ``ads_client.get_pdf_url``.
+    2. **Sci-Hub** (opt-in via ``config.json``'s ``scihub.enabled``). Disabled
+       by default; confirm your jurisdiction's regulations before enabling.
+    3. **arXiv** (via CrossRef relations — always open access).
+    4. **Unpaywall**.
+    5. **Semantic Scholar**.
+    6. **PubMed Central**.
+
+    ``bibcode`` and ``prefer_pub_pdf`` are keyword-only. ``bibcode`` short-
+    circuits the ADS DOI→bibcode round-trip when the caller already knows it
+    (e.g. ``add_by_bibcode``).
+    """
+    sources: list[tuple[str, object]] = []
+
+    # 1. ADS — top priority when configured.
+    if _ads_client.is_available():
+        if bibcode:
+            sources.append(("ADS", lambda: _try_ads_pdf_url(bibcode, prefer_pub_pdf, ctx)))
+        elif doi:
+            sources.append(("ADS", lambda: _try_ads_pdf_url_by_doi(doi, prefer_pub_pdf, ctx)))
+
+    # 2. Sci-Hub — opt-in via config.json. find_pdf_url() self-gates on the
+    #    enabled flag, but we check it here too so the source name doesn't
+    #    appear in the cascade at all when disabled.
+    if _scihub.is_scihub_enabled(_scihub.load_scihub_config()):
+        sources.append(("Sci-Hub", lambda: _scihub.find_pdf_url(doi, ctx)))
+
+    # 3. arXiv (via CrossRef relations — always OA).
+    sources.append(("arXiv (via CrossRef)", lambda: _try_arxiv_from_crossref(crossref_metadata, ctx)))
+    # 4. Unpaywall.
+    sources.append(("Unpaywall", lambda: _try_unpaywall(doi, ctx)))
+    # 5. Semantic Scholar.
+    sources.append(("Semantic Scholar", lambda: _try_semantic_scholar(doi, ctx)))
+    # 6. PubMed Central.
+    sources.append(("PubMed Central", lambda: _try_pmc(doi, ctx)))
 
     found_urls = []  # Track URLs found but not downloadable
 
@@ -1040,7 +1125,7 @@ def _try_attach_oa_pdf(write_zot, item_key, doi, ctx, crossref_metadata=None, at
             "you may be able to access it through your university library or VPN"
         )
 
-    return "no open-access PDF found (checked Unpaywall, arXiv, Semantic Scholar, PMC)"
+    return "no open-access PDF found (checked ADS, Sci-Hub, arXiv, Unpaywall, Semantic Scholar, PMC)"
 
 
 # ---------------------------------------------------------------------------
