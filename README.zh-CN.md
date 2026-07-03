@@ -24,6 +24,81 @@
 
 ---
 
+## ⌨️ 本地模式 CLI 命令速查
+
+> **为什么单独列一节？** 在本地/混合模式下，通过 MCP 调用 `zotero_update_search_database` 工具会在客户端层超时（~60s），但服务端的任务仍在后台继续运行并持有一个进程内锁——之后所有工具调用都会报错 *"Another Zotero API operation is still in progress"*。直接在终端里跑这些命令可以完全避免这个问题：没有客户端超时、没有锁、还能看到实时进度条。
+
+以下所有命令都会自动读取 `~/.config/zotero-mcp/config.json` 里的 `client_env`，所以**不需要**在前面加 `ZOTERO_LOCAL=true ZOTERO_API_KEY=...` 等环境变量。
+
+### 查看状态（不加锁，随时可跑）
+
+```bash
+# 查看向量库状态：文档数、上次更新时间、embedding 模型、
+# MinerU 缓存数量、是否需要更新。
+zotero-mcp db-status
+
+# 检查已索引的文档——按标题/作者搜索、看聚合统计、
+# 或查看存储的文档文本开头。用于确认某篇论文是否真的在向量库里。
+zotero-mcp db-inspect --stats
+zotero-mcp db-inspect --filter "Spergel" --show-documents
+```
+
+### 更新向量数据库
+
+```bash
+# 仅索引元数据（标题、摘要、作者、标签）。快，不含 PDF 全文。
+# 不需要全文语义搜索时用这个。
+zotero-mcp update-db
+
+# 全文索引：从本地 Zotero 存储提取 PDF 文本并嵌入。
+# 本地/混合模式推荐使用这个命令。
+# 首次运行较慢（大型文献库可能需要数分钟到数小时），
+# 但后续运行会跳过已是最新的条目。
+zotero-mcp update-db --fulltext
+
+# 强制完全重建——删除现有集合并从头嵌入所有内容。
+# 仅在更换了 embedding 模型（向量维度不同）、chunk_size/overlap、
+# 或数据库损坏时使用。embedding API 调用成本最高。
+zotero-mcp update-db --fulltext --force-rebuild
+
+# 仅重新嵌入指定条目（例如修改了元数据或替换了 PDF 之后）。
+# 有 MinerU '精读' 缓存时会复用。比全量扫描快得多，因为跳过了库遍历。
+zotero-mcp update-db --reindex-keys ABC12345,DEF67890
+
+# 重新嵌入所有'精读'过的论文（通过 zotero_read_pdf_pages 读过的）。
+# 幂等——已从有效 MinerU 缓存索引的条目会被跳过。
+# 加 --force 可绕过幂等保护（例如修改了 chunk_size/overlap 或 embedding 模型后）。
+zotero-mcp update-db --reindex-cached-mineru
+zotero-mcp update-db --reindex-cached-mineru --force
+```
+
+### 什么情况跑什么命令
+
+| 场景 | 命令 |
+|------|------|
+| 首次启用语义搜索 | `update-db --fulltext` |
+| 在 Zotero 里增删了论文 | `update-db --fulltext`（跳过已最新的条目） |
+| 修改了某篇论文的元数据或替换了 PDF | `update-db --reindex-keys <KEY>` |
+| 精读了论文后想要页级搜索 | `update-db --reindex-cached-mineru` |
+| 更换了 embedding 模型 / chunk_size | `update-db --fulltext --force-rebuild` |
+| 只想看看数据库需不需要更新 | `db-status`（不写入，不加锁） |
+| 向量库不一致 / 疑似损坏 | `update-db --fulltext --force-rebuild` |
+| 想用更便宜的异步嵌入（仅 OpenAI） | `update-db --openai-batch`，然后 `openai-batch-status` / `openai-batch-import` |
+
+### OpenAI Batch API（异步，更便宜）
+
+如果你的文献库较大，想节省 embedding 成本，可以异步提交批量任务，稍后导入：
+
+```bash
+zotero-mcp update-db --fulltext --openai-batch   # 提交，立即返回
+zotero-mcp openai-batch-status                    # 查看进度
+zotero-mcp openai-batch-import                    # 导入完成的嵌入
+```
+
+> **⚠️ 本地模式下切勿通过 AI 助手触发 `zotero_update_search_database`。** MCP 客户端会在 ~60s 后超时，但服务端任务仍在运行并持有进程级锁，阻塞所有其他工具。请改在终端里跑 `zotero-mcp update-db --fulltext`——你能看到实时进度条，锁也不会卡死。
+
+---
+
 ## ✨ 功能特性
 
 ### 🧠 AI 语义搜索
