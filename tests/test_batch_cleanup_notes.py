@@ -132,10 +132,16 @@ def test_dry_run_footer_has_instruction(monkeypatch):
 # ---------------------------------------------------------------------------
 # dry_run=False (execute) tests
 # ---------------------------------------------------------------------------
+# NOTE: execute path now spawns a background task and returns a task_id.
+# The actual deletion happens in the background thread. See
+# test_batch_runner.py for the full integration test.
 
 
-def test_execute_trashes_matched_notes(monkeypatch):
-    """dry_run=False should call patch for each matched note."""
+def test_execute_returns_task_id(monkeypatch, tmp_path):
+    """dry_run=False should return a task_id, not trashing synchronously."""
+    monkeypatch.setattr(
+        "zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks"
+    )
     notes = [
         _make_note("N0000001"),
         _make_note("N0000002"),
@@ -146,21 +152,10 @@ def test_execute_trashes_matched_notes(monkeypatch):
 
     result = server.batch_cleanup_notes(dry_run=False, ctx=DummyContext())
 
-    assert "Trashed: 3" in result
-    assert "Failed: 0" in result
-    assert len(fake.client.calls) == 3
-
-
-def test_execute_trashed_notes_listed(monkeypatch):
-    """Each trashed note key should appear in the output."""
-    notes = [_make_note("AAA11111"), _make_note("BBB22222")]
-    fake = FakeZoteroBatchCleanup(notes)
-    _patch(monkeypatch, fake)
-
-    result = server.batch_cleanup_notes(dry_run=False, ctx=DummyContext())
-
-    assert "`AAA11111`" in result
-    assert "`BBB22222`" in result
+    assert "started" in result.lower() or "⏳" in result
+    assert "get_batch_task_status" in result
+    # No synchronous trashing
+    assert fake.client.calls == []
 
 
 # ---------------------------------------------------------------------------
@@ -247,8 +242,11 @@ def test_whitespace_only_note_matches_empty(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_continue_on_error(monkeypatch):
-    """If one note fails to trash, others should still proceed."""
+def test_continue_on_error(monkeypatch, tmp_path):
+    """If one note fails to trash, others should still proceed (background)."""
+    monkeypatch.setattr(
+        "zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks"
+    )
     notes = [
         _make_note("N0000001"),
         _make_note("N0000002"),
@@ -259,9 +257,9 @@ def test_continue_on_error(monkeypatch):
 
     result = server.batch_cleanup_notes(dry_run=False, ctx=DummyContext())
 
-    assert "Trashed: 2" in result
-    assert "Failed: 1" in result
-    assert "`N0000002`" in result  # appears in Failed section
+    # Returns task_id — actual deletion happens in background.
+    assert "get_batch_task_status" in result
+    assert "3 notes" in result
 
 
 def test_no_matches_returns_message(monkeypatch):
@@ -281,16 +279,20 @@ def test_no_matches_returns_message(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_limit_caps_processed_notes(monkeypatch):
-    """limit should cap the number of notes fetched and processed."""
+def test_limit_caps_processed_notes(monkeypatch, tmp_path):
+    """limit should cap the number of notes in the background task."""
+    monkeypatch.setattr(
+        "zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks"
+    )
     notes = [_make_note(f"N{i:07d}") for i in range(5)]
     fake = FakeZoteroBatchCleanup(notes)
     _patch(monkeypatch, fake)
 
     result = server.batch_cleanup_notes(dry_run=False, limit=2, ctx=DummyContext())
 
-    assert "Trashed: 2" in result
-    assert len(fake.client.calls) == 2
+    # Returns task_id with 2 notes to trash in background.
+    assert "get_batch_task_status" in result
+    assert "2 notes" in result
 
 
 # ---------------------------------------------------------------------------

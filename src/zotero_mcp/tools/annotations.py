@@ -1,10 +1,12 @@
 """Annotation and note tool functions for the Zotero MCP server."""
 
 import json
+import logging
 import os
 import re
 import tempfile
 import uuid
+from typing import TYPE_CHECKING
 
 import requests
 
@@ -14,6 +16,11 @@ from zotero_mcp._app import mcp
 from zotero_mcp._context import Context
 from zotero_mcp.client import with_zotero_api_lock
 from zotero_mcp.tools import _helpers
+
+if TYPE_CHECKING:
+    from zotero_mcp.batch_runner import TaskStatus
+
+logger = logging.getLogger(__name__)
 
 _WEB_API_ENV_VARS = (
     "- ZOTERO_API_KEY: Your Zotero API key (from zotero.org/settings/keys)\n"
@@ -1203,7 +1210,6 @@ def delete_note(item_key: str, *, ctx: Context) -> str:
         "standalone empty notes after previewing."
     ),
 )
-@with_zotero_api_lock
 def batch_cleanup_notes(
     standalone_only: bool = True,
     empty_only: bool = True,
@@ -1213,8 +1219,13 @@ def batch_cleanup_notes(
     *,
     ctx: Context,
 ) -> str:
-    """
-    Batch-delete notes matching criteria from the Zotero library.
+    """Batch-delete notes matching criteria from the Zotero library.
+
+    Not decorated with @with_zotero_api_lock: dry_run is read-only (fast),
+    and the execute path spawns a background thread (see
+    _batch_cleanup_worker) that acquires the lock per-item instead of
+    holding it for the entire loop. This prevents the MCP-client-timeout
+    + lock-wedge problem that affects long-running batch tools.
 
     Args:
         standalone_only: If True, only process notes with no parentItem.
@@ -1321,63 +1332,173 @@ def batch_cleanup_notes(
             )
             return "\n".join(output)
 
-        # --- execute: trash matched notes ---
-        from pyzotero.zotero import build_url as _build_url
+        # --- execute: spawn background task ---
+        # Instead of trashing notes synchronously (which holds the API lock
+        # for the entire loop and can exceed the MCP ~60s client timeout),
+        # we register a background task and return immediately. The worker
+        # thread acquires the lock per-item, allowing other tools to run
+        # concurrently. Progress is written to a JSON file and can be polled
+        # via zotero_get_batch_task_status.
+        from zotero_mcp.batch_runner import create_task, spawn_task
 
-        trashed = []
-        failed = []
+        work_items = [{"key": n.get("key", "")} for n in matched]
+        status = create_task("batch_cleanup_notes", work_items=work_items)
+        spawn_task(status, _batch_cleanup_worker)
 
-        for note in matched:
-            item_key = note.get("key", "")
+        return (
+            f"⏳ Batch cleanup started: **{status.task_id}**\n\n"
+            f"Will trash {len(matched)} notes in the background.\n\n"
+            f"Check progress: call `zotero_get_batch_task_status` "
+            f"with task_id `{status.task_id}`."
+        )
+
+    except Exception as e:
+        ctx.error(f"Error in batch cleanup notes: {str(e)}")
+        return f"Error in batch cleanup notes: {str(e)}"
+
+
+def _batch_cleanup_worker(status: "TaskStatus") -> None:
+    """Background worker: trash notes one-by-one, updating the status file.
+
+    Acquires the Zotero API lock per-item (not for the whole loop), so
+    other tools can run concurrently between deletions. Logs via
+    ``logging`` (not ``ctx`` — the MCP request has already returned).
+    """
+    from pyzotero.zotero import build_url as _build_url
+
+    from zotero_mcp import client as _client
+    from zotero_mcp.batch_runner import update_status
+
+    zot, err = _get_note_write_client("batch cleanup")
+    if err:
+        raise RuntimeError(err)
+
+    succeeded = 0
+    failed = 0
+    total = len(status.work_items)
+
+    for i, item in enumerate(status.work_items):
+        item_key = item.get("key", "")
+        if not item_key:
+            continue
+        try:
+            # Acquire API lock per-item — not for the whole loop.
+            # This allows other @with_zotero_api_lock tools to run
+            # between our deletions.
+            timeout = _client._lock_timeout()
+            if timeout > 0:
+                acquired = _client._zotero_api_lock.acquire(timeout=timeout)
+                if not acquired:
+                    raise RuntimeError("Could not acquire Zotero API lock")
+            else:
+                acquired = False
+                _client._zotero_api_lock.acquire()
+
             try:
-                # Re-fetch to get a fresh version number (previous deletes
-                # may have invalidated cached versions).
-                item = zot.item(item_key)
+                # Re-fetch to get a fresh version number (previous
+                # deletes may have invalidated cached versions).
+                fresh = zot.item(item_key)
                 url = _build_url(
                     zot.endpoint,
                     f"/{zot.library_type}/{zot.library_id}/items/{item_key}",
                 )
                 resp = zot.client.patch(
                     url=url,
-                    headers={"If-Unmodified-Since-Version": str(item["version"])},
+                    headers={
+                        "If-Unmodified-Since-Version": str(fresh["version"])
+                    },
                     content=json.dumps({"deleted": 1}),
                 )
-                if resp.status_code in (200, 204):
-                    trashed.append(item_key)
-                else:
-                    failed.append(f"`{item_key}`: HTTP {resp.status_code}")
-            except Exception as e:
-                ctx.error(f"Failed to trash note {item_key}: {e}")
-                failed.append(f"`{item_key}`: {str(e)}")
+            finally:
+                _client._zotero_api_lock.release()
 
-        # --- results ---
-        output = ["# Batch Note Cleanup — Results", ""]
-        output.append("## Criteria")
-        output.append(f"- Standalone only: {'yes' if standalone_only else 'no'}")
-        output.append(f"- Empty only: {'yes' if empty_only else 'no'}")
-        output.append("")
-        output.append("## Summary")
-        output.append(f"- Matched: {len(matched)}")
-        output.append(f"- Trashed: {len(trashed)}")
-        output.append(f"- Failed: {len(failed)}")
-        output.append("")
+            if resp.status_code in (200, 204):
+                succeeded += 1
+            else:
+                failed += 1
+                logger.warning(
+                    f"Failed to trash note {item_key}: HTTP {resp.status_code}"
+                )
+        except Exception as e:
+            failed += 1
+            logger.warning(f"Failed to trash note {item_key}: {e}")
 
-        if trashed:
-            output.append("## Trashed Notes")
-            for key in trashed:
-                output.append(f"- `{key}`")
-            output.append("")
+        # Update progress every 10 items or on the last item.
+        if (i + 1) % 10 == 0 or i + 1 == total:
+            update_status(
+                status.task_id,
+                processed=i + 1,
+                succeeded=succeeded,
+                failed=failed,
+            )
 
-        if failed:
-            output.append("## Failed")
-            for msg in failed:
-                output.append(f"- {msg}")
+    update_status(
+        status.task_id,
+        processed=total,
+        succeeded=succeeded,
+        failed=failed,
+        result_summary=f"Trashed {succeeded} notes, {failed} failed.",
+    )
 
-        return "\n".join(output)
 
-    except Exception as e:
-        ctx.error(f"Error in batch cleanup notes: {str(e)}")
-        return f"Error in batch cleanup notes: {str(e)}"
+@mcp.tool(
+    name="zotero_get_batch_task_status",
+    description=(
+        "Check the status of a background batch task (e.g. "
+        "zotero_batch_cleanup_notes with dry_run=False). Pass task_id "
+        "to check a specific task, or omit to list recent tasks. "
+        "Optionally filter by task_type. Read-only; safe to call "
+        "anytime (no Zotero API lock needed). "
+        "Example: zotero_get_batch_task_status(task_id='20260703T...') "
+        "→ progress, succeeded/failed counts, and result summary."
+    ),
+)
+def get_batch_task_status(
+    task_id: str | None = None,
+    task_type: str | None = None,
+    *,
+    ctx: Context,
+) -> str:
+    """Check the status of a background batch task.
+
+    Not decorated with @with_zotero_api_lock: this only reads local JSON
+    files and never touches the Zotero API.
+
+    Args:
+        task_id: specific task ID to check. If omitted, lists recent tasks.
+        task_type: filter the list by task type (e.g. "batch_cleanup_notes").
+        ctx: MCP context.
+
+    Returns:
+        Markdown-formatted task status or list of recent tasks.
+    """
+    from zotero_mcp.batch_runner import (
+        format_status_markdown,
+        list_tasks,
+        read_status,
+    )
+
+    if task_id:
+        status = read_status(task_id)
+        if status is None:
+            return f"Task `{task_id}` not found."
+        return format_status_markdown(status)
+
+    # List recent tasks
+    tasks = list_tasks(task_type)
+    if not tasks:
+        return "No batch tasks found."
+
+    lines = ["# Recent Batch Tasks", ""]
+    for t in tasks[:20]:
+        lines.append(
+            f"- **{t.task_id}** | {t.task_type} | "
+            f"{t.status} | {t.processed}/{t.total}"
+        )
+    if task_type:
+        lines.append(f"\nFiltered by type: {task_type}")
+    lines.append("\nPass task_id to see full details.")
+    return "\n".join(lines)
 
 
 @mcp.tool(

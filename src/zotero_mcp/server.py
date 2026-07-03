@@ -64,6 +64,7 @@ from zotero_mcp.tools.annotations import (  # noqa: F401
     delete_annotation,
     delete_note,
     get_annotations,
+    get_batch_task_status,
     get_notes,
     get_page_layout,
     search_notes,
