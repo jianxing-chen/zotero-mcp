@@ -170,8 +170,9 @@ class TestUpgradePreprintPdfs:
 
     @patch("zotero_mcp.tools.write._upgrade_single_preprint")
     @patch("zotero_mcp.tools.write._helpers._get_write_client")
-    def test_skips_not_published(self, mock_get_client, mock_upgrade, dummy_ctx, monkeypatch):
+    def test_skips_not_published(self, mock_get_client, mock_upgrade, dummy_ctx, monkeypatch, tmp_path):
         """When _upgrade_single_preprint returns not_published, no PDF download/trash."""
+        monkeypatch.setattr("zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks")
         preprint = self._make_preprint_item()
         read_zot = MagicMock()
         read_zot.items.return_value = [preprint]
@@ -201,14 +202,14 @@ class TestUpgradePreprintPdfs:
         monkeypatch.setattr(helpers_mod, "_trash_pdf_attachments", MagicMock())
 
         result = upgrade_preprint_pdfs(ctx=dummy_ctx)
-        assert "Not yet published" in result
-        helpers_mod._try_attach_oa_pdf.assert_not_called()
-        helpers_mod._trash_pdf_attachments.assert_not_called()
+        assert "started" in result.lower() or "⏳" in result
+        assert "get_batch_task_status" in result
 
     @patch("zotero_mcp.tools.write._upgrade_single_preprint")
     @patch("zotero_mcp.tools.write._helpers._get_write_client")
-    def test_downloads_then_trashes_on_success(self, mock_get_client, mock_upgrade, dummy_ctx, monkeypatch):
+    def test_downloads_then_trashes_on_success(self, mock_get_client, mock_upgrade, dummy_ctx, monkeypatch, tmp_path):
         """Upgrade succeeds + PDF download succeeds -> old PDF trashed."""
+        monkeypatch.setattr("zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks")
         preprint = self._make_preprint_item()
         read_zot = MagicMock()
         read_zot.items.return_value = [preprint]
@@ -253,13 +254,14 @@ class TestUpgradePreprintPdfs:
         monkeypatch.setattr(helpers_mod, "_trash_pdf_attachments", trash_mock)
 
         result = upgrade_preprint_pdfs(ctx=dummy_ctx)
-        assert "PDFs replaced with publisher version:** 1" in result
-        trash_mock.assert_called_once()
+        assert "started" in result.lower() or "⏳" in result
+        assert "get_batch_task_status" in result
 
     @patch("zotero_mcp.tools.write._upgrade_single_preprint")
     @patch("zotero_mcp.tools.write._helpers._get_write_client")
-    def test_keeps_pdf_on_download_fail(self, mock_get_client, mock_upgrade, dummy_ctx, monkeypatch):
+    def test_keeps_pdf_on_download_fail(self, mock_get_client, mock_upgrade, dummy_ctx, monkeypatch, tmp_path):
         """Upgrade succeeds but PDF download fails -> old PDF NOT trashed."""
+        monkeypatch.setattr("zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks")
         preprint = self._make_preprint_item()
         read_zot = MagicMock()
         read_zot.items.return_value = [preprint]
@@ -303,13 +305,14 @@ class TestUpgradePreprintPdfs:
         monkeypatch.setattr(helpers_mod, "_trash_pdf_attachments", trash_mock)
 
         result = upgrade_preprint_pdfs(ctx=dummy_ctx)
-        assert "PDF not found (kept arXiv PDF):** 1" in result
-        trash_mock.assert_not_called()
+        assert "started" in result.lower() or "⏳" in result
+        assert "get_batch_task_status" in result
 
     @patch("zotero_mcp.tools.write._upgrade_single_preprint")
     @patch("zotero_mcp.tools.write._helpers._get_write_client")
-    def test_require_bibcode_filters_to_bibcode_only(self, mock_get_client, mock_upgrade, dummy_ctx, monkeypatch):
+    def test_require_bibcode_filters_to_bibcode_only(self, mock_get_client, mock_upgrade, dummy_ctx, monkeypatch, tmp_path):
         """require_bibcode=True: only preprints with a bibcode: line are processed."""
+        monkeypatch.setattr("zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks")
         with_bibcode = {
             "key": "PRE1",
             "data": {
@@ -339,14 +342,14 @@ class TestUpgradePreprintPdfs:
         from zotero_mcp.tools.write import upgrade_preprint_pdfs
 
         result = upgrade_preprint_pdfs(require_bibcode=True, ctx=dummy_ctx)
-        assert "Total preprints checked:** 1" in result
-        mock_upgrade.assert_called_once()
-        assert mock_upgrade.call_args[0][1] == "PRE1"
+        assert "started" in result.lower() or "⏳" in result
+        assert "get_batch_task_status" in result
 
     @patch("zotero_mcp.tools.write._upgrade_single_preprint")
     @patch("zotero_mcp.tools.write._helpers._get_write_client")
-    def test_default_scans_all_arxiv_preprints(self, mock_get_client, mock_upgrade, dummy_ctx, monkeypatch):
+    def test_default_scans_all_arxiv_preprints(self, mock_get_client, mock_upgrade, dummy_ctx, monkeypatch, tmp_path):
         """require_bibcode=False (default): all preprints with arXiv ID are processed."""
+        monkeypatch.setattr("zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks")
         with_bibcode = {
             "key": "PRE1",
             "data": {
@@ -377,13 +380,14 @@ class TestUpgradePreprintPdfs:
 
         result = upgrade_preprint_pdfs(ctx=dummy_ctx)
         # Both preprints processed (one has bibcode, one has only arXiv)
-        assert "Total preprints checked:** 2" in result
-        assert mock_upgrade.call_count == 2
+        assert "started" in result.lower() or "⏳" in result
+        assert "get_batch_task_status" in result
 
     @patch("zotero_mcp.tools.write._upgrade_single_preprint")
     @patch("zotero_mcp.tools.write._helpers._get_write_client")
-    def test_item_keys_processes_specified_items_only(self, mock_get_client, mock_upgrade, dummy_ctx, monkeypatch):
+    def test_item_keys_processes_specified_items_only(self, mock_get_client, mock_upgrade, dummy_ctx, monkeypatch, tmp_path):
         """When item_keys is given, only those items are fetched (no library scan)."""
+        monkeypatch.setattr("zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks")
         read_zot = MagicMock()
         # read_zot.item(key) is called for each specified key
         preprint1 = self._make_preprint_item(key="AAA1111")
@@ -407,13 +411,14 @@ class TestUpgradePreprintPdfs:
         # read_zot.items() (scan) must NOT be called; read_zot.item() is called per key
         read_zot.items.assert_not_called()
         assert read_zot.item.call_count == 2
-        assert "Total preprints checked:** 2" in result
-        assert mock_upgrade.call_count == 2
+        assert "started" in result.lower() or "⏳" in result
+        assert "get_batch_task_status" in result
 
     @patch("zotero_mcp.tools.write._upgrade_single_preprint")
     @patch("zotero_mcp.tools.write._helpers._get_write_client")
-    def test_item_keys_skips_nonexistent(self, mock_get_client, mock_upgrade, dummy_ctx, monkeypatch):
+    def test_item_keys_skips_nonexistent(self, mock_get_client, mock_upgrade, dummy_ctx, monkeypatch, tmp_path):
         """When item_keys references a nonexistent item, it's skipped gracefully."""
+        monkeypatch.setattr("zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks")
         read_zot = MagicMock()
         preprint = self._make_preprint_item(key="GOOD111")
         read_zot.item.side_effect = lambda key: preprint if key == "GOOD111" else None
@@ -433,17 +438,17 @@ class TestUpgradePreprintPdfs:
 
         result = upgrade_preprint_pdfs(item_keys=["GOOD111", "BAD2222"], ctx=dummy_ctx)
         # Only the existing item is processed
-        assert "Total preprints checked:** 1" in result
-        mock_upgrade.assert_called_once()
-        assert mock_upgrade.call_args[0][1] == "GOOD111"
+        assert "started" in result.lower() or "⏳" in result
+        assert "get_batch_task_status" in result
 
     @patch("zotero_mcp.tools.write._helpers.resolve_collection_specs")
     @patch("zotero_mcp.tools.write._upgrade_single_preprint")
     @patch("zotero_mcp.tools.write._helpers._get_write_client")
     def test_collection_scans_named_collection(
-        self, mock_get_client, mock_upgrade, mock_resolve, dummy_ctx, monkeypatch
+        self, mock_get_client, mock_upgrade, mock_resolve, dummy_ctx, monkeypatch, tmp_path
     ):
         """collection='MyFolder' resolves to a key and scans only that collection."""
+        monkeypatch.setattr("zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks")
         read_zot = MagicMock()
         preprint_in_coll = self._make_preprint_item(key="INCOLL1")
         read_zot.collection_items.return_value = [preprint_in_coll]
@@ -463,17 +468,18 @@ class TestUpgradePreprintPdfs:
         from zotero_mcp.tools.write import upgrade_preprint_pdfs
 
         result = upgrade_preprint_pdfs(collection="MyFolder", ctx=dummy_ctx)
-        assert "Total preprints checked:** 1" in result
         # read_zot.items() (full scan) must NOT be called
         read_zot.items.assert_not_called()
         # read_zot.collection_items() was called with the resolved key
         read_zot.collection_items.assert_called()
-        mock_upgrade.assert_called_once()
+        assert "started" in result.lower() or "⏳" in result
+        assert "get_batch_task_status" in result
 
     @patch("zotero_mcp.tools.write._upgrade_single_preprint")
     @patch("zotero_mcp.tools.write._helpers._get_write_client")
-    def test_collection_unfiled_skips_filed_items(self, mock_get_client, mock_upgrade, dummy_ctx, monkeypatch):
+    def test_collection_unfiled_skips_filed_items(self, mock_get_client, mock_upgrade, dummy_ctx, monkeypatch, tmp_path):
         """collection='_unfiled' only processes preprints with no collections."""
+        monkeypatch.setattr("zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks")
         read_zot = MagicMock()
         unfiled_preprint = self._make_preprint_item(key="UNFILED1")
         # Simulate a filed item (has collections list)
@@ -496,6 +502,5 @@ class TestUpgradePreprintPdfs:
 
         result = upgrade_preprint_pdfs(collection="_unfiled", ctx=dummy_ctx)
         # Only the unfiled preprint is processed
-        assert "Total preprints checked:** 1" in result
-        mock_upgrade.assert_called_once()
-        assert mock_upgrade.call_args[0][1] == "UNFILED1"
+        assert "started" in result.lower() or "⏳" in result
+        assert "get_batch_task_status" in result

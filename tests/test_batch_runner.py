@@ -322,8 +322,8 @@ class TestBatchCleanupNotesExecute:
         notes = [_make_note("N0000001"), _make_note("N0000002")]
         fake = _FakeZotero(notes)
         _patch_zotero(monkeypatch, fake)
-        # Also patch _get_note_write_client so the background worker
-        # gets the fake client (monkeypatch may undo before the thread runs).
+        # Patch _get_note_write_client so the background worker gets the
+        # fake client (the worker calls it independently of the foreground).
         monkeypatch.setattr(
             "zotero_mcp.tools.annotations._get_note_write_client",
             lambda desc: (fake, None),
@@ -336,7 +336,16 @@ class TestBatchCleanupNotesExecute:
 
         server.batch_cleanup_notes(dry_run=False, ctx=DummyContext())
 
-        # A status file should exist
+        # Wait for the background thread to finish.
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            files = list(tasks_dir.glob("*.json"))
+            if files:
+                data = json.loads(files[0].read_text())
+                if data["status"] in ("completed", "failed"):
+                    break
+            time.sleep(0.05)
+
         files = list(tasks_dir.glob("*.json"))
         assert len(files) >= 1
         data = json.loads(files[0].read_text())

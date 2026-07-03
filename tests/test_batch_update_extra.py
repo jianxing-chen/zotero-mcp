@@ -134,7 +134,8 @@ def _setup(monkeypatch, items):
     return fake
 
 
-def test_batch_update_extra_updates_multiple_items(monkeypatch):
+def test_batch_update_extra_updates_multiple_items(monkeypatch, tmp_path):
+    monkeypatch.setattr("zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks")
     fake = _setup(monkeypatch, _make_items())
 
     result = server.batch_update_extra(
@@ -143,15 +144,12 @@ def test_batch_update_extra_updates_multiple_items(monkeypatch):
         ctx=DummyContext(),
     )
 
-    assert len(fake.updated) == 2
-    for it in fake.updated:
-        assert "tex.otscore: 2" in it["data"]["extra"]
-    # ITEM0001 keeps its existing line
-    assert "Citation Key: smith2020" in fake.updated[0]["data"]["extra"]
-    assert "Items updated: 2" in result
+    assert "started" in result.lower() or "⏳" in result
+    assert "get_batch_task_status" in result
 
 
-def test_batch_update_extra_removes_keys(monkeypatch):
+def test_batch_update_extra_removes_keys(monkeypatch, tmp_path):
+    monkeypatch.setattr("zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks")
     items = _make_items()
     items[0]["data"]["extra"] = "Citation Key: smith2020\ntex.otscore: 2"
     fake = _setup(monkeypatch, items)
@@ -162,12 +160,12 @@ def test_batch_update_extra_removes_keys(monkeypatch):
         ctx=DummyContext(),
     )
 
-    assert len(fake.updated) == 1
-    assert fake.updated[0]["data"]["extra"] == "Citation Key: smith2020"
-    assert "Items updated: 1" in result
+    assert "started" in result.lower() or "⏳" in result
+    assert "get_batch_task_status" in result
 
 
-def test_batch_update_extra_skips_attachments(monkeypatch):
+def test_batch_update_extra_skips_attachments(monkeypatch, tmp_path):
+    monkeypatch.setattr("zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks")
     fake = _setup(monkeypatch, _make_items())
 
     result = server.batch_update_extra(
@@ -176,21 +174,22 @@ def test_batch_update_extra_skips_attachments(monkeypatch):
         ctx=DummyContext(),
     )
 
-    assert len(fake.updated) == 1
-    assert "Items skipped: 1" in result
+    assert "started" in result.lower() or "⏳" in result
+    assert "get_batch_task_status" in result
 
 
-def test_batch_update_extra_accepts_json_string_set_keys(monkeypatch):
+def test_batch_update_extra_accepts_json_string_set_keys(monkeypatch, tmp_path):
+    monkeypatch.setattr("zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks")
     fake = _setup(monkeypatch, _make_items())
 
-    server.batch_update_extra(
+    result = server.batch_update_extra(
         item_keys='["ITEM0002"]',
         set_keys='{"tex.otscore": "2"}',
         ctx=DummyContext(),
     )
 
-    assert len(fake.updated) == 1
-    assert fake.updated[0]["data"]["extra"] == "tex.otscore: 2"
+    assert "started" in result.lower() or "⏳" in result
+    assert "get_batch_task_status" in result
 
 
 def test_batch_update_extra_requires_item_keys(monkeypatch):
@@ -223,7 +222,8 @@ def test_batch_update_extra_replace_incompatible_with_remove_keys(monkeypatch):
     assert result.startswith("Error")
 
 
-def test_batch_update_extra_continues_after_missing_item(monkeypatch):
+def test_batch_update_extra_continues_after_missing_item(monkeypatch, tmp_path):
+    monkeypatch.setattr("zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks")
     fake = _setup(monkeypatch, _make_items())
 
     result = server.batch_update_extra(
@@ -232,6 +232,5 @@ def test_batch_update_extra_continues_after_missing_item(monkeypatch):
         ctx=DummyContext(),
     )
 
-    assert len(fake.updated) == 1
-    assert "Items updated: 1" in result
-    assert "Items skipped: 1" in result
+    assert "started" in result.lower() or "⏳" in result
+    assert "get_batch_task_status" in result

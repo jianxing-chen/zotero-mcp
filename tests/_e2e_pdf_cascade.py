@@ -130,7 +130,7 @@ def test_ads():
         try:
             resp = _helpers._guarded_pdf_get(url, ctx)
             if resp is None:
-                print(f"     SSRF rejected / no response")
+                print("     SSRF rejected / no response")
                 continue
             resp.raise_for_status()
             ct = resp.headers.get("Content-Type", "")
@@ -178,7 +178,7 @@ def test_scihub():
         print("  FAIL: no PDF URL parsed from Sci-Hub page")
         return False
     print(f"  OK: resolved url={pdf_url}")
-    print(f"  -> downloading via SSRF-guarded client...")
+    print("  -> downloading via SSRF-guarded client...")
     try:
         dest = _download_to_tmp(pdf_url, "scihub_test.pdf")
     except Exception as e:
@@ -196,11 +196,10 @@ def test_scihub():
 
 def test_arxiv():
     print("\n=== Path 3: arXiv direct ===")
-    import requests
 
     url = f"https://arxiv.org/pdf/{TEST_ARXIV_ID}.pdf"
     print(f"  arXiv ID: {TEST_ARXIV_ID}  -> {url}")
-    print(f"  -> downloading via SSRF-guarded client...")
+    print("  -> downloading via SSRF-guarded client...")
     try:
         dest = _download_to_tmp(url, "arxiv_test.pdf")
     except Exception as e:

@@ -1,6 +1,7 @@
 """Write / mutation tool functions for the Zotero MCP server."""
 
 import json
+import logging
 import os
 import re
 import tempfile
@@ -20,8 +21,30 @@ from zotero_mcp._context import Context
 from zotero_mcp.client import with_zotero_api_lock
 from zotero_mcp.tools import _helpers
 
+logger = logging.getLogger(__name__)
+
 # Accessed as _helpers.X so that monkeypatch/mock on the module attribute works.
 CROSSREF_TYPE_MAP = _helpers.CROSSREF_TYPE_MAP
+
+
+def _with_api_lock(fn):
+    """Run a callable while holding the Zotero API RLock (bounded wait).
+
+    For background-task workers that need to make Zotero API calls per-item
+    without holding the lock for the entire loop. Acquires + releases around
+    each call so other tools can run between iterations.
+    """
+    timeout = _client._lock_timeout()
+    if timeout > 0:
+        acquired = _client._zotero_api_lock.acquire(timeout=timeout)
+        if not acquired:
+            raise RuntimeError("Could not acquire Zotero API lock within timeout")
+    else:
+        _client._zotero_api_lock.acquire()
+    try:
+        return fn()
+    finally:
+        _client._zotero_api_lock.release()
 
 
 def _resolve_collections_arg(
@@ -179,7 +202,6 @@ def _handle_existing_item(write_zot, existing, coll_keys, tags, if_exists, match
         "mark everything tagged 'to-read' as 'reviewed'."
     ),
 )
-@with_zotero_api_lock
 def batch_update_tags(
     query: str = "",
     add_tags: list[str] | str | None = None,
@@ -189,8 +211,10 @@ def batch_update_tags(
     *,
     ctx: Context,
 ) -> str:
-    """
-    Batch update tags across multiple items matching a search query or tag filter.
+    """Batch update tags across multiple items matching a search query or tag filter.
+
+    Not decorated with @with_zotero_api_lock: spawns a background task that
+    acquires the lock per-item. Prevents MCP-client-timeout + lock-wedge.
 
     Args:
         query: Search query to find items to update (text search)
@@ -202,7 +226,7 @@ def batch_update_tags(
         ctx: MCP context
 
     Returns:
-        Summary of the batch update
+        Task ID for background polling, or error message.
     """
     try:
         if not query and not tag:
@@ -252,7 +276,7 @@ def batch_update_tags(
             if not tag:
                 tag = None
 
-        # Search for items matching the query and/or tag filter
+        # Search for items matching the query and/or tag filter (sync — fast)
         params = {"limit": limit}
         if query:
             params["q"] = query
@@ -269,104 +293,108 @@ def batch_update_tags(
                 filter_desc.append(f"tag '{tag}'")
             return f"No items found matching {' and '.join(filter_desc) or 'the given filters'}"
 
-        # Initialize counters
-        updated_count = 0
-        skipped_count = 0
-        added_tag_counts = {tag: 0 for tag in (add_tags or [])}
-        removed_tag_counts = {tag: 0 for tag in (remove_tags or [])}
+        # Spawn background task for the update loop.
+        from zotero_mcp.batch_runner import create_task, spawn_task
 
-        # Process each item
-        for item in items:
-            # Skip attachments if they were included in the results
-            if item["data"].get("itemType") == "attachment":
-                skipped_count += 1
-                continue
+        work_items = [{"key": it.get("key", ""), "data": it.get("data", {})} for it in items]
+        status = create_task("batch_update_tags", work_items=work_items)
+        spawn_task(
+            status,
+            lambda s: _batch_update_tags_worker(
+                s, items, add_tags, remove_tags
+            ),
+        )
 
-            # Get current tags
-            current_tags = item["data"].get("tags", [])
-            current_tag_values = {t["tag"] for t in current_tags}
-
-            # Track if this item needs to be updated
-            needs_update = False
-
-            # Process tags to remove
-            if remove_tags:
-                new_tags = []
-                for tag_obj in current_tags:
-                    tag = tag_obj["tag"]
-                    if tag in remove_tags:
-                        removed_tag_counts[tag] += 1
-                        needs_update = True
-                    else:
-                        new_tags.append(tag_obj)
-                current_tags = new_tags
-                # Refresh the set of current tag values after removal
-                current_tag_values = {t["tag"] for t in current_tags}
-
-            # Process tags to add
-            if add_tags:
-                for tag in add_tags:
-                    if tag and tag not in current_tag_values:
-                        current_tags.append({"tag": tag})
-                        added_tag_counts[tag] += 1
-                        needs_update = True
-
-            # Update the item if needed
-            if needs_update:
-                try:
-                    item_key = item.get("key", "unknown")
-
-                    # If writing via web API, re-fetch the item from web to get
-                    # the correct version number for the update
-                    if write_zot is not zot:
-                        try:
-                            web_item = write_zot.item(item_key)
-                            web_item["data"]["tags"] = current_tags
-                            ctx.info(f"Updating item {item_key} via web API with tags: {current_tags}")
-                            result = write_zot.update_item(web_item)
-                        except Exception as e:
-                            ctx.error(f"Failed to fetch/update item {item_key} via web API: {str(e)}")
-                            skipped_count += 1
-                            continue
-                    else:
-                        item["data"]["tags"] = current_tags
-                        ctx.info(f"Updating item {item_key} with tags: {current_tags}")
-                        result = write_zot.update_item(item)
-
-                    if _helpers._handle_write_response(result, ctx):
-                        updated_count += 1
-                    else:
-                        ctx.error(f"Update may have failed for item {item_key}: {result}")
-                        skipped_count += 1
-                except Exception as e:
-                    ctx.error(f"Failed to update item {item.get('key', 'unknown')}: {str(e)}")
-                    # Continue with other items instead of failing completely
-                    skipped_count += 1
-            else:
-                skipped_count += 1
-
-        # Format the response
-        response = ["# Batch Tag Update Results", ""]
-        response.append(f"Query: '{query}'")
-        response.append(f"Items processed: {len(items)}")
-        response.append(f"Items updated: {updated_count}")
-        response.append(f"Items skipped: {skipped_count}")
-
-        if add_tags:
-            response.append("\n## Tags Added")
-            for tag, count in added_tag_counts.items():
-                response.append(f"- `{tag}`: {count} items")
-
-        if remove_tags:
-            response.append("\n## Tags Removed")
-            for tag, count in removed_tag_counts.items():
-                response.append(f"- `{tag}`: {count} items")
-
-        return "\n".join(response)
+        return (
+            f"⏳ Batch tag update started: **{status.task_id}**\n\n"
+            f"Will update tags for {len(items)} item(s) in the background.\n\n"
+            f"Check progress: call `zotero_get_batch_task_status` "
+            f"with task_id `{status.task_id}`."
+        )
 
     except Exception as e:
         ctx.error(f"Error in batch tag update: {str(e)}")
         return f"Error in batch tag update: {str(e)}"
+
+
+def _batch_update_tags_worker(status, items, add_tags, remove_tags) -> None:
+    """Background worker for batch_update_tags."""
+    from zotero_mcp.batch_runner import update_status
+
+    zot = _client.get_zotero_client()
+    try:
+        _, write_zot = _helpers._get_write_client(None)
+    except ValueError as e:
+        raise RuntimeError(str(e))
+
+    updated_count = 0
+    skipped_count = 0
+    total = len(items)
+
+    for i, item in enumerate(items):
+        if item["data"].get("itemType") == "attachment":
+            skipped_count += 1
+            continue
+
+        current_tags = item["data"].get("tags", [])
+        current_tag_values = {t["tag"] for t in current_tags}
+        needs_update = False
+
+        if remove_tags:
+            new_tags = []
+            for tag_obj in current_tags:
+                if tag_obj["tag"] in remove_tags:
+                    needs_update = True
+                else:
+                    new_tags.append(tag_obj)
+            current_tags = new_tags
+            current_tag_values = {t["tag"] for t in current_tags}
+
+        if add_tags:
+            for t in add_tags:
+                if t and t not in current_tag_values:
+                    current_tags.append({"tag": t})
+                    needs_update = True
+
+        if needs_update:
+            try:
+                item_key = item.get("key", "unknown")
+
+                def _do_update(ik=item_key, ct=current_tags):
+                    if write_zot is not zot:
+                        web_item = write_zot.item(ik)
+                        web_item["data"]["tags"] = ct
+                        return write_zot.update_item(web_item)
+                    else:
+                        item["data"]["tags"] = ct
+                        return write_zot.update_item(item)
+
+                result = _with_api_lock(_do_update)
+                if _helpers._handle_write_response(result, None):
+                    updated_count += 1
+                else:
+                    skipped_count += 1
+            except Exception as e:
+                logger.warning(f"Failed to update item {item.get('key', 'unknown')}: {e}")
+                skipped_count += 1
+        else:
+            skipped_count += 1
+
+        if (i + 1) % 10 == 0 or i + 1 == total:
+            update_status(
+                status.task_id,
+                processed=i + 1,
+                succeeded=updated_count,
+                failed=skipped_count,
+            )
+
+    update_status(
+        status.task_id,
+        processed=total,
+        succeeded=updated_count,
+        failed=skipped_count,
+        result_summary=f"Updated {updated_count} items, {skipped_count} skipped.",
+    )
 
 
 def _apply_extra_edits(
@@ -447,7 +475,6 @@ def _apply_extra_edits(
         "remove_keys=['tex.draft'])."
     ),
 )
-@with_zotero_api_lock
 def batch_update_extra(
     item_keys: list[str] | str | None = None,
     set_keys: dict[str, str] | str | None = None,
@@ -456,8 +483,10 @@ def batch_update_extra(
     *,
     ctx: Context,
 ) -> str:
-    """
-    Batch update Extra-field key lines across multiple items.
+    """Batch update Extra-field key lines across multiple items.
+
+    Not decorated with @with_zotero_api_lock: spawns a background task that
+    acquires the lock per-item. Prevents MCP-client-timeout + lock-wedge.
 
     Args:
         item_keys: Item keys to edit (list or JSON-encoded list string)
@@ -467,7 +496,7 @@ def batch_update_extra(
         ctx: MCP context
 
     Returns:
-        Summary of the batch update
+        Task ID for background polling, or error message.
     """
     try:
         try:
@@ -500,78 +529,103 @@ def batch_update_extra(
             return "Error: replace=True is incompatible with remove_keys"
 
         ctx.info(f"Batch updating Extra field for {len(item_keys)} item(s)")
-        zot = _client.get_zotero_client()
 
-        try:
-            _, write_zot = _helpers._get_write_client(ctx)
-        except ValueError as e:
-            return str(e)
+        # Spawn background task — avoids holding the API lock for the
+        # entire loop (which can exceed the MCP ~60s client timeout).
+        from zotero_mcp.batch_runner import create_task, spawn_task
 
-        updated_count = 0
-        skipped_count = 0
+        work_items = [{"key": k} for k in item_keys]
+        status = create_task("batch_update_extra", work_items=work_items)
+        spawn_task(
+            status,
+            lambda s: _batch_update_extra_worker(
+                s, item_keys, set_keys, remove_keys, replace
+            ),
+        )
 
-        for item_key in item_keys:
-            try:
-                item = zot.item(item_key)
-            except Exception as e:
-                ctx.error(f"Failed to fetch item {item_key}: {str(e)}")
-                skipped_count += 1
-                continue
-            if not item:
-                skipped_count += 1
-                continue
-
-            if item["data"].get("itemType") in ("attachment", "note", "annotation"):
-                skipped_count += 1
-                continue
-
-            extra = item["data"].get("extra", "") or ""
-            new_extra, changed = _apply_extra_edits(extra, set_keys, remove_keys, replace)
-            if not changed:
-                skipped_count += 1
-                continue
-
-            try:
-                # If writing via web API, re-fetch the item from web to get
-                # the correct version number for the update
-                if write_zot is not zot:
-                    web_item = write_zot.item(item_key)
-                    web_item["data"]["extra"] = new_extra
-                    result = write_zot.update_item(web_item)
-                else:
-                    item["data"]["extra"] = new_extra
-                    result = write_zot.update_item(item)
-
-                if _helpers._handle_write_response(result, ctx):
-                    updated_count += 1
-                else:
-                    ctx.error(f"Update may have failed for item {item_key}: {result}")
-                    skipped_count += 1
-            except Exception as e:
-                ctx.error(f"Failed to update item {item_key}: {str(e)}")
-                skipped_count += 1
-
-        response = ["# Batch Extra Update Results", ""]
-        response.append(f"Items processed: {len(item_keys)}")
-        response.append(f"Items updated: {updated_count}")
-        response.append(f"Items skipped: {skipped_count}")
-
-        if set_keys:
-            response.append("\n## Keys Set")
-            for key, value in set_keys.items():
-                response.append(f"- `{key}: {value}`")
-        if remove_keys:
-            response.append("\n## Keys Removed")
-            for key in remove_keys:
-                response.append(f"- `{key}`")
-        if replace:
-            response.append("\nExtra field fully replaced from set_keys.")
-
-        return "\n".join(response)
+        return (
+            f"⏳ Batch Extra update started: **{status.task_id}**\n\n"
+            f"Will update {len(item_keys)} item(s) in the background.\n\n"
+            f"Check progress: call `zotero_get_batch_task_status` "
+            f"with task_id `{status.task_id}`."
+        )
 
     except Exception as e:
         ctx.error(f"Error in batch extra update: {str(e)}")
         return f"Error in batch extra update: {str(e)}"
+
+
+def _batch_update_extra_worker(
+    status, item_keys, set_keys, remove_keys, replace
+) -> None:
+    """Background worker for batch_update_extra."""
+    from zotero_mcp.batch_runner import update_status
+
+    zot = _client.get_zotero_client()
+    try:
+        _, write_zot = _helpers._get_write_client(None)
+    except ValueError as e:
+        raise RuntimeError(str(e))
+
+    updated_count = 0
+    skipped_count = 0
+    total = len(item_keys)
+
+    for i, item_key in enumerate(item_keys):
+        try:
+            item = _with_api_lock(lambda k=item_key: zot.item(k))
+        except Exception as e:
+            logger.warning(f"Failed to fetch item {item_key}: {e}")
+            skipped_count += 1
+            continue
+        if not item:
+            skipped_count += 1
+            continue
+
+        if item["data"].get("itemType") in ("attachment", "note", "annotation"):
+            skipped_count += 1
+            continue
+
+        extra = item["data"].get("extra", "") or ""
+        new_extra, changed = _apply_extra_edits(extra, set_keys, remove_keys, replace)
+        if not changed:
+            skipped_count += 1
+            continue
+
+        try:
+            def _do_update(ik=item_key, ne=new_extra):
+                if write_zot is not zot:
+                    web_item = write_zot.item(ik)
+                    web_item["data"]["extra"] = ne
+                    return write_zot.update_item(web_item)
+                else:
+                    item["data"]["extra"] = ne
+                    return write_zot.update_item(item)
+
+            result = _with_api_lock(_do_update)
+            if _helpers._handle_write_response(result, None):
+                updated_count += 1
+            else:
+                skipped_count += 1
+        except Exception as e:
+            logger.warning(f"Failed to update item {item_key}: {e}")
+            skipped_count += 1
+
+        if (i + 1) % 10 == 0 or i + 1 == total:
+            update_status(
+                status.task_id,
+                processed=i + 1,
+                succeeded=updated_count,
+                failed=skipped_count,
+            )
+
+    update_status(
+        status.task_id,
+        processed=total,
+        succeeded=updated_count,
+        failed=skipped_count,
+        result_summary=f"Updated {updated_count} items, {skipped_count} skipped.",
+    )
 
 
 @mcp.tool(
@@ -4228,11 +4282,14 @@ def enrich_item_metadata(item_key: str, fields: list[str] | None = None, force: 
         "missing date or journal abbreviation."
     ),
 )
-@with_zotero_api_lock
 def enrich_batch(
     fields: list[str] | None = None, limit: int | None = None, force: bool = False, *, ctx: Context
 ) -> str:
-    """Batch-enrich missing metadata on all eligible items from ADS."""
+    """Batch-enrich missing metadata on all eligible items from ADS.
+
+    Not decorated with @with_zotero_api_lock: spawns a background task that
+    acquires the lock per-item. Prevents MCP-client-timeout + lock-wedge.
+    """
     try:
         read_zot, write_zot = _helpers._get_write_client(ctx)
     except ValueError as e:
@@ -4290,51 +4347,71 @@ def enrich_batch(
             break
 
     total = len(candidates) if not limit else min(len(candidates), limit)
-    ctx.info(f"Found {total} items to enrich. Processing...")
+    if total == 0:
+        return "No items found needing enrichment."
 
-    results: list[dict] = []
-    stats = {"enriched": 0, "skipped_existing": 0, "not_found": 0, "error": 0}
-    for idx, it in enumerate(candidates[:total], 1):
+    # Spawn background task for the enrichment loop (ADS calls + PATCHes).
+    from zotero_mcp.batch_runner import create_task, spawn_task
+
+    work_items = [{"key": it.get("key", "")} for it in candidates[:total]]
+    status = create_task("enrich_batch", work_items=work_items)
+    spawn_task(
+        status,
+        lambda s: _enrich_batch_worker(s, candidates[:total], wanted, force),
+    )
+
+    return (
+        f"⏳ Batch enrichment started: **{status.task_id}**\n\n"
+        f"Will enrich {total} item(s) in the background.\n\n"
+        f"Check progress: call `zotero_get_batch_task_status` "
+        f"with task_id `{status.task_id}`."
+    )
+
+
+def _enrich_batch_worker(status, candidates, wanted, force) -> None:
+    """Background worker for enrich_batch."""
+    from zotero_mcp.batch_runner import update_status
+
+    try:
+        _, write_zot = _helpers._get_write_client(None)
+    except ValueError as e:
+        raise RuntimeError(str(e))
+
+    total = len(candidates)
+    enriched = 0
+    failed = 0
+
+    for idx, it in enumerate(candidates, 1):
         key = it.get("key", "")
         if not key:
             continue
-        if idx % 25 == 0 or idx == total:
-            ctx.info(f"  Enriching {idx}/{total}...")
-        r = _enrich_single_item(write_zot, key, wanted, force)
-        results.append(r)
-        stats[r["status"]] = stats.get(r["status"], 0) + 1
-        # Be gentle with ADS rate limits (~8 req/s; stay well under).
+        try:
+            r = _with_api_lock(lambda k=key: _enrich_single_item(write_zot, k, wanted, force))
+            if r["status"] == "enriched":
+                enriched += 1
+            else:
+                failed += 1
+        except Exception as e:
+            logger.warning(f"Failed to enrich item {key}: {e}")
+            failed += 1
+        # Be gentle with ADS rate limits.
         _time.sleep(0.2)
 
-    lines = [
-        "# Batch Enrichment Results",
-        "",
-        f"**Total processed:** {total}",
-        f"**Enriched:** {stats.get('enriched', 0)}",
-        f"**Skipped (already complete):** {stats.get('skipped_existing', 0)}",
-        f"**Not found in ADS:** {stats.get('not_found', 0)}",
-        f"**Errors:** {stats.get('error', 0)}",
-        "",
-    ]
-    # Show first few enriched + errors for visibility.
-    enriched = [r for r in results if r["status"] == "enriched"]
-    if enriched:
-        lines.append("## Enriched (first 10)")
-        for r in enriched[:10]:
-            title = r.get("title", "")
-            filled = ", ".join(r.get("filled", []))
-            lines.append(f"- `{r['key']}` {title} — filled: {filled}")
-        if len(enriched) > 10:
-            lines.append(f"... and {len(enriched) - 10} more")
-        lines.append("")
-    errors = [r for r in results if r["status"] == "error"]
-    if errors:
-        lines.append("## Errors (first 10)")
-        for r in errors[:10]:
-            lines.append(f"- `{r['key']}` — {r.get('error', '?')}")
-        if len(errors) > 10:
-            lines.append(f"... and {len(errors) - 10} more")
-    return "\n".join(lines)
+        if idx % 10 == 0 or idx == total:
+            update_status(
+                status.task_id,
+                processed=idx,
+                succeeded=enriched,
+                failed=failed,
+            )
+
+    update_status(
+        status.task_id,
+        processed=total,
+        succeeded=enriched,
+        failed=failed,
+        result_summary=f"Enriched {enriched} items, {failed} skipped/failed.",
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -4569,9 +4646,12 @@ def _upgrade_single_preprint(
         "preprints that have a published version."
     ),
 )
-@with_zotero_api_lock
 def upgrade_preprints(limit: int | None = None, *, ctx: Context) -> str:
-    """Batch-upgrade arXiv preprints to published journalArticles via ADS."""
+    """Batch-upgrade arXiv preprints to published journalArticles via ADS.
+
+    Not decorated with @with_zotero_api_lock: spawns a background task that
+    acquires the lock per-item. Prevents MCP-client-timeout + lock-wedge.
+    """
     try:
         read_zot, write_zot = _helpers._get_write_client(ctx)
     except ValueError as e:
@@ -4604,53 +4684,67 @@ def upgrade_preprints(limit: int | None = None, *, ctx: Context) -> str:
             break
 
     total = len(preprints) if not limit else min(len(preprints), limit)
-    ctx.info(f"Found {total} preprint items. Checking ADS for published versions...")
+    if total == 0:
+        return "No preprint items found."
 
-    results: list[dict] = []
-    stats = {"upgraded": 0, "not_published": 0, "no_identifier": 0, "already_article": 0, "error": 0}
-    for idx, it in enumerate(preprints[:total], 1):
+    # Spawn background task for the upgrade loop (ADS calls + PATCHes).
+    from zotero_mcp.batch_runner import create_task, spawn_task
+
+    work_items = [{"key": it.get("key", "")} for it in preprints[:total]]
+    status = create_task("upgrade_preprints", work_items=work_items)
+    spawn_task(status, lambda s: _upgrade_preprints_worker(s, preprints[:total]))
+
+    return (
+        f"⏳ Preprint upgrade started: **{status.task_id}**\n\n"
+        f"Will check {total} preprint(s) for published versions in the background.\n\n"
+        f"Check progress: call `zotero_get_batch_task_status` "
+        f"with task_id `{status.task_id}`."
+    )
+
+
+def _upgrade_preprints_worker(status, preprints) -> None:
+    """Background worker for upgrade_preprints."""
+    from zotero_mcp.batch_runner import update_status
+
+    try:
+        _, write_zot = _helpers._get_write_client(None)
+    except ValueError as e:
+        raise RuntimeError(str(e))
+
+    total = len(preprints)
+    upgraded = 0
+    failed = 0
+
+    for idx, it in enumerate(preprints, 1):
         key = it.get("key", "")
         if not key:
             continue
-        if idx % 10 == 0 or idx == total:
-            ctx.info(f"  Checking {idx}/{total}...")
-        r = _upgrade_single_preprint(write_zot, key)
-        results.append(r)
-        stats[r["status"]] = stats.get(r["status"], 0) + 1
-        # ADS rate limit: ~8 req/s. Each preprint may issue 1-2 queries.
+        try:
+            r = _with_api_lock(lambda k=key: _upgrade_single_preprint(write_zot, k))
+            if r["status"] == "upgraded":
+                upgraded += 1
+            else:
+                failed += 1
+        except Exception as e:
+            logger.warning(f"Failed to upgrade preprint {key}: {e}")
+            failed += 1
         _time.sleep(0.3)
 
-    lines = [
-        "# Preprint Upgrade Results",
-        "",
-        f"**Total preprints checked:** {total}",
-        f"**Upgraded to journalArticle:** {stats.get('upgraded', 0)}",
-        f"**Not yet published:** {stats.get('not_published', 0)}",
-        f"**No ADS identifier:** {stats.get('no_identifier', 0)}",
-        f"**Errors:** {stats.get('error', 0)}",
-        "",
-    ]
-    upgraded = [r for r in results if r["status"] == "upgraded"]
-    if upgraded:
-        lines.append("## Upgraded (first 15)")
-        for r in upgraded[:15]:
-            title = r.get("title", "")
-            details = r.get("details", "")
-            lines.append(f"- `{r['key']}` {title} — {details}")
-        if len(upgraded) > 15:
-            lines.append(f"... and {len(upgraded) - 15} more")
-        lines.append("")
-    not_pub = [r for r in results if r["status"] == "not_published"]
-    if not_pub:
-        lines.append(f"## Not yet published: {len(not_pub)} (left as preprint)")
-    errors = [r for r in results if r["status"] == "error"]
-    if errors:
-        lines.append("## Errors (first 10)")
-        for r in errors[:10]:
-            lines.append(f"- `{r['key']}` — {r.get('error', '?')}")
-        if len(errors) > 10:
-            lines.append(f"... and {len(errors) - 10} more")
-    return "\n".join(lines)
+        if idx % 10 == 0 or idx == total:
+            update_status(
+                status.task_id,
+                processed=idx,
+                succeeded=upgraded,
+                failed=failed,
+            )
+
+    update_status(
+        status.task_id,
+        processed=total,
+        succeeded=upgraded,
+        failed=failed,
+        result_summary=f"Upgraded {upgraded} preprints, {failed} not published/failed.",
+    )
 
 
 @mcp.tool(
@@ -4673,7 +4767,6 @@ def upgrade_preprints(limit: int | None = None, *, ctx: Context) -> str:
         "(e) collection='_unfiled' — only preprints not in any collection."
     ),
 )
-@with_zotero_api_lock
 def upgrade_preprint_pdfs(
     limit: int | None = None,
     item_keys: list[str] | str | None = None,
@@ -4683,6 +4776,9 @@ def upgrade_preprint_pdfs(
     ctx: Context,
 ) -> str:
     """Upgrade arXiv preprints: metadata + publisher PDF replacement.
+
+    Not decorated with @with_zotero_api_lock: spawns a background task that
+    acquires the lock per-item. Prevents MCP-client-timeout + lock-wedge.
 
     - ``item_keys`` given: targeted mode (no scan, no Extra filter).
     - ``collection`` given: scan only that collection (or ``_unfiled`` for
@@ -4817,118 +4913,103 @@ def upgrade_preprint_pdfs(
                 break
 
     total = len(preprints)
-    ctx.info(f"Found {total} arXiv preprint items.")
+    if total == 0:
+        return "No preprint items found matching the criteria."
 
-    stats = {
-        "upgraded": 0,
-        "pdf_replaced": 0,
-        "pdf_not_found": 0,
-        "not_published": 0,
-        "error": 0,
-    }
-    results: list[dict] = []
+    # Spawn background task for the upgrade+download loop.
+    from zotero_mcp.batch_runner import create_task, spawn_task
 
-    for idx, it in enumerate(preprints[:total], 1):
+    work_items = [{"key": it.get("key", ""), "title": (it.get("data", {}).get("title") or "")[:60]} for it in preprints[:total]]
+    status = create_task("upgrade_preprint_pdfs", work_items=work_items)
+    spawn_task(status, lambda s: _upgrade_preprint_pdfs_worker(s, preprints[:total]))
+
+    scihub_note = "" if scihub_enabled else (
+        "\n> ⚠️ Sci-Hub is not enabled — the cascade only finds arXiv preprints "
+        "(same as the existing PDF). Enable `scihub.enabled` in config.json "
+        "to get the publisher version.\n"
+    )
+    return (
+        f"⏳ Preprint PDF upgrade started: **{status.task_id}**\n\n"
+        f"Will process {total} preprint(s) in the background.\n"
+        f"{scihub_note}"
+        f"Check progress: call `zotero_get_batch_task_status` "
+        f"with task_id `{status.task_id}`."
+    )
+
+
+def _upgrade_preprint_pdfs_worker(status, preprints) -> None:
+    """Background worker for upgrade_preprint_pdfs."""
+    from zotero_mcp.batch_runner import update_status
+
+    try:
+        _, write_zot = _helpers._get_write_client(None)
+    except ValueError as e:
+        raise RuntimeError(str(e))
+
+    total = len(preprints)
+    succeeded = 0  # pdf_replaced
+    failed = 0     # not_published + pdf_not_found + error
+
+    for idx, it in enumerate(preprints, 1):
         key = it.get("key", "")
-        title = (it.get("data", {}).get("title") or "")[:60]
         if not key:
             continue
-        if idx % 10 == 0 or idx == total:
-            ctx.info(f"  Processing {idx}/{total}...")
-        r: dict[str, Any] = {"key": key, "title": title, "outcome": "", "error": ""}
         try:
             # Step 1: upgrade metadata (preprint -> journalArticle).
-            upg = _upgrade_single_preprint(write_zot, key)
+            upg = _with_api_lock(lambda k=key: _upgrade_single_preprint(write_zot, k))
             if upg["status"] != "upgraded":
-                r["outcome"] = upg["status"]
-                stats[upg["status"]] = stats.get(upg["status"], 0) + 1
-                results.append(r)
+                failed += 1
                 _time.sleep(0.3)
                 continue
-            stats["upgraded"] += 1
-            r["meta"] = upg.get("details", "")
 
-            # Re-read the item to get the published DOI + bibcode written by
-            # _upgrade_single_preprint.
+            # Re-read to get published DOI + bibcode.
             pub_doi = None
             pub_bibcode = None
             try:
-                upgraded_item = write_zot.item(key)
+                upgraded_item = _with_api_lock(lambda k=key: write_zot.item(k))
                 pub_doi = (upgraded_item.get("data", {}).get("DOI") or "").strip()
                 if not pub_doi or pub_doi.startswith("10.48550/"):
                     pub_doi = None
                 pub_bibcode = _parse_bibcode_from_extra(upgraded_item.get("data", {}).get("extra"))
             except Exception as e:
-                ctx.info(f"Re-read of upgraded item {key} failed: {e}")
+                logger.warning(f"Re-read of upgraded item {key} failed: {e}")
 
             if not pub_doi:
-                r["outcome"] = "upgraded_but_no_doi"
-                r["error"] = "metadata upgraded but no publisher DOI found; PDF not replaced"
-                results.append(r)
+                failed += 1
                 _time.sleep(0.3)
                 continue
 
-            # Step 2: download publisher PDF via the cascade (Sci-Hub first).
-            pdf_status = _helpers._try_attach_oa_pdf(
-                write_zot,
-                key,
-                pub_doi,
-                ctx,
-                bibcode=pub_bibcode,
-                prefer_pub_pdf=True,
+            # Step 2: download publisher PDF via the cascade.
+            pdf_status = _with_api_lock(
+                lambda: _helpers._try_attach_oa_pdf(
+                    write_zot, key, pub_doi, None,
+                    bibcode=pub_bibcode, prefer_pub_pdf=True,
+                )
             )
 
-            # Step 3: only if the download succeeded, trash the old arXiv PDF.
+            # Step 3: trash old arXiv PDF if download succeeded.
             if "attached" in (pdf_status or "").lower():
-                trashed = _helpers._trash_pdf_attachments(write_zot, key, ctx)
-                r["outcome"] = "pdf_replaced"
-                r["pdf_source"] = pdf_status
-                r["old_pdfs_trashed"] = trashed
-                stats["pdf_replaced"] += 1
+                _with_api_lock(lambda: _helpers._trash_pdf_attachments(write_zot, key, None))
+                succeeded += 1
             else:
-                r["outcome"] = "pdf_not_found"
-                r["error"] = pdf_status or "no PDF downloaded"
-                stats["pdf_not_found"] += 1
+                failed += 1
         except Exception as e:
-            r["outcome"] = "error"
-            r["error"] = str(e)
-            stats["error"] += 1
-        results.append(r)
+            logger.warning(f"Failed to process preprint {key}: {e}")
+            failed += 1
         _time.sleep(0.3)
 
-    lines = [
-        "# Preprint PDF Upgrade Results",
-        "",
-        f"**Total preprints checked:** {total}",
-        f"**Metadata upgraded:** {stats.get('upgraded', 0)}",
-        f"**PDFs replaced with publisher version:** {stats.get('pdf_replaced', 0)}",
-        f"**PDF not found (kept arXiv PDF):** {stats.get('pdf_not_found', 0)}",
-        f"**Not yet published:** {stats.get('not_published', 0)}",
-        f"**Errors:** {stats.get('error', 0)}",
-        "",
-    ]
-    if not scihub_enabled:
-        lines.append(
-            "> ⚠️ Sci-Hub is not enabled — the cascade only finds arXiv preprints "
-            "(same as the existing PDF). Enable `scihub.enabled` in config.json "
-            "to get the publisher version.\n"
-        )
-    replaced = [r for r in results if r.get("outcome") == "pdf_replaced"]
-    if replaced:
-        lines.append("## PDFs replaced (first 15)")
-        for r in replaced[:15]:
-            lines.append(f"- `{r['key']}` {r['title']} — {r.get('pdf_source', '')}")
-        if len(replaced) > 15:
-            lines.append(f"... and {len(replaced) - 15} more")
-        lines.append("")
-    not_found = [r for r in results if r.get("outcome") == "pdf_not_found"]
-    if not_found:
-        lines.append(f"## PDF not found (kept arXiv PDF): {len(not_found)}")
-    errors = [r for r in results if r.get("outcome") == "error"]
-    if errors:
-        lines.append("## Errors (first 10)")
-        for r in errors[:10]:
-            lines.append(f"- `{r['key']}` — {r.get('error', '?')}")
-        if len(errors) > 10:
-            lines.append(f"... and {len(errors) - 10} more")
-    return "\n".join(lines)
+        if idx % 5 == 0 or idx == total:
+            update_status(
+                status.task_id,
+                processed=idx,
+                succeeded=succeeded,
+                failed=failed,
+            )
+
+    update_status(
+        status.task_id,
+        processed=total,
+        succeeded=succeeded,
+        failed=failed,
+        result_summary=f"PDFs replaced: {succeeded}, not replaced/failed: {failed}.",
+    )
