@@ -607,7 +607,11 @@ class TestCrossrefUserAgent:
         captured_kwargs = {}
 
         def capture_get(*args, **kwargs):
-            captured_kwargs.update(kwargs)
+            # Only capture the first call (CrossRef). Subsequent calls from
+            # the PDF cascade (Sci-Hub, Unpaywall, S2, PMC) would overwrite
+            # captured_kwargs with their own headers/UA.
+            if not captured_kwargs:
+                captured_kwargs.update(kwargs)
             return _make_crossref_response()
 
         monkeypatch.setattr("requests.get", capture_get)
@@ -624,7 +628,9 @@ class TestCrossrefUserAgent:
         captured_kwargs = {}
 
         def capture_get(*args, **kwargs):
-            captured_kwargs.update(kwargs)
+            # Only capture the first call (CrossRef) — same reason as above.
+            if not captured_kwargs:
+                captured_kwargs.update(kwargs)
             return _make_crossref_response()
 
         monkeypatch.setattr("requests.get", capture_get)
