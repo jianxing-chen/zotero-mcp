@@ -549,8 +549,17 @@ class ChromaClient:
                 try:
                     if self.collection.count() > 0:
                         probe = self.collection.get(limit=1, include=["embeddings"])
-                        stored_embs = probe.get("embeddings") or []
-                        if stored_embs:
+                        # ChromaDB returns embeddings as a numpy array (or
+                        # None when the collection is empty). Using Python
+                        # ``or`` on a numpy array raises "truth value of an
+                        # array with more than one element is ambiguous",
+                        # which the bare ``except Exception`` below would
+                        # swallow — silently disabling the probe so a config
+                        # dimension change (e.g. 3072→1024) is never detected
+                        # and the next upsert fails with a hard
+                        # InvalidArgumentError. Guard explicitly.
+                        stored_embs = probe.get("embeddings")
+                        if stored_embs is not None and len(stored_embs) > 0:
                             stored_dim = len(stored_embs[0])
                             # Embed a one-token probe to learn the new dim.
                             new_emb = self.embedding_function(["dimension probe"])[0]

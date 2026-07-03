@@ -934,21 +934,38 @@ def _dispatch_parse(
 
     # 1. Cloud backend.
     cloud_token = config.get("cloud_token") or os.getenv("MINERU_API_TOKEN")
-    if backend == "cloud" and cloud_token:
-        cloud_model = config.get("cloud_model", "vlm")
-        result = _call_mineru_cloud(pdf_path, start_page_0, end_page_0, cloud_token, cloud_model, timeout)
-        if result is not None:
-            return result
-        if pinned:
-            # Pinned cloud: don't fall through to local CLI.
-            logger.info("MinerU cloud failed (pinned backend); not falling back.")
-            return None
-        logger.info("MinerU cloud failed; falling back to local CLI.")
+    if backend == "cloud":
+        if not cloud_token:
+            if pinned:
+                # Pinned cloud but no token configured: must NOT silently
+                # fall through to local CLI (the caller pinned cloud to
+                # avoid local GPU/CPU work). Return None so the caller sees
+                # a clean failure instead of an unexpected local parse.
+                logger.warning("MinerU backend pinned to 'cloud' but no cloud_token configured; returning None.")
+                return None
+            logger.warning("MinerU backend=cloud but no cloud_token configured; falling back to local CLI.")
+        else:
+            cloud_model = config.get("cloud_model", "vlm")
+            result = _call_mineru_cloud(pdf_path, start_page_0, end_page_0, cloud_token, cloud_model, timeout)
+            if result is not None:
+                return result
+            if pinned:
+                # Pinned cloud: don't fall through to local CLI.
+                logger.info("MinerU cloud failed (pinned backend); not falling back.")
+                return None
+            logger.info("MinerU cloud failed; falling back to local CLI.")
 
     # 2. Local mineru-api backend (legacy /file_parse).
     if backend == "api":
         api_url = config.get("api_url")
-        if api_url:
+        if not api_url:
+            if pinned:
+                # Pinned api but no api_url: same rationale as cloud —
+                # don't silently run the local CLI.
+                logger.warning("MinerU backend pinned to 'api' but no api_url configured; returning None.")
+                return None
+            logger.warning("MinerU backend=api but no api_url configured; trying local CLI.")
+        else:
             result = _call_mineru_api(pdf_path, start_page_0, end_page_0, api_url, timeout)
             if result is not None:
                 return result
@@ -956,8 +973,6 @@ def _dispatch_parse(
                 logger.info("MinerU api failed (pinned backend); not falling back.")
                 return None
             logger.info("MinerU api backend failed; falling back to local CLI.")
-        else:
-            logger.warning("MinerU backend=api but no api_url configured; trying local CLI.")
         # Fall through to local CLI (only when not pinned).
 
     if pinned:

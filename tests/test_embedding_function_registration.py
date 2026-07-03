@@ -94,3 +94,51 @@ def test_openai_build_from_config_preserves_dimensions(monkeypatch):
     assert ef.dimensions == 1024
     cfg = ef.get_config()
     assert cfg["dimensions"] == 1024
+
+
+def test_dimension_probe_triggers_reset_on_dimension_change(tmp_path, monkeypatch):
+    """Regression: switching dimensions (e.g. 3072→1024) must auto-reset the
+    collection on ChromaClient init, NOT silently leave the old-dim collection
+    in place (which causes a hard InvalidArgumentError on the next upsert).
+
+    Root cause was numpy-array truthiness in ``stored_embs = probe.get(...) or []``
+    raising ValueError inside a bare ``except Exception`` that swallowed it.
+    """
+    pytest.importorskip("chromadb")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key-no-network")
+
+    from zotero_mcp.chroma_client import ChromaClient, OpenAIEmbeddingFunction
+
+    persist = str(tmp_path / "chroma")
+    coll_name = "test_dim_probe_coll"
+
+    # Mock __call__ to return controlled-dimension vectors (no network).
+    def fake_call(self, input):
+        dims = getattr(self, "dimensions", None) or 3072
+        return [[0.0] * dims for _ in input]
+
+    monkeypatch.setattr(OpenAIEmbeddingFunction, "__call__", fake_call)
+
+    # Step 1: build with default 3072 dims, write one vector.
+    c1 = ChromaClient(
+        embedding_model="openai",
+        embedding_config={"model_name": "text-embedding-3-large", "api_key": "test"},
+        persist_directory=persist,
+        collection_name=coll_name,
+    )
+    c1.add_documents(["test doc"], [{"has_fulltext": False}], ["d1"])
+    assert c1.collection.count() == 1
+
+    # Step 2: reinit with dimensions=1024, same model_name.
+    c2 = ChromaClient(
+        embedding_model="openai",
+        embedding_config={"model_name": "text-embedding-3-large", "api_key": "test", "dimensions": 1024},
+        persist_directory=persist,
+        collection_name=coll_name,
+    )
+    # Probe should have detected 3072≠1024 and reset → count=0.
+    assert c2.collection.count() == 0, "dimension probe failed to reset collection"
+
+    # Step 3: writing a 1024-dim vector must now succeed (no dimension error).
+    c2.add_documents(["test doc 2"], [{"has_fulltext": False}], ["d2"])
+    assert c2.collection.count() == 1

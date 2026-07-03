@@ -224,6 +224,50 @@ class TestCliFallback:
         assert parsed is not None
         assert parsed.source == "mineru:pipeline"
 
+    def test_pinned_cloud_no_token_returns_none_not_local(self, tmp_path, monkeypatch):
+        """Pinned cloud but no cloud_token → None, NOT silently run local CLI.
+
+        The caller pinned cloud specifically to avoid local GPU/CPU work;
+        falling through to local CLI would violate that contract.
+        """
+        pdf = tmp_path / "paper.pdf"
+        pdf.write_bytes(b"%PDF-1.4 fake")
+        config = {"enabled": True, "backend": "pipeline", "timeout": 30}  # no cloud_token
+        local_called = []
+        monkeypatch.setattr(
+            M,
+            "_call_cli_with_fallback",
+            lambda *a, **k: local_called.append("called") or ("md", None, "mineru:pipeline"),
+        )
+        parsed = M.read_cached_or_parse("ATTKEY", pdf, config, force_rebuild=True, backend_override="cloud")
+        assert parsed is None
+        assert local_called == []  # local CLI never invoked
+
+    def test_pinned_api_no_url_returns_none_not_local(self, tmp_path, monkeypatch):
+        """Pinned api but no api_url → None, NOT silently run local CLI."""
+        pdf = tmp_path / "paper.pdf"
+        pdf.write_bytes(b"%PDF-1.4 fake")
+        config = {"enabled": True, "backend": "pipeline", "timeout": 30}  # no api_url
+        local_called = []
+        monkeypatch.setattr(
+            M,
+            "_call_cli_with_fallback",
+            lambda *a, **k: local_called.append("called") or ("md", None, "mineru:pipeline"),
+        )
+        parsed = M.read_cached_or_parse("ATTKEY", pdf, config, force_rebuild=True, backend_override="api")
+        assert parsed is None
+        assert local_called == []
+
+    def test_unpinned_cloud_no_token_falls_to_local(self, tmp_path, monkeypatch):
+        """Without pinning, cloud-no-token should still fall back to local CLI."""
+        pdf = tmp_path / "paper.pdf"
+        pdf.write_bytes(b"%PDF-1.4 fake")
+        config = {"enabled": True, "backend": "cloud", "timeout": 30}  # no cloud_token
+        monkeypatch.setattr(M, "_call_cli_with_fallback", lambda *a, **k: ("md", None, "mineru:pipeline"))
+        parsed = M.read_cached_or_parse("ATTKEY", pdf, config, force_rebuild=True)
+        assert parsed is not None
+        assert parsed.source == "mineru:pipeline"
+
 
 # --------------------------------------------------------------------------- #
 # Cache hit / invalidation
