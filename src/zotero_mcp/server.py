@@ -129,6 +129,7 @@ from zotero_mcp.tools.write import (  # noqa: F401
     search_collections,
     update_collection,
     update_item,
+    upgrade_preprint_pdfs,
     upgrade_preprints,
 )
 from zotero_mcp.utils import (  # noqa: F401

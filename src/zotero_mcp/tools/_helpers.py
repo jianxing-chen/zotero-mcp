@@ -812,6 +812,56 @@ def _download_and_attach_pdf(write_zot, item_key, pdf_url, doi, ctx):
         return None
 
 
+def _trash_pdf_attachments(write_zot, item_key, ctx) -> int:
+    """Soft-delete (trash) all PDF attachments of an item.
+
+    Iterates ``write_zot.children(item_key)``, selects attachments with
+    ``contentType == "application/pdf"``, and PATCHes each with
+    ``{"deleted": 1}`` (recoverable from Zotero's Trash). Uses the same
+    ``build_url`` + ``If-Unmodified-Since-Version`` pattern as ``delete_item``
+    in ``tools/write.py`` — pyzotero's ``delete_item()`` permanently destroys
+    items, while a PATCH ``{"deleted": 1}`` moves them to the Trash.
+
+    Returns the count of attachments trashed. Non-PDF children (notes,
+    annotations, non-PDF attachments) are left untouched.
+    """
+    from pyzotero.zotero import build_url
+
+    trashed = 0
+    try:
+        children = write_zot.children(item_key)
+    except Exception as e:
+        ctx.info(f"Failed to list children of {item_key}: {e}")
+        return 0
+    for child in children:
+        data = child.get("data", {})
+        if data.get("itemType") != "attachment":
+            continue
+        if data.get("contentType") != "application/pdf":
+            continue
+        child_key = child.get("key", "")
+        if not child_key:
+            continue
+        try:
+            url = build_url(
+                write_zot.endpoint,
+                f"/{write_zot.library_type}/{write_zot.library_id}/items/{child_key}",
+            )
+            resp = write_zot.client.patch(
+                url=url,
+                headers={"If-Unmodified-Since-Version": str(child["version"])},
+                content=json.dumps({"deleted": 1}),
+            )
+            if resp.status_code in (200, 204):
+                trashed += 1
+                ctx.info(f"Trashed PDF attachment {child_key} of item {item_key}")
+            else:
+                ctx.info(f"Failed to trash {child_key}: HTTP {resp.status_code}")
+        except Exception as e:
+            ctx.info(f"Error trashing attachment {child_key}: {e}")
+    return trashed
+
+
 def _maybe_upload_to_webdav(attach_result, file_path, ctx):
     """Suffix to append to a user-facing 'file attached' message.
 

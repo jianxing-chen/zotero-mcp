@@ -4651,3 +4651,181 @@ def upgrade_preprints(limit: int | None = None, *, ctx: Context) -> str:
         if len(errors) > 10:
             lines.append(f"... and {len(errors) - 10} more")
     return "\n".join(lines)
+
+
+@mcp.tool(
+    name="zotero_upgrade_preprint_pdfs",
+    description=(
+        "Scan arXiv preprint items, upgrade their metadata to journalArticle, "
+        "and replace the arXiv PDF with the publisher version. For each "
+        "itemType=preprint item: (1) upgrade metadata via _upgrade_single_preprint "
+        "(itemType->journalArticle, volume/issue/pages/DOI), (2) download the "
+        "publisher PDF via the Sci-Hub -> ADS -> arXiv cascade, (3) only if the "
+        "download succeeds, trash the old arXiv PDF attachment. If no published "
+        "version is found or the PDF download fails, the item is left untouched. "
+        "Requires ADS_API_TOKEN. Enable scihub.enabled in config.json to get the "
+        "publisher version; without Sci-Hub the cascade falls back to the arXiv "
+        "preprint (same as the existing PDF)."
+    ),
+)
+@with_zotero_api_lock
+def upgrade_preprint_pdfs(limit: int | None = None, *, ctx: Context) -> str:
+    """Upgrade arXiv preprints: metadata + publisher PDF replacement.
+
+    See the tool description for the full flow.
+    """
+    try:
+        read_zot, write_zot = _helpers._get_write_client(ctx)
+    except ValueError as e:
+        return str(e)
+
+    if not _ads_client.is_available():
+        return (
+            "Error: ADS_API_TOKEN is not set. This tool needs ADS to find the "
+            "published version of each preprint. Get a free token at "
+            "https://ui.adsabs.harvard.edu/#user/settings/token"
+        )
+
+    scihub_enabled = _helpers._scihub.is_scihub_enabled(_helpers._scihub.load_scihub_config())
+
+    # Paginate through preprint items (server-side itemType filter is cheaper
+    # than the client-side scan used by upgrade_preprints).
+    preprints: list[dict] = []
+    batch_size = 50
+    start = 0
+    while True:
+        try:
+            items = read_zot.items(itemType="preprint", start=start, limit=batch_size)
+        except Exception as e:
+            ctx.error(f"Error fetching preprint items: {e}")
+            break
+        if not items:
+            break
+        for it in items:
+            data = it.get("data", {})
+            # Only process preprints with an arXiv identifier in Extra.
+            if _parse_arxiv_id_from_extra(data.get("extra")):
+                preprints.append(it)
+        start += batch_size
+        if len(items) < batch_size:
+            break
+        if limit and len(preprints) >= limit:
+            preprints = preprints[:limit]
+            break
+
+    total = len(preprints) if not limit else min(len(preprints), limit or len(preprints))
+    ctx.info(f"Found {total} arXiv preprint items.")
+
+    stats = {
+        "upgraded": 0,
+        "pdf_replaced": 0,
+        "pdf_not_found": 0,
+        "not_published": 0,
+        "error": 0,
+    }
+    results: list[dict] = []
+
+    for idx, it in enumerate(preprints[:total], 1):
+        key = it.get("key", "")
+        title = (it.get("data", {}).get("title") or "")[:60]
+        if not key:
+            continue
+        if idx % 10 == 0 or idx == total:
+            ctx.info(f"  Processing {idx}/{total}...")
+        r: dict[str, Any] = {"key": key, "title": title, "outcome": "", "error": ""}
+        try:
+            # Step 1: upgrade metadata (preprint -> journalArticle).
+            upg = _upgrade_single_preprint(write_zot, key)
+            if upg["status"] != "upgraded":
+                r["outcome"] = upg["status"]
+                stats[upg["status"]] = stats.get(upg["status"], 0) + 1
+                results.append(r)
+                _time.sleep(0.3)
+                continue
+            stats["upgraded"] += 1
+            r["meta"] = upg.get("details", "")
+
+            # Re-read the item to get the published DOI + bibcode written by
+            # _upgrade_single_preprint.
+            pub_doi = None
+            pub_bibcode = None
+            try:
+                upgraded_item = write_zot.item(key)
+                pub_doi = (upgraded_item.get("data", {}).get("DOI") or "").strip()
+                if not pub_doi or pub_doi.startswith("10.48550/"):
+                    pub_doi = None
+                pub_bibcode = _parse_bibcode_from_extra(upgraded_item.get("data", {}).get("extra"))
+            except Exception as e:
+                ctx.info(f"Re-read of upgraded item {key} failed: {e}")
+
+            if not pub_doi:
+                r["outcome"] = "upgraded_but_no_doi"
+                r["error"] = "metadata upgraded but no publisher DOI found; PDF not replaced"
+                results.append(r)
+                _time.sleep(0.3)
+                continue
+
+            # Step 2: download publisher PDF via the cascade (Sci-Hub first).
+            pdf_status = _helpers._try_attach_oa_pdf(
+                write_zot,
+                key,
+                pub_doi,
+                ctx,
+                bibcode=pub_bibcode,
+                prefer_pub_pdf=True,
+            )
+
+            # Step 3: only if the download succeeded, trash the old arXiv PDF.
+            if "attached" in (pdf_status or "").lower():
+                trashed = _helpers._trash_pdf_attachments(write_zot, key, ctx)
+                r["outcome"] = "pdf_replaced"
+                r["pdf_source"] = pdf_status
+                r["old_pdfs_trashed"] = trashed
+                stats["pdf_replaced"] += 1
+            else:
+                r["outcome"] = "pdf_not_found"
+                r["error"] = pdf_status or "no PDF downloaded"
+                stats["pdf_not_found"] += 1
+        except Exception as e:
+            r["outcome"] = "error"
+            r["error"] = str(e)
+            stats["error"] += 1
+        results.append(r)
+        _time.sleep(0.3)
+
+    lines = [
+        "# Preprint PDF Upgrade Results",
+        "",
+        f"**Total preprints checked:** {total}",
+        f"**Metadata upgraded:** {stats.get('upgraded', 0)}",
+        f"**PDFs replaced with publisher version:** {stats.get('pdf_replaced', 0)}",
+        f"**PDF not found (kept arXiv PDF):** {stats.get('pdf_not_found', 0)}",
+        f"**Not yet published:** {stats.get('not_published', 0)}",
+        f"**Errors:** {stats.get('error', 0)}",
+        "",
+    ]
+    if not scihub_enabled:
+        lines.append(
+            "> ⚠️ Sci-Hub is not enabled — the cascade only finds arXiv preprints "
+            "(same as the existing PDF). Enable `scihub.enabled` in config.json "
+            "to get the publisher version.\n"
+        )
+    replaced = [r for r in results if r.get("outcome") == "pdf_replaced"]
+    if replaced:
+        lines.append("## PDFs replaced (first 15)")
+        for r in replaced[:15]:
+            lines.append(f"- `{r['key']}` {r['title']} — {r.get('pdf_source', '')}")
+        if len(replaced) > 15:
+            lines.append(f"... and {len(replaced) - 15} more")
+        lines.append("")
+    not_found = [r for r in results if r.get("outcome") == "pdf_not_found"]
+    if not_found:
+        lines.append(f"## PDF not found (kept arXiv PDF): {len(not_found)}")
+    errors = [r for r in results if r.get("outcome") == "error"]
+    if errors:
+        lines.append("## Errors (first 10)")
+        for r in errors[:10]:
+            lines.append(f"- `{r['key']}` — {r.get('error', '?')}")
+        if len(errors) > 10:
+            lines.append(f"... and {len(errors) - 10} more")
+    return "\n".join(lines)
