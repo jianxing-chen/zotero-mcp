@@ -8,9 +8,23 @@ Covers:
 
 from __future__ import annotations
 
+import re
 from unittest.mock import MagicMock, patch
 
 from zotero_mcp.tools import _helpers
+
+
+def _extract_task_id(result: str) -> str:
+    r"""Extract the task_id from the tool's return string.
+
+    The return string wraps the task_id in ``**...**`` AND in backticks
+    (``scihub.enabled``, ``zotero_get_batch_task_status``, ``<task_id>``),
+    so a naive ``split('`')[1]`` would grab the wrong backtick-enclosed
+    token. Anchor to the canonical task_id format ``YYYYmmddTHHMMSSZ-<hex>``.
+    """
+    m = re.search(r"\*\*([0-9T]{8}T[0-9]{6}Z-[0-9a-f]+)\*\*", result)
+    assert m, f"could not extract task_id from result: {result[:120]!r}"
+    return m.group(1)
 
 # ---------------------------------------------------------------------------
 # _trash_pdf_attachments
@@ -310,9 +324,13 @@ class TestUpgradePreprintPdfs:
     def test_downloads_then_trashes_on_success(self, mock_get_client, mock_upgrade, dummy_ctx, monkeypatch, tmp_path):
         """Upgrade succeeds + PDF download succeeds -> old PDF trashed.
 
-        Regression check: the worker snapshots the old PDF keys *before* the
-        download and passes them as ``exclude_keys`` to _trash_pdf_attachments,
-        so the newly-attached publisher PDF is NOT trashed.
+        Regression checks:
+        - The worker snapshots the old PDF keys *before* the download and
+          passes them as ``only_keys`` to _trash_pdf_attachments, so the
+          newly-attached publisher PDF is NOT trashed (data-loss bug fix).
+        - The worker passes ``pub_only=True`` to _try_attach_oa_pdf so the
+          cascade is restricted to publisher-version sources only — the item
+          already has the arXiv preprint, so an arXiv fallback is pointless.
         """
         import time as _time
 
@@ -354,11 +372,8 @@ class TestUpgradePreprintPdfs:
         from zotero_mcp.tools.write import upgrade_preprint_pdfs
 
         # Mock the cascade to return success
-        monkeypatch.setattr(
-            helpers_mod,
-            "_try_attach_oa_pdf",
-            lambda *a, **k: "PDF attached (source: Sci-Hub)",
-        )
+        cascade_mock = MagicMock(return_value="PDF attached (source: Sci-Hub)")
+        monkeypatch.setattr(helpers_mod, "_try_attach_oa_pdf", cascade_mock)
         # Snapshot before the download returns ["OLD_PDF"].
         monkeypatch.setattr(
             helpers_mod,
@@ -373,7 +388,7 @@ class TestUpgradePreprintPdfs:
         assert "get_batch_task_status" in result
 
         # Extract task_id and wait for the background worker to finish.
-        task_id = result.split("`")[1] if "`" in result else result.split("**")[1]
+        task_id = _extract_task_id(result)
         deadline = _time.time() + 5
         while _time.time() < deadline:
             loaded = read_status(task_id)
@@ -390,6 +405,15 @@ class TestUpgradePreprintPdfs:
         assert "only_keys" in kwargs, "only_keys not passed — data-loss bug"
         assert kwargs["only_keys"] == {"OLD_PDF"}, (
             f"expected only_keys={{'OLD_PDF'}}, got {kwargs['only_keys']!r}"
+        )
+
+        # The cascade must have been called with pub_only=True — the
+        # publisher-only restriction that prevents downloading another
+        # arXiv copy when the item already has the preprint.
+        assert cascade_mock.called, "worker never called _try_attach_oa_pdf"
+        cascade_kwargs = cascade_mock.call_args.kwargs
+        assert cascade_kwargs.get("pub_only") is True, (
+            f"expected pub_only=True, got {cascade_kwargs.get('pub_only')!r}"
         )
 
     @patch("zotero_mcp.tools.write._upgrade_single_preprint")
@@ -442,6 +466,90 @@ class TestUpgradePreprintPdfs:
         result = upgrade_preprint_pdfs(ctx=dummy_ctx)
         assert "started" in result.lower() or "⏳" in result
         assert "get_batch_task_status" in result
+
+    @patch("zotero_mcp.tools.write._upgrade_single_preprint")
+    @patch("zotero_mcp.tools.write._helpers._get_write_client")
+    def test_no_publisher_pdf_skips_item(self, mock_get_client, mock_upgrade, dummy_ctx, monkeypatch, tmp_path):
+        """Publisher version not available -> item skipped, old arXiv PDF kept.
+
+        The cascade is restricted to publisher-version sources (pub_only=True),
+        so when none has the publisher PDF, the cascade returns a no-PDF
+        string; the worker records the item as 'PDF not found' and does NOT
+        trash the old arXiv PDF.
+        """
+        import time as _time
+
+        from zotero_mcp.batch_runner import read_status
+
+        monkeypatch.setattr("zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks")
+        preprint = self._make_preprint_item()
+        read_zot = MagicMock()
+
+        # items() must respond differently per itemType so the worker doesn't
+        # see the same preprint twice (once as preprint, once as journalArticle).
+        def items_side_effect(*, itemType=None, **_kw):
+            if itemType == "preprint":
+                return [preprint]
+            return []
+
+        read_zot.items.side_effect = items_side_effect
+        write_zot = MagicMock()
+        write_zot.item.return_value = {
+            "key": "PRE1",
+            "version": 2,
+            "data": {
+                "itemType": "journalArticle",
+                "DOI": "10.1088/0004-637X/769/2/127",
+                "extra": "arXiv:2401.12345\nbibcode: 2013ApJ...769..127L",
+            },
+        }
+        mock_get_client.return_value = (read_zot, write_zot)
+
+        mock_upgrade.return_value = {
+            "key": "PRE1",
+            "status": "upgraded",
+            "details": "preprint→journalArticle",
+            "error": "",
+        }
+
+        from zotero_mcp import ads_client
+
+        monkeypatch.setattr(ads_client, "is_available", lambda: True)
+
+        from zotero_mcp import scihub_client
+
+        monkeypatch.setattr(scihub_client, "is_scihub_enabled", lambda cfg: False)
+
+        from zotero_mcp.tools import _helpers as helpers_mod
+        from zotero_mcp.tools.write import upgrade_preprint_pdfs
+
+        # Mock the cascade to return failure (no publisher PDF found).
+        cascade_mock = MagicMock(return_value="no open-access PDF found (checked ...)")
+        monkeypatch.setattr(helpers_mod, "_try_attach_oa_pdf", cascade_mock)
+        trash_mock = MagicMock()
+        monkeypatch.setattr(helpers_mod, "_trash_pdf_attachments", trash_mock)
+
+        result = upgrade_preprint_pdfs(ctx=dummy_ctx)
+        task_id = _extract_task_id(result)
+
+        # Wait for the worker to finish.
+        deadline = _time.time() + 5
+        while _time.time() < deadline:
+            loaded = read_status(task_id)
+            if loaded and loaded.status in ("completed", "failed"):
+                break
+            _time.sleep(0.05)
+
+        loaded = read_status(task_id)
+        assert loaded is not None
+        # pub_only must be True.
+        assert cascade_mock.call_args.kwargs.get("pub_only") is True
+        # No PDF attached -> trash NOT called (old arXiv PDF preserved).
+        trash_mock.assert_not_called()
+        # Item recorded as failed/PDF not found.
+        assert loaded.failed == 1
+        assert loaded.succeeded == 0
+        assert any(it.get("key") == "PRE1" for it in loaded.failed_items)
 
     @patch("zotero_mcp.tools.write._upgrade_single_preprint")
     @patch("zotero_mcp.tools.write._helpers._get_write_client")

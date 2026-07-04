@@ -124,7 +124,7 @@ class TestCascadeOrder:
         zot = _AttachZotero()
         tried: list[str] = []
 
-        def fake_ads_pdf_url_by_doi(doi, prefer_pub, ctx):
+        def fake_ads_pdf_url_by_doi(doi, prefer_pub, ctx, *, pub_only=False):
             tried.append("ADS")
             return "https://ads.example.com/paper.pdf"
 
@@ -157,7 +157,7 @@ class TestCascadeOrder:
             order.append("Sci-Hub")
             return "https://sci-hub.example.com/paper.pdf"
 
-        def fake_ads_pdf_url_by_doi(doi, prefer_pub, ctx):
+        def fake_ads_pdf_url_by_doi(doi, prefer_pub, ctx, *, pub_only=False):
             order.append("ADS")
             return None  # shouldn't be reached if Sci-Hub succeeds
 
@@ -327,11 +327,11 @@ class TestCascadeGates:
         by_bibcode_called = []
         by_doi_called = []
 
-        def fake_by_bibcode(bibcode, prefer_pub, ctx):
+        def fake_by_bibcode(bibcode, prefer_pub, ctx, *, pub_only=False):
             by_bibcode_called.append(bibcode)
             return "https://ads.example.com/paper.pdf"
 
-        def fake_by_doi(doi, prefer_pub, ctx):
+        def fake_by_doi(doi, prefer_pub, ctx, *, pub_only=False):
             by_doi_called.append(doi)
             return "https://ads.example.com/paper.pdf"
 
@@ -367,7 +367,7 @@ class TestCascadeGates:
         zot = _AttachZotero()
         seen_pref = []
 
-        def fake_ads_pdf_url(bibcode, prefer_pub, ctx):
+        def fake_ads_pdf_url(bibcode, prefer_pub, ctx, *, pub_only=False):
             seen_pref.append(prefer_pub)
             return "https://ads.example.com/paper.pdf"
 
@@ -400,7 +400,7 @@ class TestCascadeGates:
         zot = _AttachZotero()
         seen_pref = []
 
-        def fake_ads_pdf_url(bibcode, prefer_pub, ctx):
+        def fake_ads_pdf_url(bibcode, prefer_pub, ctx, *, pub_only=False):
             seen_pref.append(prefer_pub)
             return "https://ads.example.com/paper.pdf"
 

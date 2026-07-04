@@ -1090,38 +1090,44 @@ def _try_pmc(doi, ctx):
         return None
 
 
-def _try_ads_pdf_url(bibcode, prefer_pub_pdf, ctx):
+def _try_ads_pdf_url(bibcode, prefer_pub_pdf, ctx, *, pub_only=False):
     """Return ADS link_gateway PDF URL(s) for a known bibcode, or None.
 
     Returns a list of URLs (publisher first, then eprint when
     ``prefer_pub_pdf=True``) so the cascade can try each in turn within the
     same "ADS" source. When only one endpoint is available, the list has a
     single element. Returns ``[]`` when ADS has no PDF for this bibcode.
+
+    ``pub_only=True`` restricts to PUB_PDF only (no EPRINT_PDF fallback) —
+    for callers that already have the arXiv preprint and want only the
+    publisher version.
     """
     try:
         prefer = "pub" if prefer_pub_pdf else "eprint"
-        urls = _ads_client.get_pdf_urls(bibcode, prefer=prefer)
+        urls = _ads_client.get_pdf_urls(bibcode, prefer=prefer, pub_only=pub_only)
         if urls:
-            ctx.info(f"ADS: link_gateway PDFs for {bibcode} ({prefer}): {urls}")
+            ctx.info(f"ADS: link_gateway PDFs for {bibcode} ({prefer}, pub_only={pub_only}): {urls}")
         return urls
     except Exception as e:
         ctx.info(f"ADS URL lookup failed: {e}")
         return None
 
 
-def _try_ads_pdf_url_by_doi(doi, prefer_pub_pdf, ctx):
+def _try_ads_pdf_url_by_doi(doi, prefer_pub_pdf, ctx, *, pub_only=False):
     """Resolve ADS PDF URL(s) from a DOI via ``ads_client.get_pdf_urls_by_doi``.
 
     Used when the cascade has a DOI but no bibcode (the common case for
     ``add_by_doi`` and the batch importers). Returns the list of PDF URLs
     (publisher first, then eprint when ``prefer_pub_pdf=True``) — the resolved
     bibcode is discarded here since the caller has no use for it.
+
+    ``pub_only=True`` is forwarded to ``get_pdf_urls_by_doi`` — see its docstring.
     """
     try:
         prefer = "pub" if prefer_pub_pdf else "eprint"
-        urls, _bibcode = _ads_client.get_pdf_urls_by_doi(doi, prefer=prefer)
+        urls, _bibcode = _ads_client.get_pdf_urls_by_doi(doi, prefer=prefer, pub_only=pub_only)
         if urls:
-            ctx.info(f"ADS: resolved PDFs via DOI lookup ({prefer}): {urls}")
+            ctx.info(f"ADS: resolved PDFs via DOI lookup ({prefer}, pub_only={pub_only}): {urls}")
         return urls
     except Exception as e:
         ctx.info(f"ADS DOI lookup failed: {e}")
@@ -1138,6 +1144,7 @@ def _try_attach_oa_pdf(
     *,
     bibcode=None,
     prefer_pub_pdf=False,
+    pub_only=False,
 ):
     """Attempt to find and attach an open-access PDF for a DOI.
 
@@ -1161,9 +1168,16 @@ def _try_attach_oa_pdf(
     5. **Semantic Scholar**.
     6. **PubMed Central**.
 
-    ``bibcode`` and ``prefer_pub_pdf`` are keyword-only. ``bibcode`` short-
-    circuits the ADS DOI→bibcode round-trip when the caller already knows it
-    (e.g. ``add_by_bibcode``).
+    ``bibcode``, ``prefer_pub_pdf`` and ``pub_only`` are keyword-only. ``bibcode``
+    short-circuits the ADS DOI→bibcode round-trip when the caller already knows
+    it (e.g. ``add_by_bibcode``).
+
+    ``pub_only=True`` restricts the cascade to **publisher-version sources only**
+    (Sci-Hub + ADS PUB_PDF). Sources that would return an arXiv preprint or an
+    uncontrolled OA copy are skipped entirely — ADS never falls back to
+    EPRINT_PDF, and the arXiv/Unpaywall/Semantic-Scholar/PMC sources are
+    omitted. Use this when the item already has the arXiv preprint and
+    downloading another copy is pointless (e.g. ``upgrade_preprint_pdfs``).
     """
     sources: list[tuple[str, object]] = []
 
@@ -1175,21 +1189,23 @@ def _try_attach_oa_pdf(
         sources.append(("Sci-Hub", lambda: _scihub.find_pdf_url(doi, ctx)))
 
     # 2. ADS — top priority when configured. PUB_PDF first (publisher version),
-    #    then EPRINT_PDF (arXiv preprint) within the same source.
+    #    then EPRINT_PDF (arXiv preprint) within the same source. When
+    #    pub_only=True, only PUB_PDF is tried (no EPRINT_PDF fallback).
     if _ads_client.is_available():
         if bibcode:
-            sources.append(("ADS", lambda: _try_ads_pdf_url(bibcode, prefer_pub_pdf, ctx)))
+            sources.append(("ADS", lambda: _try_ads_pdf_url(bibcode, prefer_pub_pdf, ctx, pub_only=pub_only)))
         elif doi:
-            sources.append(("ADS", lambda: _try_ads_pdf_url_by_doi(doi, prefer_pub_pdf, ctx)))
+            sources.append(("ADS", lambda: _try_ads_pdf_url_by_doi(doi, prefer_pub_pdf, ctx, pub_only=pub_only)))
 
-    # 3. arXiv (via CrossRef relations — always OA).
-    sources.append(("arXiv (via CrossRef)", lambda: _try_arxiv_from_crossref(crossref_metadata, ctx)))
-    # 4. Unpaywall.
-    sources.append(("Unpaywall", lambda: _try_unpaywall(doi, ctx)))
-    # 5. Semantic Scholar.
-    sources.append(("Semantic Scholar", lambda: _try_semantic_scholar(doi, ctx)))
-    # 6. PubMed Central.
-    sources.append(("PubMed Central", lambda: _try_pmc(doi, ctx)))
+    if not pub_only:
+        # 3. arXiv (via CrossRef relations — always OA).
+        sources.append(("arXiv (via CrossRef)", lambda: _try_arxiv_from_crossref(crossref_metadata, ctx)))
+        # 4. Unpaywall.
+        sources.append(("Unpaywall", lambda: _try_unpaywall(doi, ctx)))
+        # 5. Semantic Scholar.
+        sources.append(("Semantic Scholar", lambda: _try_semantic_scholar(doi, ctx)))
+        # 6. PubMed Central.
+        sources.append(("PubMed Central", lambda: _try_pmc(doi, ctx)))
 
     found_urls = []  # Track URLs found but not downloadable
 

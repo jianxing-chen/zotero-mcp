@@ -5199,11 +5199,19 @@ def _upgrade_preprints_worker(status, preprints) -> None:
         "after successful replacement, the arXiv line is removed from "
         "Extra, making the run idempotent (already-processed items are "
         "skipped on the next scan). "
-        "PDF download uses the Sci-Hub -> ADS -> arXiv cascade. Old PDFs "
-        "are trashed (recoverable from Zotero's Trash). "
-        "Requires ADS_API_TOKEN. Enable scihub.enabled in config.json to "
-        "get the publisher version; without Sci-Hub the cascade falls back "
-        "to the arXiv preprint (same as the existing PDF). "
+        "Publisher-only download: the cascade is restricted to Sci-Hub + "
+        "ADS PUB_PDF — sources that return arXiv preprints (ADS EPRINT_PDF, "
+        "arXiv via CrossRef, Unpaywall, Semantic Scholar, PMC) are skipped, "
+        "because the item already has the arXiv preprint and downloading "
+        "another copy is pointless. If the publisher version is not "
+        "available, the item is skipped (old PDF is kept). "
+        "Old PDFs are trashed only after a successful publisher-PDF download "
+        "(recoverable from Zotero's Trash). "
+        "Requires ADS_API_TOKEN. Enable scihub.enabled in config.json so "
+        "Sci-Hub can fetch the paywalled publisher version; without Sci-Hub "
+        "the cascade relies on ADS PUB_PDF only (often blocked by publisher "
+        "WAFs), so most items will be skipped unless your network has an "
+        "institutional subscription. "
         "Trigger modes: (a) default scan — all preprints + journalArticles "
         "with an arXiv ID; (b) require_bibcode=True — only preprints with a "
         "bibcode (journalArticles are always matched by arXiv ID); "
@@ -5229,6 +5237,12 @@ def upgrade_preprint_pdfs(
     Scans both preprints (need metadata upgrade + PDF) and journalArticles
     with arXiv ID in Extra (need PDF only). After successful PDF replacement,
     the arXiv line is removed from Extra — idempotent on re-runs.
+
+    The PDF cascade is restricted to publisher-version sources only
+    (``pub_only=True``): Sci-Hub + ADS PUB_PDF. Sources that would return an
+    arXiv preprint are skipped because the item already has it — if the
+    publisher version is unavailable, the item is skipped and the old PDF
+    is kept.
 
     - ``item_keys`` given: targeted mode (no scan, no Extra filter).
     - ``collection`` given: scan only that collection (or ``_unfiled``).
@@ -5478,11 +5492,16 @@ def _upgrade_preprint_pdfs_worker(status, preprints) -> None:
             # zero PDFs (data-loss bug).
             old_pdf_keys = set(_with_api_lock(lambda k=key: _helpers._list_pdf_attachment_keys(write_zot, k)))
 
-            # Step 2: download publisher PDF via the cascade.
+            # Step 2: download publisher PDF via the cascade. pub_only=True
+            # restricts to publisher-version sources (Sci-Hub + ADS PUB_PDF)
+            # only — no EPRINT_PDF/arXiv fallback. The item already has the
+            # arXiv preprint, so downloading another copy is pointless; if
+            # the publisher version isn't available, skip this item entirely
+            # rather than leaving a duplicate arXiv PDF.
             pdf_status = _with_api_lock(
                 lambda: _helpers._try_attach_oa_pdf(
                     write_zot, key, pub_doi, DummyCtx(),
-                    bibcode=pub_bibcode, prefer_pub_pdf=True,
+                    bibcode=pub_bibcode, prefer_pub_pdf=True, pub_only=True,
                 )
             )
 

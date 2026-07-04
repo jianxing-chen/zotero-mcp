@@ -246,7 +246,7 @@ def get_pdf_url(bibcode: str, prefer: str = "eprint") -> str | None:
     return None
 
 
-def get_pdf_urls(bibcode: str, prefer: str = "eprint") -> list[str]:
+def get_pdf_urls(bibcode: str, prefer: str = "eprint", *, pub_only: bool = False) -> list[str]:
     """Return link_gateway PDF URLs in priority order (best first).
 
     Like :func:`get_pdf_url` but returns **all** available endpoints in the
@@ -260,6 +260,11 @@ def get_pdf_urls(bibcode: str, prefer: str = "eprint") -> list[str]:
         bibcode: normalized bibcode.
         prefer: ``"pub"`` (publisher first, then eprint) or ``"eprint"``
             (arXiv first, then publisher).
+        pub_only: when True, return ONLY the publisher-version (PUB_PDF) URL
+            and never fall back to EPRINT_PDF. Used by callers that already
+            have the arXiv preprint and want only the publisher version —
+            downloading another arXiv copy is pointless (e.g.
+            ``upgrade_preprint_pdfs``).
 
     Returns:
         Ordered list of link_gateway URLs (possibly empty).
@@ -273,6 +278,13 @@ def get_pdf_urls(bibcode: str, prefer: str = "eprint") -> list[str]:
 
     eprint_available = "EPRINT_PDF" in esources
     pub_available = "PUB_PDF" in esources
+
+    if pub_only:
+        # Strict publisher-only: PUB_PDF if listed, otherwise nothing.
+        # Never fall back to EPRINT_PDF — the caller already has the preprint.
+        if pub_available:
+            return [f"{ADS_LINK_BASE}/{bibcode}/PUB_PDF"]
+        return []
 
     if prefer == "pub":
         order = [("PUB_PDF", pub_available), ("EPRINT_PDF", eprint_available)]
@@ -324,13 +336,15 @@ def get_pdf_url_by_doi(doi: str, prefer: str = "pub") -> tuple[str | None, str |
     return pdf_url, bibcode
 
 
-def get_pdf_urls_by_doi(doi: str, prefer: str = "pub") -> tuple[list[str], str | None]:
+def get_pdf_urls_by_doi(doi: str, prefer: str = "pub", *, pub_only: bool = False) -> tuple[list[str], str | None]:
     """Resolve ordered PDF URLs from a DOI via ADS.
 
     Like :func:`get_pdf_url_by_doi` but returns all available link_gateway
     URLs in priority order via :func:`get_pdf_urls`, so the cascade can try
     each in turn (publisher PDF first when ``prefer="pub"``, then the arXiv
     preprint if the publisher download is blocked).
+
+    ``pub_only=True`` is forwarded to :func:`get_pdf_urls` — see its docstring.
 
     Returns:
         ``(urls, bibcode)`` — ``urls`` is a (possibly empty) ordered list.
@@ -343,7 +357,7 @@ def get_pdf_urls_by_doi(doi: str, prefer: str = "pub") -> tuple[list[str], str |
     bibcode = docs[0].get("bibcode")
     if not bibcode:
         return [], None
-    urls = get_pdf_urls(bibcode, prefer=prefer)
+    urls = get_pdf_urls(bibcode, prefer=prefer, pub_only=pub_only)
     return urls, bibcode
 
 
