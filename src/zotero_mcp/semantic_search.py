@@ -1167,7 +1167,18 @@ class ZoteroSemanticSearch:
                         # reindex_keys / no client). reindex_keys forces
                         # re-extraction from the latest local full-text source.
                         if chroma_client and not force_rebuild and not reindex_keys:
-                            existing_metadata = chroma_client.get_document_metadata(it.key)
+                            # When chunking is enabled the stored IDs are
+                            # ``<key>#0``, ``<key>#1``, …; the bare ``<key>`` is
+                            # never written (see _process_item_batch). Probing
+                            # the bare key would always miss and force a full
+                            # re-embedding on every ``update-db --fulltext``
+                            # run — a hidden full rebuild burning embedding
+                            # tokens. Probe the chunk-0 id instead; it is the
+                            # canonical per-item representative (also used by
+                            # _mineru_index_current and the added-vs-updated
+                            # accounting in _process_item_batch).
+                            probe_id = f"{it.key}#0" if self._chunking_enabled else it.key
+                            existing_metadata = chroma_client.get_document_metadata(probe_id)
                             if existing_metadata:
                                 chroma_has_fulltext = existing_metadata.get("has_fulltext", False)
                                 local_has_fulltext = len(reader.get_fulltext_meta_for_item(it.item_id)) > 0
