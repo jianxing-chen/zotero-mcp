@@ -4604,6 +4604,12 @@ def _enrich_single_item(
         result["error"] = f"write failed: {e}"
         return result
 
+    # Clean up any empty-shell PDF attachments that may have been left by
+    # previous failed import attempts (attach_mode='auto' that couldn't
+    # download a valid PDF). These show up as broken "file not found" links
+    # in the Zotero desktop client.
+    _helpers._cleanup_empty_pdf_attachments(write_zot, item_key)
+
     result["status"] = "enriched"
     filled_display = []
     if "date" in field_updates:
@@ -5054,6 +5060,10 @@ def _upgrade_single_preprint(
         result["status"] = "error"
         result["error"] = f"write failed: {e}"
         return result
+
+    # Clean up any empty-shell PDF attachments left by previous failed
+    # import attempts (e.g. attach_mode='auto' that was WAF-blocked).
+    _helpers._cleanup_empty_pdf_attachments(write_zot, item_key)
 
     filled = [k for k in field_updates if k != "itemType"]
     result["status"] = "upgraded"

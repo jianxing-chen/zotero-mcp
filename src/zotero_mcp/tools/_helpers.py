@@ -839,6 +839,63 @@ def _list_pdf_attachment_keys(write_zot, item_key) -> list[str]:
     return keys
 
 
+def _cleanup_empty_pdf_attachments(write_zot, item_key, ctx=None) -> int:
+    """Trash PDF attachments that have no file bytes (empty shells).
+
+    An "empty shell" is a PDF attachment whose ``md5`` and ``mtime`` are
+    both ``None`` — the attachment item was created (metadata only) but the
+    file upload failed (e.g. Zotero Storage quota exceeded, publisher WAF
+    blocked the download, or the import tool's ``attach_mode='auto'``
+    triggered but ``_try_attach_oa_pdf`` couldn't fetch a valid PDF).
+
+    These show up in the Zotero desktop client as broken "file not found"
+    links. This helper scans the item's children and trashes any empty
+    PDF shells. Attachments with real file bytes (md5 is not None) are
+    left untouched.
+
+    Returns the count of attachments trashed.
+    """
+    from pyzotero.zotero import build_url
+
+    trashed = 0
+    try:
+        children = write_zot.children(item_key)
+    except Exception as e:
+        if ctx:
+            ctx.info(f"Failed to list children of {item_key}: {e}")
+        return 0
+    for child in children:
+        data = child.get("data", {})
+        if data.get("itemType") != "attachment":
+            continue
+        if data.get("contentType") != "application/pdf":
+            continue
+        # An empty shell has no md5/mtime (file never uploaded successfully).
+        if data.get("md5") is not None or data.get("mtime") is not None:
+            continue  # has real file bytes — keep it
+        child_key = child.get("key", "")
+        if not child_key:
+            continue
+        try:
+            url = build_url(
+                write_zot.endpoint,
+                f"/{write_zot.library_type}/{write_zot.library_id}/items/{child_key}",
+            )
+            resp = write_zot.client.patch(
+                url=url,
+                headers={"If-Unmodified-Since-Version": str(child["version"])},
+                content=json.dumps({"deleted": 1}),
+            )
+            if resp.status_code in (200, 204):
+                trashed += 1
+                if ctx:
+                    ctx.info(f"Cleaned up empty PDF attachment {child_key} of item {item_key}")
+        except Exception as e:
+            if ctx:
+                ctx.info(f"Failed to trash empty attachment {child_key}: {e}")
+    return trashed
+
+
 def _trash_pdf_attachments(write_zot, item_key, ctx, *, only_keys: set[str] | None = None) -> int:
     """Soft-delete (trash) PDF attachments of an item.
 

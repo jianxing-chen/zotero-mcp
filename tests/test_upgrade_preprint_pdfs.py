@@ -168,6 +168,106 @@ class TestTrashPdfAttachments:
 
 
 # ---------------------------------------------------------------------------
+# _cleanup_empty_pdf_attachments
+# ---------------------------------------------------------------------------
+
+
+class TestCleanupEmptyPdfAttachments:
+    def test_trashes_empty_shell_attachments(self, dummy_ctx):
+        """Attachments with md5=None/mtime=None are trashed (empty shells)."""
+        write_zot = MagicMock()
+        real_pdf = {
+            "key": "REAL1",
+            "version": 10,
+            "data": {"itemType": "attachment", "contentType": "application/pdf",
+                     "md5": "abc123", "mtime": 1700000000000},
+        }
+        empty_shell = {
+            "key": "EMPTY1",
+            "version": 20,
+            "data": {"itemType": "attachment", "contentType": "application/pdf",
+                     "md5": None, "mtime": None},
+        }
+        write_zot.children.return_value = [real_pdf, empty_shell]
+        write_zot.endpoint = "https://api.zotero.org"
+        write_zot.library_type = "user"
+        write_zot.library_id = "12345"
+        write_zot.client.patch.return_value = MagicMock(status_code=204)
+
+        count = _helpers._cleanup_empty_pdf_attachments(write_zot, "ITEM1", dummy_ctx)
+
+        assert count == 1
+        assert write_zot.client.patch.call_count == 1
+        # Verify the trashed URL contains EMPTY1, not REAL1
+        call = write_zot.client.patch.call_args_list[0]
+        url = call.kwargs.get("url", "")
+        assert "EMPTY1" in url
+        assert "REAL1" not in url
+
+    def test_keeps_attachments_with_file_bytes(self, dummy_ctx):
+        """Attachments with md5 set (real files) are NOT trashed."""
+        write_zot = MagicMock()
+        pdf1 = {
+            "key": "P1",
+            "version": 10,
+            "data": {"itemType": "attachment", "contentType": "application/pdf",
+                     "md5": "abc", "mtime": 100},
+        }
+        pdf2 = {
+            "key": "P2",
+            "version": 20,
+            "data": {"itemType": "attachment", "contentType": "application/pdf",
+                     "md5": "def", "mtime": 200},
+        }
+        write_zot.children.return_value = [pdf1, pdf2]
+        write_zot.endpoint = "https://api.zotero.org"
+        write_zot.library_type = "user"
+        write_zot.library_id = "12345"
+
+        count = _helpers._cleanup_empty_pdf_attachments(write_zot, "ITEM1", dummy_ctx)
+        assert count == 0
+        write_zot.client.patch.assert_not_called()
+
+    def test_skips_non_pdf_children(self, dummy_ctx):
+        """Notes and non-PDF attachments are left untouched."""
+        write_zot = MagicMock()
+        note = {"key": "N1", "version": 5, "data": {"itemType": "note"}}
+        empty_pdf = {
+            "key": "E1",
+            "version": 10,
+            "data": {"itemType": "attachment", "contentType": "application/pdf",
+                     "md5": None, "mtime": None},
+        }
+        html_attach = {
+            "key": "H1",
+            "version": 15,
+            "data": {"itemType": "attachment", "contentType": "text/html",
+                     "md5": None, "mtime": None},
+        }
+        write_zot.children.return_value = [note, empty_pdf, html_attach]
+        write_zot.endpoint = "https://api.zotero.org"
+        write_zot.library_type = "user"
+        write_zot.library_id = "12345"
+        write_zot.client.patch.return_value = MagicMock(status_code=204)
+
+        count = _helpers._cleanup_empty_pdf_attachments(write_zot, "ITEM1", dummy_ctx)
+        assert count == 1  # only the empty PDF, not the HTML attachment or note
+
+    def test_returns_zero_on_no_children(self, dummy_ctx):
+        write_zot = MagicMock()
+        write_zot.children.return_value = []
+        count = _helpers._cleanup_empty_pdf_attachments(write_zot, "ITEM1", dummy_ctx)
+        assert count == 0
+
+    def test_handles_children_fetch_error(self, dummy_ctx):
+        """If children() raises, return 0 without crashing."""
+        write_zot = MagicMock()
+        write_zot.children.side_effect = Exception("network error")
+        count = _helpers._cleanup_empty_pdf_attachments(write_zot, "ITEM1", dummy_ctx)
+        assert count == 0
+
+
+# ---------------------------------------------------------------------------
 # _list_pdf_attachment_keys
 # ---------------------------------------------------------------------------
 
