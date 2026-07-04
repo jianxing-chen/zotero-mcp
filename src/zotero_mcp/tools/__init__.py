@@ -3,6 +3,7 @@
 from zotero_mcp.tools import (  # noqa: F401
     ads,
     annotations,
+    browser_fetch,
     connectors,
     discovery,
     read_pdf,

@@ -192,6 +192,7 @@ zotero-mcp setup
 | `pdf` | PDF 大纲提取（PyMuPDF）和 EPUB 批注支持 | `pip install "zotero-mcp-server[pdf]"` |
 | `mineru` | **MinerU 结构化精读**——公式转 LaTeX、表格转 HTML | `pip install "zotero-mcp-server[mineru]"` |
 | `scite` | [Scite](https://scite.ai) 引用情报——计数与撤稿预警 | `pip install "zotero-mcp-server[scite]"` |
+| `browser` | **浏览器会话出版商 PDF 抓取**——通过已授权的 Chrome/Edge DevTools 会话下载被 WAF 拦截的出版商 PDF | `pip install "zotero-mcp-server[browser]"` |
 | `all` | 以上全部 | `pip install "zotero-mcp-server[all]"` |
 
 > **ADS 不需要额外 extra**：NASA ADS 接入仅需 `requests`（已是核心依赖），设置 `ADS_API_TOKEN` 环境变量即可。
@@ -611,6 +612,12 @@ zotero-mcp update-db --force-rebuild
     "enabled": true, "backend": "cloud", "cloud_token": "你的-mineru-token",
     "cloud_model": "vlm", "executable": "/usr/local/bin/mineru", "timeout": 600
   },
+  "browser_fetch": {
+    "enabled": false,
+    "debug_port": 9222,
+    "page_wait_seconds": 8,
+    "inter_item_sleep_seconds": 6
+  },
   "client_env": {
     "ZOTERO_LOCAL": "true",
     "ZOTERO_API_KEY": "你的-zotero-key",
@@ -621,6 +628,54 @@ zotero-mcp update-db --force-rebuild
 ```
 
 > **安全**：`config.json` 含 API key，被 `.gitignore` 覆盖（任意路径），永远不会被提交。文件创建时 `chmod 600`。如不慎泄露，在提供商控制台重新生成即可。
+
+### 浏览器会话出版商 PDF 抓取（可选）
+
+当 `zotero_upgrade_preprint_pdfs`（或 `pub_only` HTTP 级联）被出版商 WAF/验证码/403 拦截时，浏览器会话抓取器可以通过**已授权的 Chrome/Edge DevTools 会话**下载出版商 PDF。浏览器携带用户真实的会话 cookie 和机构授权，页面内的 `fetch()` 看起来像正常导航，绕过了拦截普通 `requests.get` 的机器人检测。
+
+**法律边界**：此功能**不会**绕过付费墙、验证码或机构网关。调用工具前，你必须先在浏览器窗口中手动登录并通过验证。它只下载你已有权访问的 PDF。
+
+**安装**（增加 `websocket-client` 用于 DevTools 协议）：
+
+```bash
+pip install "zotero-mcp-server[browser]"
+```
+
+**配置** —— 在 `~/.config/zotero-mcp/config.json` 中添加：
+
+```json
+"browser_fetch": {
+  "enabled": true,
+  "debug_port": 9222,
+  "page_wait_seconds": 8,
+  "inter_item_sleep_seconds": 6
+}
+```
+
+**启动专用 Chrome 会话**（macOS）：
+
+```bash
+bash scripts/launch_chrome_remote_debug_macos.sh \
+  --direct-connection \
+  --disable-extensions \
+  --one-shot-profile \
+  --remote-debugging-port 9222 \
+  --url "https://www.sciencedirect.com/"
+```
+
+在打开的 Chrome 窗口中：
+1. 登录你的机构代理 / 出版商（ScienceDirect、IEEE、Wiley 等）
+2. 手动通过任何机器人验证页面
+3. 打开一篇文章并点击一次 "View PDF"
+4. 保持窗口打开
+
+**调用工具**：
+
+- *"用浏览器会话把 arXiv PDF 替换成出版商版本"* → `zotero_upgrade_preprint_pdfs_via_browser`
+
+工具先尝试 HTTP 级联（Sci-Hub + ADS PUB_PDF）；只有被拦截时才回退到浏览器会话。旧 PDF 只在下载成功后才被移入回收站（可恢复）。用 `zotero_get_batch_task_status` 轮询进度。
+
+参考自 [sciencedirect-live-session-fetcher](https://github.com/Given-Dream/sciencedirect-live-session-fetcher)。
 
 ## 🔧 高级配置
 

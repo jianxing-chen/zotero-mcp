@@ -418,6 +418,54 @@ When enabled, Sci-Hub is the **first** source tried (before ADS and arXiv). This
 
 The `domain` field is configurable because Sci-Hub's primary domain rotates frequently; change it in config at any time without touching code. The default `sci-hub.ee` is used because its POST-form endpoint does not trigger the altcha JS captcha that the `sci-hub.ru`/`sci-hub.jp` mirrors deploy against plain GET requests. The client first POSTs to the domain's form with a `request=<doi>` payload and a randomized browser User-Agent (mirroring the upstream `scihub` PyPI library), parsing the `#pdf` element from the response for the direct PDF URL; if POST yields nothing, a GET fallback (parsing `<iframe>`/`<embed>`/JS-redirect) is attempted. It does not download the bytes itself, so the existing SSRF guard applies uniformly.
 
+### Browser-Session Publisher PDF Fetcher (optional)
+
+When `zotero_upgrade_preprint_pdfs` (or the `pub_only` HTTP cascade) is blocked by publisher WAFs/captchas/403s, the browser-session fetcher can download the publisher PDF through a **live, already-authorized Chrome/Edge DevTools session**. The browser carries the user's real session cookies and institutional authorization, so the in-page `fetch()` looks like a normal navigation and bypasses the bot detection that blocks plain `requests.get`.
+
+**Legal boundary**: this does NOT bypass paywalls, CAPTCHA, or institutional gates. You must manually sign in and pass any verification in the browser window before calling the tool. It only fetches PDFs you are already authorized to access.
+
+**Install** (adds `websocket-client` for the DevTools protocol):
+
+```bash
+pip install "zotero-mcp-server[browser]"
+```
+
+**Configure** — add to `~/.config/zotero-mcp/config.json`:
+
+```json
+"browser_fetch": {
+  "enabled": true,
+  "debug_port": 9222,
+  "page_wait_seconds": 8,
+  "inter_item_sleep_seconds": 6
+}
+```
+
+**Launch a dedicated Chrome session** (macOS):
+
+```bash
+bash scripts/launch_chrome_remote_debug_macos.sh \
+  --direct-connection \
+  --disable-extensions \
+  --one-shot-profile \
+  --remote-debugging-port 9222 \
+  --url "https://www.sciencedirect.com/"
+```
+
+In the opened Chrome window:
+1. Sign in to your institutional proxy / publisher (ScienceDirect, IEEE, Wiley, etc.)
+2. Pass any bot-verification page manually
+3. Open one article and click "View PDF" once
+4. Keep the window open
+
+**Call the tool**:
+
+- *"Replace arXiv PDFs with publisher versions, using my browser session when HTTP is blocked"* → `zotero_upgrade_preprint_pdfs_via_browser`
+
+The tool tries the HTTP cascade first (Sci-Hub + ADS PUB_PDF); only when that is blocked does it fall back to the browser session. Old PDFs are trashed only after a successful download (recoverable from Zotero's Trash). Poll with `zotero_get_batch_task_status`.
+
+Adapted from [sciencedirect-live-session-fetcher](https://github.com/Given-Dream/sciencedirect-live-session-fetcher).
+
 ## 🖥️ Setup & Usage
 
 **Requirements**
@@ -692,6 +740,12 @@ Start Zotero desktop (for local API), then launch your MCP client. Try these:
   "scihub": {
     "enabled": false,
     "domain": "sci-hub.ee"
+  },
+  "browser_fetch": {
+    "enabled": false,
+    "debug_port": 9222,
+    "page_wait_seconds": 8,
+    "inter_item_sleep_seconds": 6
   },
   "client_env": {
     "ZOTERO_LOCAL": "true",

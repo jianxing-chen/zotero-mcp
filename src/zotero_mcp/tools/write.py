@@ -5187,6 +5187,160 @@ def _upgrade_preprints_worker(status, preprints) -> None:
     )
 
 
+def _scan_arxiv_items_for_pdf_upgrade(
+    read_zot,
+    *,
+    item_keys: list[str] | str | None = None,
+    collection: str | None = None,
+    require_bibcode: bool = False,
+    limit: int | None = None,
+    ctx,
+) -> list[dict] | str:
+    """Scan the library for items that need an arXiv→publisher PDF upgrade.
+
+    Shared between ``upgrade_preprint_pdfs`` (HTTP-only) and
+    ``upgrade_preprint_pdfs_via_browser`` (HTTP-first + browser fallback).
+
+    Two item types are collected:
+    1. ``itemType=preprint`` with an arXiv ID (or bibcode when
+       ``require_bibcode=True``) — needs metadata upgrade + PDF.
+    2. ``itemType=journalArticle`` with an arXiv ID in Extra — already
+       upgraded, just needs PDF. The arXiv ID in Extra is the "needs PDF
+       replacement" marker; it's removed after successful replacement
+       so the item won't be re-processed on the next run (idempotent).
+
+    Returns a list of item dicts, or an error string if a named collection
+    cannot be resolved (so the caller can ``return`` it directly).
+    """
+    preprints: list[dict] = []
+
+    if item_keys:
+        # Targeted mode: fetch each specified item directly.
+        keys = _helpers._normalize_str_list_input(item_keys, "item_keys")
+        if not keys:
+            return "Error: Must provide at least one item_key"
+        for key in keys:
+            try:
+                item = read_zot.item(key)
+            except Exception as e:
+                ctx.info(f"Skipping {key}: fetch failed ({e})")
+                continue
+            if not item:
+                continue
+            preprints.append(item)
+            if limit and len(preprints) >= limit:
+                break
+        return preprints
+
+    if collection:
+        if collection.strip().lower() == "_unfiled":
+            # Unfiled: scan both preprints and journalArticles, filter to
+            # those with no collections.
+            ctx.info("Scanning unfiled items for arXiv preprints/articles...")
+            for item_type in ("preprint", "journalArticle"):
+                batch_size = 50
+                start = 0
+                while True:
+                    try:
+                        items = read_zot.items(itemType=item_type, start=start, limit=batch_size)
+                    except Exception as e:
+                        ctx.error(f"Error fetching {item_type} items: {e}")
+                        break
+                    if not items:
+                        break
+                    for it in items:
+                        data = it.get("data", {})
+                        if data.get("collections"):
+                            continue  # filed — skip
+                        extra = data.get("extra")
+                        if item_type == "preprint":
+                            if require_bibcode:
+                                if _parse_bibcode_from_extra(extra):
+                                    preprints.append(it)
+                            else:
+                                if _parse_arxiv_id_from_extra(extra):
+                                    preprints.append(it)
+                        else:  # journalArticle
+                            if _parse_arxiv_id_from_extra(extra):
+                                preprints.append(it)
+                    start += batch_size
+                    if len(items) < batch_size:
+                        break
+                    if limit and len(preprints) >= limit:
+                        preprints = preprints[:limit]
+                        break
+            return preprints
+
+        # Named collection: resolve to key, then scan both types.
+        try:
+            coll_keys = _helpers.resolve_collection_specs(read_zot, [collection], ctx=ctx)
+        except ValueError as e:
+            return f"Error: {e}"
+        if not coll_keys:
+            return f"Error: Collection '{collection}' not found"
+        for coll_key in coll_keys:
+            ctx.info(f"Scanning collection {coll_key} for arXiv preprints/articles...")
+            for item_type in ("preprint", "journalArticle"):
+                try:
+                    items = _helpers._paginate(
+                        read_zot.collection_items,
+                        coll_key,
+                        itemType=item_type,
+                        max_items=limit,
+                    )
+                except Exception as e:
+                    ctx.error(f"Error fetching {item_type} from collection {coll_key}: {e}")
+                    continue
+                for it in items:
+                    data = it.get("data", {})
+                    extra = data.get("extra")
+                    if item_type == "preprint":
+                        if require_bibcode:
+                            if _parse_bibcode_from_extra(extra):
+                                preprints.append(it)
+                        else:
+                            if _parse_arxiv_id_from_extra(extra):
+                                preprints.append(it)
+                    else:  # journalArticle
+                        if _parse_arxiv_id_from_extra(extra):
+                            preprints.append(it)
+        return preprints
+
+    # Default scan mode: paginate through preprint AND journalArticle items.
+    for item_type in ("preprint", "journalArticle"):
+        ctx.info(f"Scanning {item_type} items for arXiv IDs...")
+        batch_size = 50
+        start = 0
+        while True:
+            try:
+                items = read_zot.items(itemType=item_type, start=start, limit=batch_size)
+            except Exception as e:
+                ctx.error(f"Error fetching {item_type} items: {e}")
+                break
+            if not items:
+                break
+            for it in items:
+                data = it.get("data", {})
+                extra = data.get("extra")
+                if item_type == "preprint":
+                    if require_bibcode:
+                        if _parse_bibcode_from_extra(extra):
+                            preprints.append(it)
+                    else:
+                        if _parse_arxiv_id_from_extra(extra):
+                            preprints.append(it)
+                else:  # journalArticle
+                    if _parse_arxiv_id_from_extra(extra):
+                        preprints.append(it)
+            start += batch_size
+            if len(items) < batch_size:
+                break
+            if limit and len(preprints) >= limit:
+                preprints = preprints[:limit]
+                break
+    return preprints
+
+
 @mcp.tool(
     name="zotero_upgrade_preprint_pdfs",
     description=(
@@ -5265,137 +5419,17 @@ def upgrade_preprint_pdfs(
     scihub_enabled = _helpers._scihub.is_scihub_enabled(_helpers._scihub.load_scihub_config())
 
     preprints: list[dict] = []
-
-    # --- Item collection ---
-    # Collects items that need PDF replacement. Two item types are scanned:
-    # 1. itemType=preprint: needs metadata upgrade first (preprint→journalArticle),
-    #    then PDF replacement.
-    # 2. itemType=journalArticle with arXiv ID in Extra: already upgraded, just
-    #    needs PDF replacement. The arXiv ID in Extra is the "needs PDF replacement"
-    #    marker — it's removed after successful replacement so the item won't be
-    #    re-processed on the next run (idempotent).
-
-    if item_keys:
-        # Targeted mode: fetch each specified item directly.
-        keys = _helpers._normalize_str_list_input(item_keys, "item_keys")
-        if not keys:
-            return "Error: Must provide at least one item_key"
-        for key in keys:
-            try:
-                item = read_zot.item(key)
-            except Exception as e:
-                ctx.info(f"Skipping {key}: fetch failed ({e})")
-                continue
-            if not item:
-                continue
-            preprints.append(item)
-            if limit and len(preprints) >= limit:
-                break
-    elif collection:
-        # Collection-scoped scan.
-        if collection.strip().lower() == "_unfiled":
-            # Unfiled: scan both preprints and journalArticles, filter to
-            # those with no collections.
-            ctx.info("Scanning unfiled items for arXiv preprints/articles...")
-            for item_type in ("preprint", "journalArticle"):
-                batch_size = 50
-                start = 0
-                while True:
-                    try:
-                        items = read_zot.items(itemType=item_type, start=start, limit=batch_size)
-                    except Exception as e:
-                        ctx.error(f"Error fetching {item_type} items: {e}")
-                        break
-                    if not items:
-                        break
-                    for it in items:
-                        data = it.get("data", {})
-                        if data.get("collections"):
-                            continue  # filed — skip
-                        extra = data.get("extra")
-                        if item_type == "preprint":
-                            if require_bibcode:
-                                if _parse_bibcode_from_extra(extra):
-                                    preprints.append(it)
-                            else:
-                                if _parse_arxiv_id_from_extra(extra):
-                                    preprints.append(it)
-                        else:  # journalArticle
-                            if _parse_arxiv_id_from_extra(extra):
-                                preprints.append(it)
-                    start += batch_size
-                    if len(items) < batch_size:
-                        break
-                    if limit and len(preprints) >= limit:
-                        preprints = preprints[:limit]
-                        break
-        else:
-            # Named collection: resolve to key, then scan both types.
-            try:
-                coll_keys = _helpers.resolve_collection_specs(read_zot, [collection], ctx=ctx)
-            except ValueError as e:
-                return f"Error: {e}"
-            if not coll_keys:
-                return f"Error: Collection '{collection}' not found"
-            for coll_key in coll_keys:
-                ctx.info(f"Scanning collection {coll_key} for arXiv preprints/articles...")
-                for item_type in ("preprint", "journalArticle"):
-                    try:
-                        items = _helpers._paginate(
-                            read_zot.collection_items,
-                            coll_key,
-                            itemType=item_type,
-                            max_items=limit,
-                        )
-                    except Exception as e:
-                        ctx.error(f"Error fetching {item_type} from collection {coll_key}: {e}")
-                        continue
-                    for it in items:
-                        data = it.get("data", {})
-                        extra = data.get("extra")
-                        if item_type == "preprint":
-                            if require_bibcode:
-                                if _parse_bibcode_from_extra(extra):
-                                    preprints.append(it)
-                            else:
-                                if _parse_arxiv_id_from_extra(extra):
-                                    preprints.append(it)
-                        else:  # journalArticle
-                            if _parse_arxiv_id_from_extra(extra):
-                                preprints.append(it)
-    else:
-        # Scan mode: paginate through preprint AND journalArticle items.
-        for item_type in ("preprint", "journalArticle"):
-            ctx.info(f"Scanning {item_type} items for arXiv IDs...")
-            batch_size = 50
-            start = 0
-            while True:
-                try:
-                    items = read_zot.items(itemType=item_type, start=start, limit=batch_size)
-                except Exception as e:
-                    ctx.error(f"Error fetching {item_type} items: {e}")
-                    break
-                if not items:
-                    break
-                for it in items:
-                    data = it.get("data", {})
-                    extra = data.get("extra")
-                    if item_type == "preprint":
-                        if require_bibcode:
-                            if _parse_bibcode_from_extra(extra):
-                                preprints.append(it)
-                        else:
-                            if _parse_arxiv_id_from_extra(extra):
-                                preprints.append(it)
-                    else:  # journalArticle
-                        if _parse_arxiv_id_from_extra(extra):
-                            preprints.append(it)
-                start += batch_size
-                if len(items) < batch_size:
-                    break
-                if limit and len(preprints) >= limit:
-                    preprints = preprints[:limit]
-                    break
+    preprints = _scan_arxiv_items_for_pdf_upgrade(
+        read_zot,
+        item_keys=item_keys,
+        collection=collection,
+        require_bibcode=require_bibcode,
+        limit=limit,
+        ctx=ctx,
+    )
+    if isinstance(preprints, str):
+        # An error message from the collection-resolution path.
+        return preprints
 
     total = len(preprints)
     if total == 0:

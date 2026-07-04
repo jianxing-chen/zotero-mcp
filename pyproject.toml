@@ -57,6 +57,14 @@ mineru = [
     "mineru[all]",
     "requests>=2.28.0",
 ]
+browser = [
+    # Browser-session publisher PDF fetcher for zotero_upgrade_preprint_pdfs_via_browser.
+    # Connects to a live Chrome/Edge DevTools session (--remote-debugging-port)
+    # to download paywalled publisher PDFs that are blocked by WAFs/captchas
+    # when fetched via plain requests.get. Only needed for the browser-fallback
+    # tool; the HTTP-only upgrade_preprint_pdfs does not require this.
+    "websocket-client>=1.8.0",
+]
 all = [
     "zotero-mcp-server[semantic,pdf,scite]",
 ]
