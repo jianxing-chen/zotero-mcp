@@ -374,10 +374,24 @@ def _upgrade_preprint_pdfs_via_browser_worker(status: TaskStatus, preprints: lis
                                             new_key = entry["key"]
                                             break
                             if new_key:
-                                _webdav.upload_attachment_to_webdav(
+                                md5_hex, mtime_ms = _webdav.upload_attachment_to_webdav(
                                     attachment_key=new_key, file_path=filepath,
                                 )
                                 logger.info(f"WebDAV upload succeeded for {new_key}.zip")
+                                # Write md5+mtime back to the Zotero attachment item
+                                # so the desktop client knows the file exists on
+                                # WebDAV and will sync it to local storage.
+                                try:
+                                    fresh = _with_api_lock(lambda k=new_key: write_zot.item(k))
+                                    fd = fresh.get("data", {})
+                                    fd["md5"] = md5_hex
+                                    fd["mtime"] = mtime_ms
+                                    for fld in ("lastRead", "dateAdded", "dateModified"):
+                                        fd.pop(fld, None)
+                                    _with_api_lock(lambda: write_zot.update_item(fd))
+                                    logger.info(f"Wrote md5+mtime back to {new_key}")
+                                except Exception as md5_err:
+                                    logger.warning(f"Failed to write md5+mtime to {new_key}: {md5_err}")
                             else:
                                 raise RuntimeError(f"WebDAV fallback: could not extract attachment key from {created}")
                         else:
