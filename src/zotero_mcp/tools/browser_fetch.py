@@ -1,7 +1,7 @@
 """MCP tool: upgrade arXiv PDFs to publisher versions via a browser session.
 
 A browser-assisted variant of ``upgrade_preprint_pdfs``. For each arXiv-ID
-item it tries the existing HTTP cascade first (Sci-Hub + ADS PUB_PDF via
+item it tries the existing HTTP cascade first (ADS PUB_PDF via
 ``pub_only=True``); only when the HTTP download is blocked by a publisher
 WAF/captcha/403 does it fall back to fetching the PDF inside a live,
 already-authorized Chrome/Edge DevTools session.
@@ -48,8 +48,8 @@ def _with_api_lock(fn):
     description=(
         "Replace arXiv PDFs with publisher versions, falling back to a live "
         "browser session when the HTTP cascade is blocked. For each item: "
-        "(1) try the existing publisher-only HTTP cascade (Sci-Hub + ADS "
-        "PUB_PDF, pub_only=True); (2) if that fails (WAF/403/challenge), "
+        "(1) try the existing publisher-only HTTP cascade (ADS PUB_PDF via "
+        "pub_only=True); (2) if that fails (WAF/403/challenge), "
         "fetch the PDF inside an already-authorized Chrome/Edge DevTools "
         "session via in-page fetch() or PDF.js extraction. "
         "Scans the same two item types as zotero_upgrade_preprint_pdfs: "
@@ -81,7 +81,7 @@ def upgrade_preprint_pdfs_via_browser(
 
     Not decorated with @with_zotero_api_lock: spawns a background task that
     acquires the lock per-item. HTTP-first: the browser is only used when
-    the HTTP cascade (Sci-Hub + ADS PUB_PDF) is blocked by the publisher.
+    the HTTP cascade (ADS PUB_PDF) is blocked by the publisher.
     """
     try:
         read_zot, _write_zot = _helpers._get_write_client(ctx)

@@ -364,7 +364,7 @@ Integrate NASA ADS (Astrophysics Data System) for literature search, import, and
 **`zotero_add_by_bibcode`** — import by bibcode:
 ```
 bibcode → ADS search API → structured fields → CSL-JSON → reuse existing batch pipeline
-→ bibcode stored in Extra field → PDF cascade: Sci-Hub (if enabled, publisher PDF) → ADS (PUB_PDF then EPRINT_PDF) → arXiv → Unpaywall → S2 → PMC
+→ bibcode stored in Extra field → PDF cascade: ADS (PUB_PDF then EPRINT_PDF) → arXiv → Unpaywall → S2 → PMC
 ```
 
 **`zotero_search_ads`** — fielded search:
@@ -390,33 +390,15 @@ identifier="2003ApJ...589L..21B" direction="both"
 
 When importing a paper with a DOI (via `add_by_doi`, `add_by_bibcode`, `add_by_bibtex`, `add_by_csl_json`), the server tries these PDF sources in order and stops at the first that yields a downloadable file:
 
-1. **Sci-Hub** (opt-in, disabled by default — see below). Tried first because it's the only source that returns the **publisher version** (paywalled PDF).
-2. **ADS link_gateway** (requires `ADS_API_TOKEN`) — prefers the publisher PDF (`PUB_PDF`) when `prefer_pub_pdf=True`, falling back to the arXiv preprint (`EPRINT_PDF`). In practice the publisher PDF is usually blocked by a WAF/captcha, so ADS effectively returns the arXiv preprint.
-3. **arXiv** (via CrossRef relations — always open access)
-4. **Unpaywall**
-5. **Semantic Scholar**
-6. **PubMed Central**
+1. **ADS link_gateway** (requires `ADS_API_TOKEN`) — prefers the publisher PDF (`PUB_PDF`) when `prefer_pub_pdf=True`, falling back to the arXiv preprint (`EPRINT_PDF`). In practice the publisher PDF is usually blocked by a WAF/captcha, so ADS effectively returns the arXiv preprint.
+2. **arXiv** (via CrossRef relations — always open access)
+3. **Unpaywall**
+4. **Semantic Scholar**
+5. **PubMed Central**
 
-All sources return only a URL; the bytes are fetched through `_download_and_attach_pdf`, which applies the same SSRF guards (private-host rejection, per-redirect re-validation) to every source including Sci-Hub.
+All sources return only a URL; the bytes are fetched through `_download_and_attach_pdf`, which applies the same SSRF guards (private-host rejection, per-redirect re-validation) to every source.
 
-### Sci-Hub integration (opt-in, disabled by default)
-
-Sci-Hub is a shadow library providing free access to paywalled papers. It is **off by default**; you must explicitly enable it in `~/.config/zotero-mcp/config.json`:
-
-```jsonc
-{
-  "scihub": {
-    "enabled": true,
-    "domain": "sci-hub.ee"   // override when the domain rotates
-  }
-}
-```
-
-When enabled, Sci-Hub is the **first** source tried (before ADS and arXiv). This is because Sci-Hub is the only source that returns the **publisher version** (paywalled PDF); ADS and arXiv both return the arXiv preprint. When disabled, the cascade skips it and starts with ADS → arXiv → Unpaywall → S2 → PMC.
-
-> ⚠️ **Compliance**: Sci-Hub's legal status varies by jurisdiction. Enabling it is your own choice; this repo provides the capability but does not enable it for you and offers no legal advice. Confirm your jurisdiction's regulations before turning it on.
-
-The `domain` field is configurable because Sci-Hub's primary domain rotates frequently; change it in config at any time without touching code. The default `sci-hub.ee` is used because its POST-form endpoint does not trigger the altcha JS captcha that the `sci-hub.ru`/`sci-hub.jp` mirrors deploy against plain GET requests. The client first POSTs to the domain's form with a `request=<doi>` payload and a randomized browser User-Agent (mirroring the upstream `scihub` PyPI library), parsing the `#pdf` element from the response for the direct PDF URL; if POST yields nothing, a GET fallback (parsing `<iframe>`/`<embed>`/JS-redirect) is attempted. It does not download the bytes itself, so the existing SSRF guard applies uniformly.
+> **Note**: Sci-Hub was globally disabled and removed from the cascade. The `scihub_client` module is kept for reference but no longer wired in. For publisher PDFs blocked by WAFs, use `zotero_upgrade_preprint_pdfs_via_browser` with a live browser session.
 
 ### Browser-Session Publisher PDF Fetcher (optional)
 
@@ -462,7 +444,7 @@ In the opened Chrome window:
 
 - *"Replace arXiv PDFs with publisher versions, using my browser session when HTTP is blocked"* → `zotero_upgrade_preprint_pdfs_via_browser`
 
-The tool tries the HTTP cascade first (Sci-Hub + ADS PUB_PDF); only when that is blocked does it fall back to the browser session. Old PDFs are trashed only after a successful download (recoverable from Zotero's Trash). Poll with `zotero_get_batch_task_status`.
+The tool tries the HTTP cascade first (ADS PUB_PDF); only when that is blocked does it fall back to the browser session. Old PDFs are trashed only after a successful download (recoverable from Zotero's Trash). Poll with `zotero_get_batch_task_status`.
 
 Adapted from [sciencedirect-live-session-fetcher](https://github.com/Given-Dream/sciencedirect-live-session-fetcher).
 
@@ -736,10 +718,6 @@ Start Zotero desktop (for local API), then launch your MCP client. Try these:
   "mineru": {
     "enabled": true, "backend": "cloud", "cloud_token": "your-mineru-token",
     "cloud_model": "vlm", "executable": "/usr/local/bin/mineru", "timeout": 600
-  },
-  "scihub": {
-    "enabled": false,
-    "domain": "sci-hub.ee"
   },
   "browser_fetch": {
     "enabled": false,

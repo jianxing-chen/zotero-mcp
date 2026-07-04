@@ -14,7 +14,7 @@ from __future__ import annotations
 import requests
 from conftest import FakeZotero
 
-from zotero_mcp import ads_client, scihub_client
+from zotero_mcp import ads_client
 from zotero_mcp.server import _try_attach_oa_pdf
 from zotero_mcp.tools import _helpers
 
@@ -65,13 +65,20 @@ def _enable_ads(monkeypatch):
     monkeypatch.setattr(ads_client, "is_available", lambda: True)
 
 
+# Sci-Hub has been globally disabled and removed from the cascade.
+# The scihub_client module is kept for reference but no longer imported by
+# _helpers._try_attach_oa_pdf. These _disable/_enable helpers are retained
+# as no-ops so existing tests that call them don't break during the transition.
+
+
 def _disable_scihub(monkeypatch):
-    monkeypatch.setattr(scihub_client, "is_scihub_enabled", lambda cfg: False)
+    """No-op — Sci-Hub is globally disabled and no longer in the cascade."""
+    pass
 
 
 def _enable_scihub(monkeypatch):
-    monkeypatch.setattr(scihub_client, "is_scihub_enabled", lambda cfg: True)
-    monkeypatch.setattr(scihub_client, "load_scihub_config", lambda *a, **k: {"enabled": True})
+    """No-op — Sci-Hub is globally disabled and cannot be re-enabled."""
+    pass
 
 
 # ---------------------------------------------------------------------------
@@ -82,44 +89,14 @@ def _enable_scihub(monkeypatch):
 class TestCascadeOrder:
     """Verify the source list is built in the documented priority order.
 
-    Order: Sci-Hub → ADS → arXiv → Unpaywall → Semantic Scholar → PubMed Central.
-    Sci-Hub is first because it's the only source that returns the publisher
-    (paywalled) version. ADS is second; in practice its PUB_PDF is WAF-blocked
-    so it effectively returns the arXiv preprint (EPRINT_PDF).
+    Order: ADS → arXiv → Unpaywall → Semantic Scholar → PubMed Central.
+    Sci-Hub was removed from the cascade (globally disabled). ADS is first;
+    in practice its PUB_PDF is WAF-blocked so it effectively returns the
+    arXiv preprint (EPRINT_PDF).
     """
 
-    def test_scihub_first_when_enabled(self, monkeypatch, dummy_ctx):
-        """With Sci-Hub enabled, the first source tried is Sci-Hub."""
-        _enable_scihub(monkeypatch)
-        _enable_ads(monkeypatch)
-        zot = _AttachZotero()
-        tried: list[str] = []
-
-        def fake_scihub_find(identifier, ctx):
-            tried.append("Sci-Hub")
-            return "https://sci-hub.example.com/paper.pdf"
-
-        monkeypatch.setattr(scihub_client, "find_pdf_url", fake_scihub_find)
-
-        def fake_get(url, **kwargs):
-            tried.append(f"GET {url}")
-            return _FakeHTTPResponse(
-                200,
-                content=b"%PDF-1.4 " + b"x" * 2000,
-                headers={"Content-Type": "application/pdf"},
-            )
-
-        monkeypatch.setattr(requests, "get", fake_get)
-        _bypass_ssrf(monkeypatch)
-
-        result = _try_attach_oa_pdf(zot, "ITEM1", "10.1234/test", dummy_ctx, prefer_pub_pdf=True)
-        assert "PDF attached" in result
-        assert "Sci-Hub" in result
-        assert tried[0] == "Sci-Hub"
-
-    def test_ads_second_when_scihub_disabled(self, monkeypatch, dummy_ctx):
-        """With Sci-Hub disabled and ADS available, ADS is the first source."""
-        _disable_scihub(monkeypatch)
+    def test_ads_first_when_available(self, monkeypatch, dummy_ctx):
+        """With ADS available, the first source tried is ADS."""
         _enable_ads(monkeypatch)
         zot = _AttachZotero()
         tried: list[str] = []
@@ -146,47 +123,13 @@ class TestCascadeOrder:
         assert "ADS" in result
         assert tried[0] == "ADS"
 
-    def test_scihub_before_ads(self, monkeypatch, dummy_ctx):
-        """Both enabled: Sci-Hub is tried before ADS (publisher version first)."""
-        _enable_scihub(monkeypatch)
-        _enable_ads(monkeypatch)
-        zot = _AttachZotero()
-        order: list[str] = []
-
-        def fake_scihub_find(identifier, ctx):
-            order.append("Sci-Hub")
-            return "https://sci-hub.example.com/paper.pdf"
-
-        def fake_ads_pdf_url_by_doi(doi, prefer_pub, ctx, *, pub_only=False):
-            order.append("ADS")
-            return None  # shouldn't be reached if Sci-Hub succeeds
-
-        monkeypatch.setattr(scihub_client, "find_pdf_url", fake_scihub_find)
-        monkeypatch.setattr(_helpers, "_try_ads_pdf_url_by_doi", fake_ads_pdf_url_by_doi)
-
-        def fake_get(url, **kwargs):
-            return _FakeHTTPResponse(
-                200,
-                content=b"%PDF-1.4 " + b"x" * 2000,
-                headers={"Content-Type": "application/pdf"},
-            )
-
-        monkeypatch.setattr(requests, "get", fake_get)
-        _bypass_ssrf(monkeypatch)
-
-        result = _try_attach_oa_pdf(zot, "ITEM1", "10.1234/test", dummy_ctx, prefer_pub_pdf=True)
-        assert "Sci-Hub" in result
-        assert order[0] == "Sci-Hub"
-        assert "ADS" not in order  # Sci-Hub succeeded, ADS not reached
-
     def test_arxiv_before_unpaywall(self, monkeypatch, dummy_ctx):
-        """With ADS and Sci-Hub off, arXiv is tried before Unpaywall.
+        """With ADS off, arXiv is tried before Unpaywall.
 
         We give arXiv a CrossRef metadata relation pointing to an arXiv PDF.
         The cascade should pick it up without ever hitting Unpaywall.
         """
         _disable_ads(monkeypatch)
-        _disable_scihub(monkeypatch)
         zot = _AttachZotero()
         hit_unpaywall = []
 
@@ -288,36 +231,6 @@ class TestCascadeGates:
         result = _try_attach_oa_pdf(zot, "ITEM1", "10.1234/test", dummy_ctx)
         assert "Unpaywall" in result
         assert ads_url_called == []
-
-    def test_scihub_skipped_when_disabled(self, monkeypatch, dummy_ctx):
-        """When Sci-Hub is disabled, no request to a sci-hub domain is made."""
-        _disable_ads(monkeypatch)
-        _disable_scihub(monkeypatch)
-        zot = _AttachZotero()
-        scihub_called = []
-
-        def fake_get(url, **kwargs):
-            if "sci-hub" in url:
-                scihub_called.append(url)
-            if "unpaywall.org" in url:
-                return _FakeHTTPResponse(
-                    200,
-                    json_data={"best_oa_location": {"url_for_pdf": "https://upw.example.com/p.pdf"}},
-                )
-            if "upw.example.com" in url:
-                return _FakeHTTPResponse(
-                    200,
-                    content=b"%PDF-1.4 " + b"x" * 2000,
-                    headers={"Content-Type": "application/pdf"},
-                )
-            return _FakeHTTPResponse(404)
-
-        monkeypatch.setattr(requests, "get", fake_get)
-        _bypass_ssrf(monkeypatch)
-
-        result = _try_attach_oa_pdf(zot, "ITEM1", "10.1234/test", dummy_ctx)
-        assert "Unpaywall" in result
-        assert scihub_called == []
 
     def test_bibcode_short_circuits_ads_doi_lookup(self, monkeypatch, dummy_ctx):
         """When bibcode is given, ADS uses _try_ads_pdf_url (not _try_ads_pdf_url_by_doi)."""

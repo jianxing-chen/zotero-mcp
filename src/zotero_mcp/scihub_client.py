@@ -1,17 +1,26 @@
 """Sci-Hub client for the PDF download cascade.
 
+**GLOBALLY DISABLED** — this module is no longer wired into the PDF cascade
+(``_helpers._try_attach_oa_pdf`` no longer imports or calls it). The code is
+kept for reference in case someone wants to re-enable it in the future. The
+cascade now uses: ADS (PUB_PDF then EPRINT_PDF) → arXiv → Unpaywall →
+Semantic Scholar → PMC. For publisher PDFs blocked by WAFs, use
+``zotero_upgrade_preprint_pdfs_via_browser`` with a live browser session.
+
+--- Historical documentation (kept for reference) ---
+
 Sci-Hub (https://en.wikipedia.org/wiki/Sci-Hub) is a shadow library that
-provides free access to paywalled academic papers. It is **opt-in** and
-**disabled by default** — the user must explicitly set
+provides free access to paywalled academic papers. It was **opt-in** and
+**disabled by default** — the user had to explicitly set
 ``"scihub": {"enabled": true}`` in ``~/.config/zotero-mcp/config.json`` before
-this module does anything. Enabling it is the user's choice; confirm your
-jurisdiction's regulations before turning it on. This repo provides the
-capability but does not enable it for you and offers no legal advice.
+this module did anything. Enabling it was the user's choice; confirm your
+jurisdiction's regulations before turning it on. This repo provided the
+capability but did not enable it for you and offered no legal advice.
 
 The module only *resolves* a PDF URL — it does not download the bytes.
-The returned URL is passed to ``_helpers._download_and_attach_pdf``, which
+The returned URL was passed to ``_helpers._download_and_attach_pdf``, which
 applies the same SSRF guards used for every other PDF source (Unpaywall,
-arXiv, etc.), so Sci-Hub PDFs go through the same safety net as the rest.
+arXiv, etc.), so Sci-Hub PDFs went through the same safety net as the rest.
 
 Config block (in ``~/.config/zotero-mcp/config.json``)::
 

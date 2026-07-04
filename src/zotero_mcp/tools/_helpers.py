@@ -13,7 +13,9 @@ import requests
 
 from zotero_mcp import ads_client as _ads_client
 from zotero_mcp import client as _client
-from zotero_mcp import scihub_client as _scihub
+
+# Sci-Hub is globally disabled — no longer wired into the PDF cascade.
+# The scihub_client module is kept for reference but not imported here.
 from zotero_mcp import utils as _utils
 
 # ---------------------------------------------------------------------------
@@ -1150,12 +1152,7 @@ def _try_attach_oa_pdf(
 
     Sources are tried in priority order:
 
-    1. **Sci-Hub** (opt-in via ``config.json``'s ``scihub.enabled``). Disabled
-       by default; confirm your jurisdiction's regulations before enabling.
-       Sci-Hub returns the **publisher version** (paywalled PDF), which is
-       why it's tried first — it's the only source that can get the final
-       published version automatically.
-    2. **ADS** (when an ``ADS_API_TOKEN`` is configured) — uses the bibcode if
+    1. **ADS** (when an ``ADS_API_TOKEN`` is configured) — uses the bibcode if
        the caller already has one, otherwise resolves via ``doi:<doi>``. With
        ``prefer_pub_pdf=True`` the publisher PDF is tried first (useful on
        networks with institutional subscription), falling back to the arXiv
@@ -1163,32 +1160,30 @@ def _try_attach_oa_pdf(
        PDF is usually blocked by a WAF/captcha, so ADS effectively returns the
        arXiv preprint (EPRINT_PDF) — the same version the arXiv source below
        would find.
-    3. **arXiv** (via CrossRef relations — always open access).
-    4. **Unpaywall**.
-    5. **Semantic Scholar**.
-    6. **PubMed Central**.
+    2. **arXiv** (via CrossRef relations — always open access).
+    3. **Unpaywall**.
+    4. **Semantic Scholar**.
+    5. **PubMed Central**.
 
     ``bibcode``, ``prefer_pub_pdf`` and ``pub_only`` are keyword-only. ``bibcode``
     short-circuits the ADS DOI→bibcode round-trip when the caller already knows
     it (e.g. ``add_by_bibcode``).
 
     ``pub_only=True`` restricts the cascade to **publisher-version sources only**
-    (Sci-Hub + ADS PUB_PDF). Sources that would return an arXiv preprint or an
+    (ADS PUB_PDF). Sources that would return an arXiv preprint or an
     uncontrolled OA copy are skipped entirely — ADS never falls back to
     EPRINT_PDF, and the arXiv/Unpaywall/Semantic-Scholar/PMC sources are
     omitted. Use this when the item already has the arXiv preprint and
     downloading another copy is pointless (e.g. ``upgrade_preprint_pdfs``).
+
+    .. note:: Sci-Hub was globally disabled and removed from the cascade.
+       The ``scihub_client`` module is kept for reference but no longer wired
+       in. Use ``zotero_upgrade_preprint_pdfs_via_browser`` for publisher PDFs
+       blocked by WAFs.
     """
     sources: list[tuple[str, object]] = []
 
-    # 1. Sci-Hub — opt-in via config.json. Tried first because it's the only
-    #    source that can return the publisher (paywalled) version. find_pdf_url()
-    #    self-gates on the enabled flag, but we check it here too so the source
-    #    name doesn't appear in the cascade at all when disabled.
-    if _scihub.is_scihub_enabled(_scihub.load_scihub_config()):
-        sources.append(("Sci-Hub", lambda: _scihub.find_pdf_url(doi, ctx)))
-
-    # 2. ADS — top priority when configured. PUB_PDF first (publisher version),
+    # 1. ADS — top priority when configured. PUB_PDF first (publisher version),
     #    then EPRINT_PDF (arXiv preprint) within the same source. When
     #    pub_only=True, only PUB_PDF is tried (no EPRINT_PDF fallback).
     if _ads_client.is_available():
@@ -1198,13 +1193,13 @@ def _try_attach_oa_pdf(
             sources.append(("ADS", lambda: _try_ads_pdf_url_by_doi(doi, prefer_pub_pdf, ctx, pub_only=pub_only)))
 
     if not pub_only:
-        # 3. arXiv (via CrossRef relations — always OA).
+        # 2. arXiv (via CrossRef relations — always OA).
         sources.append(("arXiv (via CrossRef)", lambda: _try_arxiv_from_crossref(crossref_metadata, ctx)))
-        # 4. Unpaywall.
+        # 3. Unpaywall.
         sources.append(("Unpaywall", lambda: _try_unpaywall(doi, ctx)))
-        # 5. Semantic Scholar.
+        # 4. Semantic Scholar.
         sources.append(("Semantic Scholar", lambda: _try_semantic_scholar(doi, ctx)))
-        # 6. PubMed Central.
+        # 5. PubMed Central.
         sources.append(("PubMed Central", lambda: _try_pmc(doi, ctx)))
 
     found_urls = []  # Track URLs found but not downloadable
@@ -1248,7 +1243,7 @@ def _try_attach_oa_pdf(
             "you may be able to access it through your university library or VPN"
         )
 
-    return "no open-access PDF found (checked ADS, Sci-Hub, arXiv, Unpaywall, Semantic Scholar, PMC)"
+    return "no open-access PDF found (checked ADS, arXiv, Unpaywall, Semantic Scholar, PMC)"
 
 
 # ---------------------------------------------------------------------------

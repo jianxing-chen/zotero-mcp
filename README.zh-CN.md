@@ -673,7 +673,7 @@ bash scripts/launch_chrome_remote_debug_macos.sh \
 
 - *"用浏览器会话把 arXiv PDF 替换成出版商版本"* → `zotero_upgrade_preprint_pdfs_via_browser`
 
-工具先尝试 HTTP 级联（Sci-Hub + ADS PUB_PDF）；只有被拦截时才回退到浏览器会话。旧 PDF 只在下载成功后才被移入回收站（可恢复）。用 `zotero_get_batch_task_status` 轮询进度。
+工具先尝试 HTTP 级联（ADS PUB_PDF）；只有被拦截时才回退到浏览器会话。旧 PDF 只在下载成功后才被移入回收站（可恢复）。用 `zotero_get_batch_task_status` 轮询进度。
 
 参考自 [sciencedirect-live-session-fetcher](https://github.com/Given-Dream/sciencedirect-live-session-fetcher)。
 
