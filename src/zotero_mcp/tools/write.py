@@ -4225,6 +4225,43 @@ def _parse_bibcode_from_extra(extra: str | None) -> str | None:
     return None
 
 
+def _remove_arxiv_from_extra(write_zot, item_key: str) -> bool:
+    """Remove the arXiv ID line from an item's Extra field.
+
+    This is the idempotency marker for upgrade_preprint_pdfs: after
+    successful PDF replacement, the arXiv line is removed so the item
+    won't be re-processed on the next scan. Preserves all other Extra
+    content (bibcode, citation key, etc.). Uses _with_api_lock for
+    per-item locking.
+
+    Returns True if the Extra was updated, False if no arXiv line was
+    found or the update failed.
+    """
+    try:
+        item = _with_api_lock(lambda k=item_key: write_zot.item(k))
+    except Exception:
+        return False
+    data = item.get("data", {})
+    extra = data.get("extra", "") or ""
+    lines = extra.splitlines()
+    new_lines = [ln for ln in lines if not _parse_arxiv_id_from_extra(ln)]
+    if len(new_lines) == len(lines):
+        return False  # no arXiv line found
+    new_extra = "\n".join(new_lines).strip()
+    if new_extra == extra.strip():
+        return False
+    try:
+        def _update():
+            fresh = write_zot.item(item_key)
+            fresh["data"]["extra"] = new_extra
+            _helpers._strip_unwritable_fields(fresh)
+            resp = write_zot.update_item(fresh)
+            return _helpers._handle_write_response(resp, None)
+        return bool(_with_api_lock(_update))
+    except Exception:
+        return False
+
+
 def _parse_arxiv_id_from_extra(extra: str | None) -> str | None:
     """Extract an arXiv ID from a Zotero item's extra field.
 
@@ -5153,21 +5190,28 @@ def _upgrade_preprints_worker(status, preprints) -> None:
 @mcp.tool(
     name="zotero_upgrade_preprint_pdfs",
     description=(
-        "Scan arXiv preprint items, upgrade their metadata to journalArticle, "
-        "and replace the arXiv PDF with the publisher version. For each "
-        "itemType=preprint item: (1) upgrade metadata via _upgrade_single_preprint "
-        "(itemType->journalArticle, volume/issue/pages/DOI), (2) download the "
-        "publisher PDF via the Sci-Hub -> ADS -> arXiv cascade, (3) only if the "
-        "download succeeds, trash the old arXiv PDF attachment. If no published "
-        "version is found or the PDF download fails, the item is left untouched. "
-        "Requires ADS_API_TOKEN. Enable scihub.enabled in config.json to get the "
-        "publisher version; without Sci-Hub the cascade falls back to the arXiv "
-        "preprint (same as the existing PDF). "
-        "Trigger modes: (a) default scan — all preprints with an arXiv ID; "
-        "(b) require_bibcode=True — only preprints that also have a bibcode; "
+        "Replace arXiv PDFs with publisher versions. Scans TWO item types: "
+        "(1) itemType=preprint with an arXiv ID — upgrades metadata to "
+        "journalArticle first, then downloads the publisher PDF; "
+        "(2) itemType=journalArticle with an arXiv ID in Extra — skips "
+        "metadata upgrade (already done), just replaces the PDF. "
+        "The arXiv ID in Extra is the 'needs PDF replacement' marker: "
+        "after successful replacement, the arXiv line is removed from "
+        "Extra, making the run idempotent (already-processed items are "
+        "skipped on the next scan). "
+        "PDF download uses the Sci-Hub -> ADS -> arXiv cascade. Old PDFs "
+        "are trashed (recoverable from Zotero's Trash). "
+        "Requires ADS_API_TOKEN. Enable scihub.enabled in config.json to "
+        "get the publisher version; without Sci-Hub the cascade falls back "
+        "to the arXiv preprint (same as the existing PDF). "
+        "Trigger modes: (a) default scan — all preprints + journalArticles "
+        "with an arXiv ID; (b) require_bibcode=True — only preprints with a "
+        "bibcode (journalArticles are always matched by arXiv ID); "
         "(c) item_keys=[...] — specific items; "
-        "(d) collection='name or key' — only preprints in that collection; "
-        "(e) collection='_unfiled' — only preprints not in any collection."
+        "(d) collection='name or key' — only items in that collection; "
+        "(e) collection='_unfiled' — only items not in any collection. "
+        "Runs as a background task — returns task_id immediately, poll "
+        "with zotero_get_batch_task_status."
     ),
 )
 def upgrade_preprint_pdfs(
@@ -5178,17 +5222,19 @@ def upgrade_preprint_pdfs(
     *,
     ctx: Context,
 ) -> str:
-    """Upgrade arXiv preprints: metadata + publisher PDF replacement.
+    """Replace arXiv PDFs with publisher versions.
 
-    Not decorated with @with_zotero_api_lock: spawns a background task that
-    acquires the lock per-item. Prevents MCP-client-timeout + lock-wedge.
+    Not decorated with @with_zotero_api_lock: spawns a background task.
+
+    Scans both preprints (need metadata upgrade + PDF) and journalArticles
+    with arXiv ID in Extra (need PDF only). After successful PDF replacement,
+    the arXiv line is removed from Extra — idempotent on re-runs.
 
     - ``item_keys`` given: targeted mode (no scan, no Extra filter).
-    - ``collection`` given: scan only that collection (or ``_unfiled`` for
-      items not in any collection). Accepts a collection key, name, or
-      '/'-separated path — resolved via ``resolve_collection_specs``.
-    - ``require_bibcode=True``: scan only preprints with a bibcode in Extra.
-    - ``require_bibcode=False`` (default): scan all preprints with an arXiv ID.
+    - ``collection`` given: scan only that collection (or ``_unfiled``).
+    - ``require_bibcode=True``: scan only preprints with a bibcode in Extra
+      (journalArticles are always matched by arXiv ID regardless).
+    - ``require_bibcode=False`` (default): scan all items with an arXiv ID.
     """
     try:
         read_zot, write_zot = _helpers._get_write_client(ctx)
@@ -5205,6 +5251,15 @@ def upgrade_preprint_pdfs(
     scihub_enabled = _helpers._scihub.is_scihub_enabled(_helpers._scihub.load_scihub_config())
 
     preprints: list[dict] = []
+
+    # --- Item collection ---
+    # Collects items that need PDF replacement. Two item types are scanned:
+    # 1. itemType=preprint: needs metadata upgrade first (preprint→journalArticle),
+    #    then PDF replacement.
+    # 2. itemType=journalArticle with arXiv ID in Extra: already upgraded, just
+    #    needs PDF replacement. The arXiv ID in Extra is the "needs PDF replacement"
+    #    marker — it's removed after successful replacement so the item won't be
+    #    re-processed on the next run (idempotent).
 
     if item_keys:
         # Targeted mode: fetch each specified item directly.
@@ -5225,27 +5280,100 @@ def upgrade_preprint_pdfs(
     elif collection:
         # Collection-scoped scan.
         if collection.strip().lower() == "_unfiled":
-            # Unfiled: fetch all preprints, filter to those with no collections.
-            ctx.info("Scanning unfiled preprints (not in any collection)...")
+            # Unfiled: scan both preprints and journalArticles, filter to
+            # those with no collections.
+            ctx.info("Scanning unfiled items for arXiv preprints/articles...")
+            for item_type in ("preprint", "journalArticle"):
+                batch_size = 50
+                start = 0
+                while True:
+                    try:
+                        items = read_zot.items(itemType=item_type, start=start, limit=batch_size)
+                    except Exception as e:
+                        ctx.error(f"Error fetching {item_type} items: {e}")
+                        break
+                    if not items:
+                        break
+                    for it in items:
+                        data = it.get("data", {})
+                        if data.get("collections"):
+                            continue  # filed — skip
+                        extra = data.get("extra")
+                        if item_type == "preprint":
+                            if require_bibcode:
+                                if _parse_bibcode_from_extra(extra):
+                                    preprints.append(it)
+                            else:
+                                if _parse_arxiv_id_from_extra(extra):
+                                    preprints.append(it)
+                        else:  # journalArticle
+                            if _parse_arxiv_id_from_extra(extra):
+                                preprints.append(it)
+                    start += batch_size
+                    if len(items) < batch_size:
+                        break
+                    if limit and len(preprints) >= limit:
+                        preprints = preprints[:limit]
+                        break
+        else:
+            # Named collection: resolve to key, then scan both types.
+            try:
+                coll_keys = _helpers.resolve_collection_specs(read_zot, [collection], ctx=ctx)
+            except ValueError as e:
+                return f"Error: {e}"
+            if not coll_keys:
+                return f"Error: Collection '{collection}' not found"
+            for coll_key in coll_keys:
+                ctx.info(f"Scanning collection {coll_key} for arXiv preprints/articles...")
+                for item_type in ("preprint", "journalArticle"):
+                    try:
+                        items = _helpers._paginate(
+                            read_zot.collection_items,
+                            coll_key,
+                            itemType=item_type,
+                            max_items=limit,
+                        )
+                    except Exception as e:
+                        ctx.error(f"Error fetching {item_type} from collection {coll_key}: {e}")
+                        continue
+                    for it in items:
+                        data = it.get("data", {})
+                        extra = data.get("extra")
+                        if item_type == "preprint":
+                            if require_bibcode:
+                                if _parse_bibcode_from_extra(extra):
+                                    preprints.append(it)
+                            else:
+                                if _parse_arxiv_id_from_extra(extra):
+                                    preprints.append(it)
+                        else:  # journalArticle
+                            if _parse_arxiv_id_from_extra(extra):
+                                preprints.append(it)
+    else:
+        # Scan mode: paginate through preprint AND journalArticle items.
+        for item_type in ("preprint", "journalArticle"):
+            ctx.info(f"Scanning {item_type} items for arXiv IDs...")
             batch_size = 50
             start = 0
             while True:
                 try:
-                    items = read_zot.items(itemType="preprint", start=start, limit=batch_size)
+                    items = read_zot.items(itemType=item_type, start=start, limit=batch_size)
                 except Exception as e:
-                    ctx.error(f"Error fetching preprint items: {e}")
+                    ctx.error(f"Error fetching {item_type} items: {e}")
                     break
                 if not items:
                     break
                 for it in items:
                     data = it.get("data", {})
-                    if data.get("collections"):
-                        continue  # filed — skip
                     extra = data.get("extra")
-                    if require_bibcode:
-                        if _parse_bibcode_from_extra(extra):
-                            preprints.append(it)
-                    else:
+                    if item_type == "preprint":
+                        if require_bibcode:
+                            if _parse_bibcode_from_extra(extra):
+                                preprints.append(it)
+                        else:
+                            if _parse_arxiv_id_from_extra(extra):
+                                preprints.append(it)
+                    else:  # journalArticle
                         if _parse_arxiv_id_from_extra(extra):
                             preprints.append(it)
                 start += batch_size
@@ -5254,66 +5382,6 @@ def upgrade_preprint_pdfs(
                 if limit and len(preprints) >= limit:
                     preprints = preprints[:limit]
                     break
-        else:
-            # Named collection: resolve to key, then fetch its preprints.
-            try:
-                coll_keys = _helpers.resolve_collection_specs(read_zot, [collection], ctx=ctx)
-            except ValueError as e:
-                return f"Error: {e}"
-            if not coll_keys:
-                return f"Error: Collection '{collection}' not found"
-            for coll_key in coll_keys:
-                ctx.info(f"Scanning collection {coll_key} for preprints...")
-                try:
-                    items = _helpers._paginate(
-                        read_zot.collection_items,
-                        coll_key,
-                        itemType="preprint",
-                        max_items=limit,
-                    )
-                except Exception as e:
-                    ctx.error(f"Error fetching items from collection {coll_key}: {e}")
-                    continue
-                for it in items:
-                    data = it.get("data", {})
-                    extra = data.get("extra")
-                    if require_bibcode:
-                        if _parse_bibcode_from_extra(extra):
-                            preprints.append(it)
-                    else:
-                        if _parse_arxiv_id_from_extra(extra):
-                            preprints.append(it)
-    else:
-        # Scan mode: paginate through all preprint items (server-side
-        # itemType filter is cheaper than a client-side scan).
-        batch_size = 50
-        start = 0
-        while True:
-            try:
-                items = read_zot.items(itemType="preprint", start=start, limit=batch_size)
-            except Exception as e:
-                ctx.error(f"Error fetching preprint items: {e}")
-                break
-            if not items:
-                break
-            for it in items:
-                data = it.get("data", {})
-                extra = data.get("extra")
-                if require_bibcode:
-                    # Only process preprints that already have a bibcode in
-                    # Extra (typically imported via add_by_bibcode or enriched).
-                    if _parse_bibcode_from_extra(extra):
-                        preprints.append(it)
-                else:
-                    # Process any preprint with an arXiv ID in Extra.
-                    if _parse_arxiv_id_from_extra(extra):
-                        preprints.append(it)
-            start += batch_size
-            if len(items) < batch_size:
-                break
-            if limit and len(preprints) >= limit:
-                preprints = preprints[:limit]
-                break
 
     total = len(preprints)
     if total == 0:
@@ -5341,7 +5409,15 @@ def upgrade_preprint_pdfs(
 
 
 def _upgrade_preprint_pdfs_worker(status, preprints) -> None:
-    """Background worker for upgrade_preprint_pdfs."""
+    """Background worker for upgrade_preprint_pdfs.
+
+    Handles two item types:
+    - preprint: upgrade metadata first (preprint→journalArticle), then PDF.
+    - journalArticle (with arXiv ID in Extra): skip metadata upgrade, just
+      replace PDF. After successful PDF replacement, the arXiv line is
+      removed from Extra — this makes the run idempotent (items without
+      arXiv ID in Extra are skipped on the next scan).
+    """
     from zotero_mcp.batch_runner import update_status
 
     try:
@@ -5359,30 +5435,37 @@ def _upgrade_preprint_pdfs_worker(status, preprints) -> None:
         key = it.get("key", "")
         if not key:
             continue
+        item_type = it.get("data", {}).get("itemType", "")
         try:
-            # Step 1: upgrade metadata (preprint -> journalArticle).
-            upg = _with_api_lock(lambda k=key: _upgrade_single_preprint(write_zot, k))
-            if upg["status"] != "upgraded":
-                failed += 1
-                succeeded_items.append({"key": key, "detail": "not published"})
-                _time.sleep(0.3)
-                continue
-
-            # Re-read to get published DOI + bibcode.
-            pub_doi = None
-            pub_bibcode = None
-            try:
-                upgraded_item = _with_api_lock(lambda k=key: write_zot.item(k))
-                pub_doi = (upgraded_item.get("data", {}).get("DOI") or "").strip()
+            if item_type == "preprint":
+                # Step 1a: upgrade metadata (preprint -> journalArticle).
+                upg = _with_api_lock(lambda k=key: _upgrade_single_preprint(write_zot, k))
+                if upg["status"] != "upgraded":
+                    failed += 1
+                    succeeded_items.append({"key": key, "detail": "not published"})
+                    _time.sleep(0.3)
+                    continue
+                # Re-read to get published DOI + bibcode.
+                pub_doi = None
+                pub_bibcode = None
+                try:
+                    upgraded_item = _with_api_lock(lambda k=key: write_zot.item(k))
+                    pub_doi = (upgraded_item.get("data", {}).get("DOI") or "").strip()
+                    if not pub_doi or pub_doi.startswith("10.48550/"):
+                        pub_doi = None
+                    pub_bibcode = _parse_bibcode_from_extra(upgraded_item.get("data", {}).get("extra"))
+                except Exception as e:
+                    logger.warning(f"Re-read of upgraded item {key} failed: {e}")
+            else:
+                # journalArticle: already upgraded, read DOI + bibcode directly.
+                pub_doi = (it.get("data", {}).get("DOI") or "").strip()
                 if not pub_doi or pub_doi.startswith("10.48550/"):
                     pub_doi = None
-                pub_bibcode = _parse_bibcode_from_extra(upgraded_item.get("data", {}).get("extra"))
-            except Exception as e:
-                logger.warning(f"Re-read of upgraded item {key} failed: {e}")
+                pub_bibcode = _parse_bibcode_from_extra(it.get("data", {}).get("extra"))
 
             if not pub_doi:
                 failed += 1
-                succeeded_items.append({"key": key, "detail": "metadata upgraded but no DOI"})
+                succeeded_items.append({"key": key, "detail": "no publisher DOI"})
                 _time.sleep(0.3)
                 continue
 
@@ -5394,9 +5477,13 @@ def _upgrade_preprint_pdfs_worker(status, preprints) -> None:
                 )
             )
 
-            # Step 3: trash old arXiv PDF if download succeeded.
+            # Step 3: trash old PDFs + remove arXiv line from Extra.
             if "attached" in (pdf_status or "").lower():
                 _with_api_lock(lambda: _helpers._trash_pdf_attachments(write_zot, key, DummyCtx()))
+                # Remove the arXiv line from Extra — this is the idempotency
+                # marker: items without arXiv ID in Extra are skipped on the
+                # next scan, so re-running won't re-download.
+                _remove_arxiv_from_extra(write_zot, key)
                 succeeded += 1
                 succeeded_items.append({"key": key, "detail": "PDF replaced"})
             else:
