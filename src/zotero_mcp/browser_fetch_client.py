@@ -280,12 +280,22 @@ def fetch_pdf_in_page_context(
 
     This is the key WAF-bypass: the request carries the page's real cookies
     and origin. Returns the PDF bytes (validated by ``%PDF-`` magic) or None.
+
+    When ``pdf_url`` is ``"location.href"``, the fetch uses the page's own
+    URL (``location.href``) instead of a literal string. This matters when
+    the PDF was loaded via a redirect to a different domain (e.g. OUP ->
+    silverchair CDN) — fetching ``location.href`` from the redirected tab's
+    context is same-origin and avoids CORS, whereas fetching the original
+    URL string from the redirected tab would be cross-origin.
     """
+    # When pdf_url is "location.href", use the page's own URL in the fetch
+    # to stay same-origin after a redirect.
+    fetch_arg = "location.href" if pdf_url == "location.href" else json.dumps(pdf_url)
     value = devtools.evaluate(
         ws_url,
         f"""
 new Promise(resolve => {{
-  fetch({json.dumps(pdf_url)}, {{ credentials: 'include' }})
+  fetch({fetch_arg}, {{ credentials: 'include' }})
     .then(resp => resp.arrayBuffer())
     .then(buf => {{
       const data = new Uint8Array(buf);
@@ -443,6 +453,10 @@ def fetch_publisher_pdf_via_browser(
                 pdf_bytes = fetch_pdf_in_page_context(devtools, pdf_ws, pdf_url, msg_id=31)
             if pdf_bytes:
                 return pdf_bytes, pdf_url, "sd_in_page_fetch"
+            # Cross-domain redirect fallback: fetch location.href from the PDF tab.
+            pdf_bytes = fetch_pdf_in_page_context(devtools, pdf_ws, "location.href", msg_id=35)
+            if pdf_bytes:
+                return pdf_bytes, pdf_url, "sd_pdf_self_fetch"
             pdf_bytes = extract_pdf_from_pdfjs_viewer(devtools, pdf_ws)
             if pdf_bytes:
                 return pdf_bytes, pdf_url, "sd_pdfjs_extract"
@@ -475,6 +489,13 @@ def fetch_publisher_pdf_via_browser(
             pdf_bytes = fetch_pdf_in_page_context(devtools, pdf_ws, candidate, msg_id=80)
             if pdf_bytes:
                 return pdf_bytes, candidate, "generic_pdf_context_fetch"
+        # Last resort: fetch location.href from the PDF tab's own context.
+        # This handles cross-domain redirects (e.g. OUP -> silverchair CDN)
+        # where fetching the original URL string would be CORS-blocked but
+        # fetching location.href (the redirected URL) is same-origin.
+        pdf_bytes = fetch_pdf_in_page_context(devtools, pdf_ws, "location.href", msg_id=85)
+        if pdf_bytes:
+            return pdf_bytes, viewer_url or generic_pdf_url, "generic_pdf_self_fetch"
         pdf_bytes = extract_pdf_from_pdfjs_viewer(devtools, pdf_ws)
         if pdf_bytes:
             return pdf_bytes, generic_pdf_url, "generic_pdfjs_extract"

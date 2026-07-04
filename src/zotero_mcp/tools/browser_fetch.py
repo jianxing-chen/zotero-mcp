@@ -18,6 +18,7 @@ already authorized to access.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import tempfile
@@ -288,11 +289,98 @@ def _upgrade_preprint_pdfs_via_browser_worker(status: TaskStatus, preprints: lis
                     filepath = os.path.join(tmpdir, filename)
                     with open(filepath, "wb") as f:
                         f.write(pdf_bytes)
-                    _with_api_lock(
-                        lambda: write_zot.attachment_both(
-                            [(filename, filepath)], parentid=key,
+
+                    # Try attaching via Zotero Web API (which uploads to Zotero Storage).
+                    # If the storage quota is exceeded, fall back to WebDAV upload
+                    # (when configured). attachment_both may create the attachment
+                    # item (metadata) but fail on the file upload — the orphaned
+                    # "empty shell" must be cleaned up so it doesn't show a broken
+                    # "file not found" link in the Zotero desktop client.
+                    try:
+                        _with_api_lock(
+                            lambda: write_zot.attachment_both(
+                                [(filename, filepath)], parentid=key,
+                            )
                         )
-                    )
+                    except Exception as attach_err:
+                        # Clean up orphaned empty-shell attachments created by the
+                        # failed attachment_both (item created, file upload failed).
+                        from pyzotero.zotero import build_url as _build_url
+
+                        _current_children = _with_api_lock(
+                            lambda k=key: write_zot.children(k)
+                        )
+                        for _c in _current_children:
+                            _cd = _c.get("data", {})
+                            if _cd.get("itemType") != "attachment":
+                                continue
+                            if _cd.get("contentType") != "application/pdf":
+                                continue
+                            # An empty shell has no md5/mtime (file never uploaded).
+                            if _cd.get("md5") is None and _cd.get("mtime") is None:
+                                if _c["key"] not in old_pdf_keys:  # don't trash pre-existing
+                                    _ck = _c["key"]
+                                    _cv = _c.get("version", 0)
+                                    _url = _build_url(
+                                        write_zot.endpoint,
+                                        f"/{write_zot.library_type}/{write_zot.library_id}/items/{_ck}",
+                                    )
+                                    _r = write_zot.client.patch(
+                                        url=_url,
+                                        headers={"If-Unmodified-Since-Version": str(_cv)},
+                                        content=json.dumps({"deleted": 1}),
+                                    )
+                                    logger.info(f"Cleaned up orphaned empty-shell attachment {_ck}: HTTP {_r.status_code}")
+
+                        from zotero_mcp import webdav as _webdav
+                        if _webdav.is_webdav_configured():
+                            logger.info(f"Zotero Storage attach failed ({attach_err}), trying WebDAV...")
+                            # Create a bare attachment item (no file bytes), then
+                            # upload the file to WebDAV using its key.
+                            # item_template requires linkmode param (lowercase) for
+                            # itemType=attachment, otherwise the API returns 400.
+                            template = _with_api_lock(
+                                lambda: write_zot.item_template("attachment", "imported_file")
+                            )
+                            template["parentItem"] = key
+                            template["contentType"] = "application/pdf"
+                            template["filename"] = filename
+                            created = _with_api_lock(
+                                lambda: write_zot.create_items([template])
+                            )
+                            # Extract the new attachment key from the response.
+                            # pyzotero's create_items returns:
+                            #   {'success': {'0': 'RA3EKKJG'}, 'successful': {'0': {full item}}, ...}
+                            # The key can be in 'success' (as a string value) or
+                            # in 'successful' (inside the full item dict).
+                            new_key = None
+                            if isinstance(created, dict):
+                                # Try 'success' first — values are key strings
+                                for v in created.get("success", {}).values():
+                                    if isinstance(v, str) and v:
+                                        new_key = v
+                                        break
+                                # Try 'successful' — values are full item dicts
+                                if not new_key:
+                                    for entry in created.get("successful", {}).values():
+                                        if isinstance(entry, dict) and entry.get("key"):
+                                            new_key = entry["key"]
+                                            break
+                                # Also try 'success' as a list (older pyzotero)
+                                if not new_key:
+                                    for entry in created.get("success", []):
+                                        if isinstance(entry, dict) and entry.get("key"):
+                                            new_key = entry["key"]
+                                            break
+                            if new_key:
+                                _webdav.upload_attachment_to_webdav(
+                                    attachment_key=new_key, file_path=filepath,
+                                )
+                                logger.info(f"WebDAV upload succeeded for {new_key}.zip")
+                            else:
+                                raise RuntimeError(f"WebDAV fallback: could not extract attachment key from {created}")
+                        else:
+                            raise
             except Exception as e:
                 logger.warning(f"Failed to attach browser-fetched PDF for {key}: {e}")
                 failed += 1
