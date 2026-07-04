@@ -343,6 +343,7 @@ def _upgrade_preprint_pdfs_via_browser_worker(status: TaskStatus, preprints: lis
                                 lambda: write_zot.item_template("attachment", "imported_file")
                             )
                             template["parentItem"] = key
+                            template["title"] = filename
                             template["contentType"] = "application/pdf"
                             template["filename"] = filename
                             created = _with_api_lock(
