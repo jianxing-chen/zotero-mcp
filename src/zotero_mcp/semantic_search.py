@@ -848,7 +848,7 @@ class ZoteroSemanticSearch:
 
         The idempotency check for ``reindex_keys`` runs: it returns True only
         when BOTH hold —
-        (a) the stored chunk-0 metadata reports ``fulltext_source='mineru-cache'``
+        (a) the stored per-item metadata reports ``fulltext_source='mineru-cache'``
             (so the index was built from the high-precision parse, not pdfminer),
         (b) a MinerU cache for one of the item's attachments is still readable
             on disk (so the PDF hasn't been replaced since the index was built;
@@ -856,8 +856,15 @@ class ZoteroSemanticSearch:
             desired).
 
         Returning True means "skip re-embedding — nothing to gain".
+
+        The probe id mirrors the storage convention: ``<key>#0`` under
+        chunking (each item is sliced into ``<key>#0``/``<key>#1``/…), and the
+        bare ``<key>`` otherwise (see ``_process_item_batch``). Probing the
+        wrong form would always miss and silently disable this guard — the
+        symmetric counterpart of the ``_get_items_from_local_db`` skip bug.
         """
-        chunk0_meta = chroma_client.get_document_metadata(f"{item_key}#0")
+        probe_id = f"{item_key}#0" if self._chunking_enabled else item_key
+        chunk0_meta = chroma_client.get_document_metadata(probe_id)
         if not chunk0_meta or chunk0_meta.get("fulltext_source") != "mineru-cache":
             return False
         for _akey, _apath, _actype in reader._iter_parent_attachments(item_id):

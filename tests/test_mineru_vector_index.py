@@ -243,7 +243,13 @@ class TestMineruIndexCurrent:
         from zotero_mcp.semantic_search import ZoteroSemanticSearch
 
         # Avoid real config / chroma init — we only call _mineru_index_current.
-        return ZoteroSemanticSearch.__new__(ZoteroSemanticSearch)
+        # The guard now branches on _chunking_enabled (reads self._chunking_config,
+        # normally set in __init__); default to chunking ON so the legacy tests
+        # (written when the guard hardcoded ``#0``) still probe the chunk-0 id
+        # and behave as before.
+        s = ZoteroSemanticSearch.__new__(ZoteroSemanticSearch)
+        s._chunking_config = {"enabled": True}
+        return s
 
     def _fake_chroma(self, chunk0_meta):
         from unittest.mock import MagicMock
@@ -303,6 +309,69 @@ class TestMineruIndexCurrent:
         chroma = self._fake_chroma({"fulltext_source": "mineru-cache"})
         reader = self._fake_reader([("ATT1", "p", "application/pdf"), ("ATT2", "p", "application/pdf")], {"ATT2"})
         assert s._mineru_index_current(chroma, reader, "PARENT", 1) is True
+
+    # -- id-probe symmetry (regression for the chunked-vs-bare-key bug) ----
+
+    @staticmethod
+    def _id_aware_chroma(meta_by_id):
+        """Chroma stand-in that returns metadata only for the exact id probed.
+
+        Unlike the ``return_value`` mock above, this discriminates by id so a
+        test can assert WHICH id form ({key}#0 vs bare {key}) was probed.
+        """
+        from unittest.mock import MagicMock
+
+        c = MagicMock()
+        c.get_document_metadata.side_effect = lambda did: meta_by_id.get(did)
+        return c
+
+    def _make_chunked_search(self, chunking_enabled):
+        """Build a search whose _chunking_enabled reflects the test's choice.
+
+        _chunking_enabled is a read-only property over _chunking_config; we
+        can't set it on a __new__'d instance. Use a subclass that overrides
+        the property so the guard picks the right probe id form.
+        """
+        from zotero_mcp.semantic_search import ZoteroSemanticSearch
+
+        class _S(ZoteroSemanticSearch):
+            @property
+            def _chunking_config(self):  # type: ignore[override]
+                return {"enabled": chunking_enabled}
+
+        s = _S.__new__(_S)
+        return s
+
+    def test_chunking_on_probes_chunk0_id(self):
+        """Under chunking, the guard must probe ``KEY#0`` (the stored id form).
+        Pre-fix it hardcoded ``KEY#0`` — correct here but the symmetry with the
+        non-chunking branch was broken (see test_non_chunking_probes_bare_key)."""
+        s = self._make_chunked_search(chunking_enabled=True)
+        chroma = self._id_aware_chroma({"PARENT#0": {"fulltext_source": "mineru-cache"}})
+        reader = self._fake_reader([("ATT1", "p", "application/pdf")], {"ATT1"})
+        assert s._mineru_index_current(chroma, reader, "PARENT", 1) is True
+        # Confirms the chunk-0 id was the one probed (not the bare key).
+        assert chroma.get_document_metadata.call_args.args[0] == "PARENT#0"
+
+    def test_non_chunking_probes_bare_key(self):
+        """Without chunking, the guard must probe the bare ``KEY`` (the stored
+        id form in non-chunking mode). Pre-fix it hardcoded ``KEY#0``, which
+        always missed under non-chunking — silently disabling the MinerU
+        idempotency guard so every reindex_keys run re-embedded."""
+        s = self._make_chunked_search(chunking_enabled=False)
+        chroma = self._id_aware_chroma({"PARENT": {"fulltext_source": "mineru-cache"}})
+        reader = self._fake_reader([("ATT1", "p", "application/pdf")], {"ATT1"})
+        assert s._mineru_index_current(chroma, reader, "PARENT", 1) is True
+        assert chroma.get_document_metadata.call_args.args[0] == "PARENT"
+
+    def test_non_chunking_returns_false_when_only_chunk0_has_meta(self):
+        """Non-chunking + metadata only on ``KEY#0`` (the wrong id form for
+        this mode) → guard correctly returns False (no skip), because in
+        non-chunking mode the metadata lives on the bare key, not ``#0``."""
+        s = self._make_chunked_search(chunking_enabled=False)
+        chroma = self._id_aware_chroma({"PARENT#0": {"fulltext_source": "mineru-cache"}})
+        reader = self._fake_reader([("ATT1", "p", "application/pdf")], {"ATT1"})
+        assert s._mineru_index_current(chroma, reader, "PARENT", 1) is False
 
 
 # ---------------------------------------------------------------------------
