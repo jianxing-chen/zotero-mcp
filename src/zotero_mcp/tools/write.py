@@ -5469,6 +5469,15 @@ def _upgrade_preprint_pdfs_worker(status, preprints) -> None:
                 _time.sleep(0.3)
                 continue
 
+            # Snapshot the keys of PDF attachments that exist *before* the
+            # download. After a successful download, _trash_pdf_attachments is
+            # told to trash ONLY these — any PDF created by the cascade (the
+            # new publisher PDF, whose key we cannot know ahead of time) is
+            # preserved. Without this allowlist, _trash would re-list children
+            # and trash the newly-attached PDF too, leaving the item with
+            # zero PDFs (data-loss bug).
+            old_pdf_keys = set(_with_api_lock(lambda k=key: _helpers._list_pdf_attachment_keys(write_zot, k)))
+
             # Step 2: download publisher PDF via the cascade.
             pdf_status = _with_api_lock(
                 lambda: _helpers._try_attach_oa_pdf(
@@ -5479,7 +5488,11 @@ def _upgrade_preprint_pdfs_worker(status, preprints) -> None:
 
             # Step 3: trash old PDFs + remove arXiv line from Extra.
             if "attached" in (pdf_status or "").lower():
-                _with_api_lock(lambda: _helpers._trash_pdf_attachments(write_zot, key, DummyCtx()))
+                _with_api_lock(
+                    lambda: _helpers._trash_pdf_attachments(
+                        write_zot, key, DummyCtx(), only_keys=old_pdf_keys,
+                    )
+                )
                 # Remove the arXiv line from Extra — this is the idempotency
                 # marker: items without arXiv ID in Extra are skipped on the
                 # next scan, so re-running won't re-download.

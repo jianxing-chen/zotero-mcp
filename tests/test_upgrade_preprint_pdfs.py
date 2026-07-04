@@ -90,6 +90,106 @@ class TestTrashPdfAttachments:
         count = _helpers._trash_pdf_attachments(write_zot, "ITEM1", dummy_ctx)
         assert count == 0
 
+    def test_only_keys_preserves_newly_attached_pdf(self, dummy_ctx):
+        """Regression test for the data-loss bug: when a new PDF was
+        downloaded and then _trash_pdf_attachments was called, it re-listed
+        children and trashed the NEW PDF too, leaving the item with zero
+        PDFs. The only_keys allowlist lets the caller pass the keys of PDFs
+        that existed *before* the download so the new one (whose key is not
+        in the set) is preserved.
+        """
+        write_zot = MagicMock()
+        old_pdf = {
+            "key": "OLD1",
+            "version": 10,
+            "data": {"itemType": "attachment", "contentType": "application/pdf"},
+        }
+        new_pdf = {
+            "key": "NEW1",
+            "version": 11,
+            "data": {"itemType": "attachment", "contentType": "application/pdf"},
+        }
+        write_zot.children.return_value = [old_pdf, new_pdf]
+        write_zot.endpoint = "https://api.zotero.org"
+        write_zot.library_type = "user"
+        write_zot.library_id = "12345"
+        write_zot.client.patch.return_value = MagicMock(status_code=204)
+
+        # only_keys={"OLD1"} -> only OLD1 is trashed, NEW1 preserved.
+        count = _helpers._trash_pdf_attachments(
+            write_zot, "ITEM1", dummy_ctx, only_keys={"OLD1"}
+        )
+
+        assert count == 1
+        assert write_zot.client.patch.call_count == 1
+        # The trashed URL must contain OLD1, not NEW1.
+        call = write_zot.client.patch.call_args_list[0]
+        url = call.kwargs.get("url", "")
+        assert "OLD1" in url
+        assert "NEW1" not in url
+
+    def test_only_keys_none_trashes_all(self, dummy_ctx):
+        """only_keys=None (default) trashes every PDF — backward compatible."""
+        write_zot = MagicMock()
+        pdf1 = {
+            "key": "A1",
+            "version": 10,
+            "data": {"itemType": "attachment", "contentType": "application/pdf"},
+        }
+        pdf2 = {
+            "key": "A2",
+            "version": 20,
+            "data": {"itemType": "attachment", "contentType": "application/pdf"},
+        }
+        write_zot.children.return_value = [pdf1, pdf2]
+        write_zot.endpoint = "https://api.zotero.org"
+        write_zot.library_type = "user"
+        write_zot.library_id = "12345"
+        write_zot.client.patch.return_value = MagicMock(status_code=204)
+
+        count = _helpers._trash_pdf_attachments(
+            write_zot, "ITEM1", dummy_ctx, only_keys=None
+        )
+        assert count == 2
+
+
+# ---------------------------------------------------------------------------
+# _list_pdf_attachment_keys
+# ---------------------------------------------------------------------------
+
+
+class TestListPdfAttachmentKeys:
+    def test_returns_pdf_keys_only(self):
+        """Returns keys of attachment items with contentType=application/pdf."""
+        write_zot = MagicMock()
+        pdf1 = {
+            "key": "P1",
+            "data": {"itemType": "attachment", "contentType": "application/pdf"},
+        }
+        note = {"key": "N1", "data": {"itemType": "note"}}
+        html = {
+            "key": "H1",
+            "data": {"itemType": "attachment", "contentType": "text/html"},
+        }
+        pdf2 = {
+            "key": "P2",
+            "data": {"itemType": "attachment", "contentType": "application/pdf"},
+        }
+        write_zot.children.return_value = [pdf1, note, html, pdf2]
+        keys = _helpers._list_pdf_attachment_keys(write_zot, "ITEM1")
+        assert keys == ["P1", "P2"]
+
+    def test_returns_empty_on_no_children(self):
+        write_zot = MagicMock()
+        write_zot.children.return_value = []
+        assert _helpers._list_pdf_attachment_keys(write_zot, "ITEM1") == []
+
+    def test_returns_empty_on_children_fetch_error(self):
+        """If children() raises, return [] without crashing."""
+        write_zot = MagicMock()
+        write_zot.children.side_effect = Exception("network error")
+        assert _helpers._list_pdf_attachment_keys(write_zot, "ITEM1") == []
+
 
 # ---------------------------------------------------------------------------
 # upgrade_preprint_pdfs
@@ -208,7 +308,16 @@ class TestUpgradePreprintPdfs:
     @patch("zotero_mcp.tools.write._upgrade_single_preprint")
     @patch("zotero_mcp.tools.write._helpers._get_write_client")
     def test_downloads_then_trashes_on_success(self, mock_get_client, mock_upgrade, dummy_ctx, monkeypatch, tmp_path):
-        """Upgrade succeeds + PDF download succeeds -> old PDF trashed."""
+        """Upgrade succeeds + PDF download succeeds -> old PDF trashed.
+
+        Regression check: the worker snapshots the old PDF keys *before* the
+        download and passes them as ``exclude_keys`` to _trash_pdf_attachments,
+        so the newly-attached publisher PDF is NOT trashed.
+        """
+        import time as _time
+
+        from zotero_mcp.batch_runner import read_status
+
         monkeypatch.setattr("zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks")
         preprint = self._make_preprint_item()
         read_zot = MagicMock()
@@ -250,12 +359,38 @@ class TestUpgradePreprintPdfs:
             "_try_attach_oa_pdf",
             lambda *a, **k: "PDF attached (source: Sci-Hub)",
         )
+        # Snapshot before the download returns ["OLD_PDF"].
+        monkeypatch.setattr(
+            helpers_mod,
+            "_list_pdf_attachment_keys",
+            lambda wz, k: ["OLD_PDF"],
+        )
         trash_mock = MagicMock(return_value=1)
         monkeypatch.setattr(helpers_mod, "_trash_pdf_attachments", trash_mock)
 
         result = upgrade_preprint_pdfs(ctx=dummy_ctx)
         assert "started" in result.lower() or "⏳" in result
         assert "get_batch_task_status" in result
+
+        # Extract task_id and wait for the background worker to finish.
+        task_id = result.split("`")[1] if "`" in result else result.split("**")[1]
+        deadline = _time.time() + 5
+        while _time.time() < deadline:
+            loaded = read_status(task_id)
+            if loaded and loaded.status in ("completed", "failed"):
+                break
+            _time.sleep(0.05)
+
+        # The worker must have called _trash_pdf_attachments with
+        # only_keys={"OLD_PDF"} — the data-loss bug was that it trashed
+        # the newly-attached PDF too (it re-listed children and deleted
+        # every PDF, including the one just downloaded).
+        assert trash_mock.called, "worker never called _trash_pdf_attachments"
+        kwargs = trash_mock.call_args.kwargs
+        assert "only_keys" in kwargs, "only_keys not passed — data-loss bug"
+        assert kwargs["only_keys"] == {"OLD_PDF"}, (
+            f"expected only_keys={{'OLD_PDF'}}, got {kwargs['only_keys']!r}"
+        )
 
     @patch("zotero_mcp.tools.write._upgrade_single_preprint")
     @patch("zotero_mcp.tools.write._helpers._get_write_client")

@@ -812,8 +812,33 @@ def _download_and_attach_pdf(write_zot, item_key, pdf_url, doi, ctx):
         return None
 
 
-def _trash_pdf_attachments(write_zot, item_key, ctx) -> int:
-    """Soft-delete (trash) all PDF attachments of an item.
+def _list_pdf_attachment_keys(write_zot, item_key) -> list[str]:
+    """Return the keys of all PDF attachments currently under ``item_key``.
+
+    Used by callers that need to distinguish *old* PDF attachments from a
+    newly-attached one (e.g. ``upgrade_preprint_pdfs`` downloads the
+    publisher PDF and then trashes only the *old* arXiv PDF — without this
+    snapshot it would trash the new one too, leaving the item with no PDF).
+    """
+    try:
+        children = write_zot.children(item_key)
+    except Exception:
+        return []
+    keys: list[str] = []
+    for child in children:
+        data = child.get("data", {})
+        if data.get("itemType") != "attachment":
+            continue
+        if data.get("contentType") != "application/pdf":
+            continue
+        key = child.get("key", "")
+        if key:
+            keys.append(key)
+    return keys
+
+
+def _trash_pdf_attachments(write_zot, item_key, ctx, *, only_keys: set[str] | None = None) -> int:
+    """Soft-delete (trash) PDF attachments of an item.
 
     Iterates ``write_zot.children(item_key)``, selects attachments with
     ``contentType == "application/pdf"``, and PATCHes each with
@@ -822,11 +847,19 @@ def _trash_pdf_attachments(write_zot, item_key, ctx) -> int:
     in ``tools/write.py`` — pyzotero's ``delete_item()`` permanently destroys
     items, while a PATCH ``{"deleted": 1}`` moves them to the Trash.
 
+    ``only_keys`` (allowlist) is a set of attachment keys to trash. When set,
+    only PDF attachments whose key is in this set are trashed — any PDF whose
+    key is NOT in the set (e.g. a newly-downloaded publisher PDF that did not
+    exist when the caller snapshotted the old keys) is preserved. This is the
+    inverse of an ``exclude_keys`` denylist; the allowlist is safer here because
+    the caller cannot know the new attachment's key ahead of time.
+
     Returns the count of attachments trashed. Non-PDF children (notes,
     annotations, non-PDF attachments) are left untouched.
     """
     from pyzotero.zotero import build_url
 
+    allow = only_keys  # None = trash all PDFs (default behavior)
     trashed = 0
     try:
         children = write_zot.children(item_key)
@@ -841,6 +874,10 @@ def _trash_pdf_attachments(write_zot, item_key, ctx) -> int:
             continue
         child_key = child.get("key", "")
         if not child_key:
+            continue
+        if allow is not None and child_key not in allow:
+            # Newly-created PDF (not in the pre-download snapshot) — preserve.
+            ctx.info(f"Preserving PDF attachment {child_key} (not in allowlist)")
             continue
         try:
             url = build_url(
