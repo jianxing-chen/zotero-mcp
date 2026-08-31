@@ -1419,7 +1419,7 @@ def semantic_search(
 def update_search_database(
     force_rebuild: bool = False,
     limit: int | None = None,
-    reindex_keys: list[str] | None = None,
+    reindex_keys: list[str] | str | None = None,
     reindex_cached_mineru: bool = False,
     force_reindex: bool = False,
     *,

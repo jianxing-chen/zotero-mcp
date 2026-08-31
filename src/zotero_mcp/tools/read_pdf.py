@@ -115,7 +115,7 @@ def _get_pdf_path(item_key: str, ctx: Context) -> tuple[str, str, str | None] | 
                             item_key, attachment["content_type"]
                         )
                     if resolved and resolved.exists():
-                        return str(resolved), attachment["title"] or item_key, False
+                        return str(resolved), attachment["title"] or item_key, item_key
 
                 local_item = reader.get_item_by_key(item_key)
                 if local_item:
@@ -693,10 +693,8 @@ def _extract_with_pymupdf(
             text = page.get_text()
             output.append(f"## Page {page_num + 1}")
             output.append("")
-            if markdown.strip():
-                output.append(markdown.strip())
-            elif page_index in doc.needs_ocr:
-                output.append("*[No text layer on this page — it is a scanned image]*")
+            if text.strip():
+                output.append(text.strip())
             else:
                 output.append("*[No extractable text on this page]*")
             output.append("")

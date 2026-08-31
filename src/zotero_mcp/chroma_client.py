@@ -27,6 +27,7 @@ from zotero_mcp.embeddings.providers import (  # noqa: F401
     OpenAIEmbeddingFunction,
     ensure_embedding_functions_registered,
 )
+from chromadb.utils.embedding_functions import register_embedding_function  # noqa: F401
 from zotero_mcp.embeddings.registry import create_embedding_function, merge_env_config
 from zotero_mcp.utils import install_hint, suppress_stdout
 
@@ -413,66 +414,6 @@ class HuggingFaceEmbeddingFunction(EmbeddingFunction):
         return text
 
 
-@register_embedding_function
-class OllamaEmbeddingFunction(EmbeddingFunction):
-    """Custom Ollama embedding function for ChromaDB.
-
-    Uses Ollama's local HTTP API. Registered under the name ``ollama`` so
-    ChromaDB can rebuild persisted collections that were created with this
-    embedding function.
-    """
-
-    # Ollama models vary; use a conservative, char-based fallback budget.
-    max_input_tokens = 8000
-
-    def __init__(self, model_name: str = "qwen3-embedding", base_url: str | None = None):
-        self.model_name = model_name
-        self.base_url = (base_url or os.getenv("OLLAMA_BASE_URL") or "http://localhost:11434").rstrip("/")
-
-    @staticmethod
-    def name() -> str:
-        return "ollama"
-
-    def get_config(self) -> dict[str, Any]:
-        return {"model_name": self.model_name, "base_url": self.base_url}
-
-    @staticmethod
-    def build_from_config(config: dict[str, Any]) -> "OllamaEmbeddingFunction":
-        return OllamaEmbeddingFunction(
-            model_name=config.get("model_name", "qwen3-embedding"),
-            base_url=config.get("base_url"),
-        )
-
-    def __call__(self, input: Documents) -> Embeddings:
-        """Generate embeddings using Ollama's local embeddings endpoint."""
-        try:
-            import requests
-        except ImportError:
-            raise ImportError("requests package is required for Ollama embeddings")
-
-        embeddings = []
-        endpoint = f"{self.base_url}/api/embeddings"
-        for text in input:
-            response = requests.post(
-                endpoint,
-                json={"model": self.model_name, "prompt": text},
-                timeout=120,
-            )
-            response.raise_for_status()
-            data = response.json()
-            embeddings.append(data["embedding"])
-        return embeddings
-
-    def embed_query(self, text: str) -> list[float]:
-        """Embed a query string. No special handling needed for Ollama."""
-        return self.__call__([text])[0]
-
-    def truncate(self, text: str, max_tokens: int) -> str:
-        """Truncate using character-based estimation for local Ollama models."""
-        max_chars = max_tokens * 4
-        if len(text) > max_chars:
-            text = text[:max_chars]
-        return text
 
 
 class ChromaClient:
@@ -876,7 +817,7 @@ class ChromaClient:
             Metadata dictionary if the item is indexed, None otherwise
         """
         try:
-            result = self.collection.get(ids=[doc_id], include=["metadatas"])
+            result = self.collection.get(ids=[doc_id, f"{doc_id}#0"], include=["metadatas"])
             if result["ids"] and result["metadatas"]:
                 return result["metadatas"][0]
             return None

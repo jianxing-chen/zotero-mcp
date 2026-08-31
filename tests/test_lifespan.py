@@ -3,6 +3,7 @@
 import asyncio
 import json
 import sys
+from pathlib import Path
 import threading
 from unittest.mock import patch
 
@@ -99,12 +100,20 @@ def _probe(tmp_path, raw_config):
 
     home = tmp_path / "home"
     home.mkdir(exist_ok=True)
+    import os
+
+    env = dict(os.environ)
+    # Pin the probe to THIS checkout; an editable install of another
+    # checkout would otherwise shadow it.
+    src_root = str(Path(__file__).resolve().parent.parent / "src")
+    env["PYTHONPATH"] = src_root + os.pathsep + env.get("PYTHONPATH", "")
     proc = subprocess.run(
         [sys.executable, "-c", _IMPORT_PROBE, str(home),
          "__none__" if raw_config is None else raw_config],
         capture_output=True,
         text=True,
         timeout=180,
+        env=env,
     )
     assert proc.returncode == 0, proc.stderr
     return json.loads(proc.stdout.strip().splitlines()[-1])
@@ -176,9 +185,14 @@ def test_due_update_does_import_the_heavy_module(tmp_path):
         "except RuntimeError as e:\n"
         "    print(json.dumps({'reached_create': str(e) == 'stop'}))\n"
     )
+    import os as _os
+
+    _env = dict(_os.environ)
+    _src = str(Path(__file__).resolve().parent.parent / "src")
+    _env["PYTHONPATH"] = _src + _os.pathsep + _env.get("PYTHONPATH", "")
     proc = subprocess.run(
         [sys.executable, "-c", script, str(home)],
-        capture_output=True, text=True, timeout=180,
+        capture_output=True, text=True, timeout=180, env=_env,
     )
     assert proc.returncode == 0, proc.stderr
     assert json.loads(proc.stdout.strip().splitlines()[-1])["reached_create"] is True
@@ -197,6 +211,11 @@ def test_config_light_has_no_heavy_dependencies():
     """Guard the reason ``config_light`` exists as its own module."""
     import subprocess
 
+    import os as _os
+
+    _env = dict(_os.environ)
+    _src = str(Path(__file__).resolve().parent.parent / "src")
+    _env["PYTHONPATH"] = _src + _os.pathsep + _env.get("PYTHONPATH", "")
     proc = subprocess.run(
         [
             sys.executable,
@@ -208,6 +227,7 @@ def test_config_light_has_no_heavy_dependencies():
         capture_output=True,
         text=True,
         timeout=180,
+        env=_env,
     )
     assert proc.returncode == 0, proc.stderr
     assert json.loads(proc.stdout.strip().splitlines()[-1]) == []

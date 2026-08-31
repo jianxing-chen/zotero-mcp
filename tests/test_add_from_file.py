@@ -4,9 +4,10 @@ import sys
 import types
 from unittest.mock import MagicMock
 
-from conftest import FakeZotero
+from conftest import FakeZotero, skip_on_windows
 
 from zotero_mcp import server
+from zotero_mcp.tools import write
 
 # ---------------------------------------------------------------------------
 # Helpers

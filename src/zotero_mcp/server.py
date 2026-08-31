@@ -111,6 +111,7 @@ from zotero_mcp.tools.search import (  # noqa: F401
     update_search_database,
 )
 from zotero_mcp.tools.write import (  # noqa: F401
+    CROSSREF_TYPE_MAP,  # noqa: F401 — re-exported for tests/callers
     add_by_bibcode,
     add_by_bibtex,
     add_by_csl_json,

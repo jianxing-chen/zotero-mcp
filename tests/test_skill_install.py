@@ -358,6 +358,8 @@ class TestCliWiring:
         # through the environment instead. Without it these would install into
         # the real ~/.claude.
         env = dict(os.environ)
+        _src = str(Path(__file__).resolve().parent.parent / "src")
+        env["PYTHONPATH"] = _src + os.pathsep + env.get("PYTHONPATH", "")
         if home is not None:
             env["HOME"] = str(home)
             env["USERPROFILE"] = str(home)  # Windows

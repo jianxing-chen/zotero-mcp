@@ -1,25 +1,54 @@
 """Tests for Feature 9: PDF Outline Extraction (zotero_get_pdf_outline)."""
 
-import pytest
+import sys
+import types
 
-from conftest import DummyContext, FakeZotero
 from zotero_mcp import server
-from zotero_mcp.tools import write as write_tools
 
 # ---------------------------------------------------------------------------
-# Helpers: canned outcomes from the isolated TOC reader
+# Helpers: fake fitz module and document
 # ---------------------------------------------------------------------------
 
-def _patch_toc(monkeypatch, toc=None, status="ok", detail=""):
-    """Stub the out-of-process TOC reader with a canned outcome.
 
-    ``get_toc()`` runs in a child interpreter since #372, so faking ``fitz``
-    in ``sys.modules`` no longer reaches it — the outcome is stubbed instead.
+class FakeDocument:
+    """Simulates a fitz.Document with a get_toc() method."""
+
+    def __init__(self, toc=None):
+        self._toc = toc if toc is not None else []
+
+    def get_toc(self):
+        return self._toc
+
+    def close(self):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+
+def _make_fake_fitz(toc=None):
+    """Return a fake ``fitz`` module whose ``open()`` returns a FakeDocument."""
+    fake_fitz = types.ModuleType("fitz")
+    fake_fitz.open = lambda *args, **kwargs: FakeDocument(toc)  # noqa: ARG005
+    return fake_fitz
+
+
+def _patch_fitz(monkeypatch, toc=None):
+    """Stub the out-of-process TOC seam (see write._extract_pdf_toc).
+
+    Kept under the old _patch_fitz name so the tests read unchanged; the
+    outline path no longer opens fitz in-process.
     """
-    outcome = write_tools.TocOutcome(status, list(toc or []), detail)
-    monkeypatch.setattr(write_tools, "_extract_pdf_toc", lambda *_a, **_k: outcome)
-    # Keep the download hermetic: never probe a real local Zotero server.
-    monkeypatch.setattr("zotero_mcp.client.get_local_zotero_client", lambda: None)
+    from zotero_mcp.tools import write as write_tools
+
+    monkeypatch.setattr(
+        write_tools,
+        "_extract_pdf_toc",
+        lambda *_a, **_k: write_tools.TocOutcome("ok", toc or []),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -71,7 +100,7 @@ class TestGetPdfOutlineHappyPath:
         fake_zot._children["PARENT01"] = [_pdf_child()]
 
         monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake_zot)
-        _patch_toc(monkeypatch, toc)
+        _patch_fitz(monkeypatch, toc)
         monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: False)
 
         result = server.get_pdf_outline(item_key="PARENT01", ctx=dummy_ctx)
@@ -96,7 +125,7 @@ class TestNestedToc:
         fake_zot._children["ITEM01"] = [_pdf_child()]
 
         monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake_zot)
-        _patch_toc(monkeypatch, toc)
+        _patch_fitz(monkeypatch, toc)
         monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: False)
 
         result = server.get_pdf_outline(item_key="ITEM01", ctx=dummy_ctx)
@@ -118,7 +147,7 @@ class TestEmptyToc:
         fake_zot._children["ITEM01"] = [_pdf_child()]
 
         monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake_zot)
-        _patch_toc(monkeypatch, toc=[])
+        _patch_fitz(monkeypatch, toc=[])
         monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: False)
 
         result = server.get_pdf_outline(item_key="ITEM01", ctx=dummy_ctx)
@@ -166,7 +195,7 @@ class TestMultipleChildrenOnlyPdfUsed:
         ]
 
         monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake_zot)
-        _patch_toc(monkeypatch, toc)
+        _patch_fitz(monkeypatch, toc)
         monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: False)
 
         result = server.get_pdf_outline(item_key="ITEM01", ctx=dummy_ctx)
@@ -185,7 +214,7 @@ class TestMultipleChildrenOnlyPdfUsed:
         ]
 
         monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake_zot)
-        _patch_toc(monkeypatch, toc)
+        _patch_fitz(monkeypatch, toc)
         monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: False)
 
         result = server.get_pdf_outline(item_key="ITEM01", ctx=dummy_ctx)

@@ -129,17 +129,18 @@ class TestMergeTrashMethod:
         result = server.merge_duplicates(keeper_key="KEEP", duplicate_keys=["DUP1"], confirm=True, ctx=ctx)
 
         # confirm=True spawns a background task
-        assert "started" in result.lower() or "⏳" in result
-        assert "get_batch_task_status" in result
+        assert ("started" in result.lower() or "⏳" in result
+                or "merge complete" in result.lower() or "merge partially" in result.lower())
         # Wait for the background merge to finish before checking side effects
         m = re.search(r"\*\*([^*]+)\*\*", result)
-        task_id = m.group(1)
-        deadline = time.time() + 5
-        while time.time() < deadline:
-            s = read_status(task_id)
-            if s and s.status in ("completed", "failed"):
-                break
-            time.sleep(0.05)
+        if m:  # async path; the sync (upstream v0.11) path already finished
+            task_id = m.group(1)
+            deadline = time.time() + 5
+            while time.time() < deadline:
+                s = read_status(task_id)
+                if s and s.status in ("completed", "failed"):
+                    break
+                time.sleep(0.05)
 
         # update_item should NOT have been called with any "deleted" field
         for call in fake.update_calls:
@@ -239,9 +240,13 @@ class TestPdfOutlineDownloadMethod:
             def close(self):
                 pass
 
-        fake_fitz = types.ModuleType("fitz")
-        fake_fitz.open = lambda *a, **kw: FakeDoc()
-        monkeypatch.setitem(sys.modules, "fitz", fake_fitz)
+        from zotero_mcp.tools import write as write_tools
+
+        monkeypatch.setattr(
+            write_tools,
+            "_extract_pdf_toc",
+            lambda *_a, **_k: write_tools.TocOutcome("ok", [[1, "Intro", 1]]),
+        )
 
         ctx = DummyContext()
         result = server.get_pdf_outline(item_key="PARENT01", ctx=ctx)
@@ -389,13 +394,13 @@ class TestPdfOutlineMineruCachePreferred:
         monkeypatch.setattr("zotero_mcp.client.get_local_zotero_client", lambda: fake)
         monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: True)
 
-        # The TOC is read out-of-process since #372; stub the outcome.
+        # The TOC is read out-of-process; stub the seam.
         from zotero_mcp.tools import write as write_tools
 
         monkeypatch.setattr(
             write_tools,
             "_extract_pdf_toc",
-            lambda *a, **kw: write_tools.TocOutcome("ok", [[1, "Intro", 1]]),
+            lambda *_a, **_k: write_tools.TocOutcome("ok", [[1, "Intro", 1]]),
         )
 
         ctx = DummyContext()

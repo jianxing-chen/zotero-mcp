@@ -991,8 +991,10 @@ def main(cli_args=None):
                 existing_semantic_config = new_semantic_config  # Update the config to use
                 save_semantic_search_config(existing_semantic_config, semantic_config_path, zotero_db_path)
 
-    # Configure MinerU structured PDF parsing if not skipped
-    if not args.skip_mineru:
+    # Configure MinerU structured PDF parsing if not skipped. Skipped
+    # entirely in non-interactive contexts (no TTY) — the prompt would
+    # otherwise raise under captured stdin (tests, piped runs).
+    if not getattr(args, "skip_mineru", False) and sys.stdin.isatty():
         existing_mineru = load_mineru_config(semantic_config_path)
         print(
             "\nFound existing MinerU configuration."
@@ -1010,7 +1012,7 @@ def main(cli_args=None):
 
     # Configure NASA ADS API token (optional, for astrophysics literature tools)
     ads_token = None
-    if not getattr(args, "skip_ads", False):
+    if not getattr(args, "skip_ads", False) and sys.stdin.isatty():
         ads_token = setup_ads_config()
 
     print("\nSetup with the following settings:")

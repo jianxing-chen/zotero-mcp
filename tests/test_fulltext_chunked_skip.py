@@ -167,6 +167,7 @@ class TestChunkedFulltextSkipLookup:
         # Pre-populate ChromaDB as if the item was already indexed with fulltext.
         chunk0_meta = {
             "item_key": "ABCD1234",
+            "group_id": 0,
             "has_fulltext": True,
             "date_modified": "2026-01-01 00:00:00",
         }
@@ -215,7 +216,7 @@ class TestChunkedFulltextSkipLookup:
         path)."""
         db = tmp_path / "zotero.sqlite"
         make_zotero_db(db, ["BBBB1111"])
-        meta = {"item_key": "BBBB1111", "has_fulltext": True,
+        meta = {"item_key": "BBBB1111", "group_id": 0, "has_fulltext": True,
                 "date_modified": "2026-01-01 00:00:00"}
         chroma = RecordingChroma(meta_by_id={"BBBB1111": meta}, chunking=False)
         s = _make_search(db, chroma, chunking_enabled=False)
@@ -239,8 +240,10 @@ class TestChunkedFulltextSkipLookup:
         make_zotero_db(db, ["FAILKEY01"])
         chunk0_meta = {
             "item_key": "FAILKEY01",
+            "group_id": 0,
             "has_fulltext": "failed",
             "date_modified": "2026-01-01 00:00:00",  # matches the sqlite row
+            "attachment_keys": "",  # matches the fixture's (empty) attachment set
         }
         chroma = RecordingChroma(meta_by_id={"FAILKEY01#0": chunk0_meta})
         s = _make_search(db, chroma, chunking_enabled=True)
@@ -260,6 +263,7 @@ class TestChunkedFulltextSkipLookup:
         make_zotero_db(db, ["MODKEY001"])
         chunk0_meta = {
             "item_key": "MODKEY001",
+            "group_id": 0,
             "has_fulltext": "failed",
             "date_modified": "2025-12-31 00:00:00",  # OLDER than sqlite row
         }
@@ -297,9 +301,9 @@ class TestUpdateDatabaseChunkedIncrementalSkip:
 
         # After the first run, both items have chunk-0 metadata with has_fulltext.
         meta = {
-            "AAAA1111#0": {"item_key": "AAAA1111", "has_fulltext": True,
+            "AAAA1111#0": {"item_key": "AAAA1111", "group_id": 0, "has_fulltext": True,
                             "date_modified": "2026-01-01 00:00:00"},
-            "BBBB2222#0": {"item_key": "BBBB2222", "has_fulltext": True,
+            "BBBB2222#0": {"item_key": "BBBB2222", "group_id": 0, "has_fulltext": True,
                             "date_modified": "2026-01-01 00:00:00"},
         }
         chroma = RecordingChroma(meta_by_id=meta)

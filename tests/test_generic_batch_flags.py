@@ -8,6 +8,7 @@ sizing.
 
 import json
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -125,11 +126,18 @@ def test_nothing_requested_resolves_realtime(monkeypatch):
 def _run_cli(args):
     import subprocess
 
+    import os
+
+    env = dict(os.environ)
+    # Pin the subprocess to THIS checkout, not any installed zotero_mcp.
+    src_root = str(Path(__file__).resolve().parent.parent / "src")
+    env["PYTHONPATH"] = src_root + os.pathsep + env.get("PYTHONPATH", "")
     return subprocess.run(
         [sys.executable, "-m", "zotero_mcp.cli", *args],
         capture_output=True,
         text=True,
         timeout=120,
+        env=env,
     )
 
 

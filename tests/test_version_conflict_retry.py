@@ -206,6 +206,21 @@ class TestBatchUpdateExtraHybridMode:
             item_keys=["ITEM1"], set_keys={"tex.otscore": "2"}, ctx=dummy_ctx,
         )
 
-        assert "Items updated: 1" in result
+        # Fork's batch_update_extra runs in a background worker; wait for it.
+        import re as _re
+        import time as _time
+
+        from zotero_mcp.batch_runner import read_status
+
+        m = _re.search(r"\*\*([^*]+)\*\*", result)
+        assert m, result
+        deadline = _time.time() + 10
+        st = None
+        while _time.time() < deadline:
+            st = read_status(m.group(1))
+            if st and st.status in ("completed", "failed"):
+                break
+            _time.sleep(0.05)
+        assert st is not None and st.status == "completed", (st, result)
         assert write_zot.fetch_count == 2
         assert write_zot.update_calls[-1]["data"]["extra"] == "tex.otscore: 2"

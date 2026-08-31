@@ -702,7 +702,10 @@ class ZoteroSemanticSearch:
 
     @property
     def _chunking_enabled(self) -> bool:
-        return bool(self._chunking_config.get("enabled", False))
+        cfg = getattr(self, "_chunking_config", None)
+        if cfg is None:
+            cfg = self._chunking_config = self._load_chunking_config()
+        return bool(cfg.get("enabled", False))
 
     # Message shown when the requested chunking setting cannot take effect.
     # Kept as a constant so the CLI, the logs and the tests all quote the
@@ -1561,6 +1564,7 @@ class ZoteroSemanticSearch:
         try:
             # Load per-run config, including extraction limits and db path if provided
             pdf_max_pages = None
+            pdf_timeout = 30
             attachment_priority = None
             zotero_db_path = self.db_path  # CLI override takes precedence
             collection_keys = None
@@ -1573,6 +1577,7 @@ class ZoteroSemanticSearch:
                         semantic_cfg = _cfg.get("semantic_search", {})
                         extraction_cfg = semantic_cfg.get("extraction", {})
                         pdf_max_pages = extraction_cfg.get("pdf_max_pages")
+                        pdf_timeout = extraction_cfg.get("pdf_timeout", 30)
                         attachment_priority = extraction_cfg.get("attachment_priority")
                         config_workers = extraction_cfg.get("workers")
                         collection_keys = semantic_cfg.get("collection_keys")
@@ -1821,7 +1826,8 @@ class ZoteroSemanticSearch:
                             # With passage-chunking the stored ids are
                             # "<key>#<n>"; get_document_metadata falls back to
                             # chunk 0 so chunked items are still recognized.
-                            existing_metadata = chroma_client.get_document_metadata(it.key)
+                            probe_id = f"{it.key}#0" if self._chunking_enabled else it.key
+                            existing_metadata = chroma_client.get_document_metadata(probe_id)
                             if existing_metadata and "group_id" not in existing_metadata:
                                 # Indexed before multi-library attribution and
                                 # not (yet) covered by the backfill: re-upsert

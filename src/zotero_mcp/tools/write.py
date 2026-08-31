@@ -852,70 +852,12 @@ def batch_update_extra(
             ),
         )
 
-        for item_key in item_keys:
-            try:
-                item = zot.item(item_key)
-            except Exception as e:
-                ctx.error(f"Failed to fetch item {item_key}: {str(e)}")
-                skipped_count += 1
-                continue
-            if not item:
-                skipped_count += 1
-                continue
-
-            if item["data"].get("itemType") in ("attachment", "note", "annotation"):
-                skipped_count += 1
-                continue
-
-            extra = item["data"].get("extra", "") or ""
-            new_extra, changed = _apply_extra_edits(
-                extra, set_keys, remove_keys, replace
-            )
-            if not changed:
-                skipped_count += 1
-                continue
-
-            try:
-                # If writing via web API, re-fetch the item from web to get
-                # the correct version number for the update
-                if write_zot is not zot:
-                    def _set_extra(it):
-                        it["data"]["extra"] = new_extra
-
-                    result = _helpers._update_item_with_version_retry(
-                        write_zot, item_key, _set_extra, ctx=ctx,
-                    )
-                else:
-                    item["data"]["extra"] = new_extra
-                    result = write_zot.update_item(item)
-
-                if _helpers._handle_write_response(result, ctx):
-                    updated_count += 1
-                else:
-                    ctx.error(f"Update may have failed for item {item_key}: {result}")
-                    skipped_count += 1
-            except Exception as e:
-                ctx.error(f"Failed to update item {item_key}: {str(e)}")
-                skipped_count += 1
-
-        response = ["# Batch Extra Update Results", ""]
-        response.append(f"Items processed: {len(item_keys)}")
-        response.append(f"Items updated: {updated_count}")
-        response.append(f"Items skipped: {skipped_count}")
-
-        if set_keys:
-            response.append("\n## Keys Set")
-            for key, value in set_keys.items():
-                response.append(f"- `{key}: {value}`")
-        if remove_keys:
-            response.append("\n## Keys Removed")
-            for key in remove_keys:
-                response.append(f"- `{key}`")
-        if replace:
-            response.append("\nExtra field fully replaced from set_keys.")
-
-        return "\n".join(response)
-
+        return (
+            f"⏳ Batch Extra update started: **{status.task_id}**\n\n"
+            f"Will update {len(item_keys)} item(s) in the background.\n\n"
+            f"Check progress: call `zotero_get_batch_task_status` "
+            f"with task_id `{status.task_id}`."
+        )
     except Exception as e:
         ctx.error(f"Error in batch extra update: {str(e)}")
         return f"Error in batch extra update: {str(e)}"
@@ -965,16 +907,23 @@ def _batch_update_extra_worker(
             continue
 
         try:
-            def _do_update(ik=item_key, ne=new_extra):
-                if write_zot is not zot:
-                    web_item = write_zot.item(ik)
-                    web_item["data"]["extra"] = ne
-                    return write_zot.update_item(web_item)
-                else:
+            def _set_extra(it, ne=new_extra):
+                it["data"]["extra"] = ne
+
+            if write_zot is not zot:
+                # Hybrid mode: re-fetch on the write client and retry on a
+                # 412 version conflict (another writer raced us).
+                result = _with_api_lock(
+                    lambda: _helpers._update_item_with_version_retry(
+                        write_zot, item_key, _set_extra, ctx=DummyCtx()
+                    )
+                )
+            else:
+                def _do_update(ne=new_extra):
                     item["data"]["extra"] = ne
                     return write_zot.update_item(item)
 
-            result = _with_api_lock(_do_update)
+                result = _with_api_lock(_do_update)
             if _helpers._handle_write_response(result, DummyCtx()):
                 updated_count += 1
                 succeeded_items.append({"key": item_key})
@@ -4440,124 +4389,112 @@ def _extract_pdf_toc(pdf_path: str, timeout: int = _TOC_TIMEOUT) -> TocOutcome:
         "Example: zotero_get_pdf_outline(item_key='RTKZQI8E')."
     ),
 )
-def get_pdf_outline(
-    item_key: str,
-    *,
-    ctx: Context
-) -> str:
-    # NOT decorated with @with_zotero_api_lock: the lock exists only to
-    # serialize Zotero API access, and holding it across the outline
-    # extraction meant one slow or hung PDF blocked every other tool in the
-    # server until the client gave up (#431). It is taken below around the
-    # API work alone and released before the extraction subprocess runs.
+def get_pdf_outline(item_key: str, *, ctx: Context) -> str:
+    """Outline extraction deliberately runs OUTSIDE the Zotero API lock
+    (#431): a hung or slow fitz call must never wedge every other tool.
+    Only the metadata calls below take the lock, briefly."""
     try:
+        zot = _client.get_zotero_client()
         ctx.info(f"Getting PDF outline for item {item_key}")
 
+        # Fast path: item_key names an attachment directly — no children scan.
+        # The metadata calls run UNDER the API lock; the heavy extraction
+        # below (download + TOC child process) deliberately does not (#431).
+        pdf_child = None
+        with _client.zotero_api_lock():
+            try:
+                maybe_attachment = zot.item(item_key)
+            except Exception:
+                maybe_attachment = None
+            if maybe_attachment and maybe_attachment.get("data", {}).get("itemType") == "attachment":
+                pdf_child = maybe_attachment
+            else:
+                # Find PDF attachment among the item's children
+                children = _helpers._paginate(zot.children, item_key)
+                for child in children:
+                    if child.get("data", {}).get("contentType") == "application/pdf":
+                        pdf_child = child
+                        break
+
+        if not pdf_child:
+            return f"No PDF attachment found for item `{item_key}`."
+
+        attachment_key = pdf_child["key"]
+
+        # ---- Tier 1: MinerU cache ----
+        # When a MinerU parse exists for this attachment, derive the outline
+        # from the high-precision cached Markdown instead of re-downloading
+        # the PDF. This (a) avoids the transient ``file://`` protocol bug
+        # seen when ``zot.dump`` hits a bad local Zotero API state, and
+        # (b) reflects the document's actual structure as MinerU parsed it
+        # (publishers' embedded bookmarks can be missing or stale).
+        try:
+            from zotero_mcp.tools.read_pdf import _outline_from_mineru_cache
+
+            cached_outline = _outline_from_mineru_cache(attachment_key)
+            if cached_outline:
+                ctx.info(f"Outline served from MinerU cache for {attachment_key}")
+                return cached_outline
+        except Exception as e:
+            ctx.info(f"MinerU cache outline unavailable ({e}); falling back to PDF download")
+
+        # ---- Tier 2: out-of-process PyMuPDF on a freshly downloaded PDF ----
+
+        filename = pdf_child.get("data", {}).get("filename", "document.pdf")
+
+        # Download PDF via the multi-source downloader (local API → WebDAV →
+        # Web API). Using `zot.dump` directly only tries one source and fails
+        # hard when the local Zotero API returns a `file://` URI it can't
+        # resolve (e.g. transient desktop client state); the multi-source
+        # path falls back to WebDAV / Web API instead.
         with tempfile.TemporaryDirectory() as tmpdir:
-            with zotero_api_lock():
-                zot = _client.get_zotero_client()
-
-                attachment_key = None
-                filename = "document.pdf"
-
-                # The key may name the PDF attachment itself — attachments have
-                # no children, so the parent scan below would find nothing (#372).
-                try:
-                    item = zot.item(item_key)
-                except Exception:
-                    item = None
-                data = item.get("data", {}) if isinstance(item, dict) else {}
-                if (
-                    data.get("itemType") == "attachment"
-                    and data.get("contentType") == "application/pdf"
-                ):
-                    attachment_key = item.get("key") or data.get("key") or item_key
-                    filename = data.get("filename") or f"{attachment_key}.pdf"
-                else:
-                    for child in _helpers._paginate(zot.children, item_key):
-                        child_data = child.get("data", {})
-                        if child_data.get("contentType") == "application/pdf":
-                            attachment_key = child["key"]
-                            filename = child_data.get("filename") or "document.pdf"
-                            break
-
-                if not attachment_key:
-                    return f"No PDF attachment found for item `{item_key}`."
-
-                # Download via the multi-source downloader so WebDAV- and
-                # local-storage-backed attachments work, not just Zotero cloud.
-                local_mode = _utils.is_local_mode()
-                download = _client.download_attachment_file(
-                    attachment_key,
-                    tmpdir,
-                    os.path.basename(filename),
-                    local_client=(
-                        zot if local_mode else _client.get_local_zotero_client()
-                    ),
-                    web_client=None if local_mode else zot,
+            download = _client.download_attachment_file(
+                attachment_key,
+                tmpdir,
+                filename,
+                local_client=(zot if _utils.is_local_mode() else _client.get_local_zotero_client()),
+                web_client=None if _utils.is_local_mode() else zot,
+            )
+            if not (download.path and download.path.exists() and download.path.stat().st_size > 0):
+                errors = "\n".join(f"  - {e}" for e in download.errors) if download.errors else "  - unknown"
+                return (
+                    f"Could not download PDF for attachment `{attachment_key}`.\n"
+                    f"Attempted sources:\n{errors}"
                 )
-                pdf_path = download.path
-                if (
-                    not pdf_path
-                    or not pdf_path.exists()
-                    or pdf_path.stat().st_size == 0
-                ):
-                    detail = (
-                        f" ({'; '.join(download.errors)})" if download.errors else ""
-                    )
+            # Out-of-process TOC read (#372/#431): a crash or hang in fitz
+            # cannot wedge the server, and the child strips API keys.
+            outcome = _extract_pdf_toc(str(download.path))
+            if outcome.status != "ok":
+                if outcome.status == "no_pymupdf":
+                    return "Error: PyMuPDF (fitz) is required for PDF outline extraction."
+                if outcome.status == "timeout":
                     return (
-                        f"Could not download PDF for attachment "
-                        f"`{attachment_key}`.{detail}"
+                        f"Error extracting PDF outline for attachment `{attachment_key}`: "
+                        f"TOC extraction timed out ({outcome.detail})"
                     )
+                if outcome.status in ("crash", "crashed"):
+                    return (
+                        f"Error extracting PDF outline for attachment `{attachment_key}`: "
+                        f"TOC extraction crashed ({outcome.detail})"
+                    )
+                return f"Error extracting PDF outline: {outcome.detail}"
+            toc = outcome.toc
 
-            # Lock released: parsing a file we already have on disk needs no
-            # Zotero API access, and it is the slow part.
-            outcome = _extract_pdf_toc(str(pdf_path))
-
-        if outcome.status == "no_pymupdf":
-            return (
-                "Error: PyMuPDF (fitz) is required for PDF outline extraction. "
-                f"{_utils.install_hint('pdf')}"
-            )
-        if outcome.status == "crashed":
-            return (
-                f"Could not read the outline of attachment `{attachment_key}`: "
-                f"the PDF reader crashed on this file ({outcome.detail}). The "
-                "crash was contained in a separate process, so the server is "
-                "unaffected. Try zotero_read_pdf_pages or "
-                "zotero_get_item_fulltext for this item instead."
-            )
-        if outcome.status == "timeout":
-            return (
-                f"Timed out reading the outline of attachment "
-                f"`{attachment_key}` ({outcome.detail})."
-            )
-        if outcome.status != "ok":
-            return (
-                f"Error extracting PDF outline for attachment "
-                f"`{attachment_key}`: {outcome.detail}"
-            )
-
-        if not outcome.toc:
+        if not toc:
             return "This PDF does not contain a table of contents/outline."
 
         lines = [f"# PDF Outline for item `{item_key}`", ""]
-        for level, title, page in outcome.toc:
+        for level, title, page in toc:
             indent = "  " * (level - 1)
             lines.append(f"{indent}- {title} (p. {page})")
 
         return "\n".join(lines)
 
-    except ZoteroApiBusyError:
-        # Same as every lock-decorated tool: surface "busy" to the caller
-        # rather than reporting it as a PDF failure.
-        raise
     except Exception as e:
         ctx.error(f"Error extracting PDF outline: {e}")
         return f"Error extracting PDF outline: {e}"
 
 
-@with_zotero_api_lock
 def add_from_file(
     file_path: str,
     title: str | None = None,
@@ -7979,5 +7916,218 @@ def upgrade_preprints(limit: int | None = None, *, ctx: Context) -> str:
         f"with task_id `{status.task_id}`."
     )
 
+
+# ----------------------------------------------------------------------
+# Out-of-process PDF TOC reader (upstream #372/#431): a crashing or hung
+# fitz call can never wedge the server when it runs in a child process.
+# ----------------------------------------------------------------------
+
+_TOC_EXIT_NO_PYMUPDF = 3
+
+# Seconds to wait for the child before killing it. Reading an outline is
+# fast; keep this under the Zotero API lock's wait bound (45s) so a hung PDF
+# can't cascade into "Zotero API busy" errors on every other tool.
+_TOC_TIMEOUT = 30
+
+# Seconds to wait for a killed child to be reaped. Bounded on purpose: if the
+# child (or a Windows Error Reporting process holding its handles) cannot be
+# reaped right now, returning to the caller matters more than reaping.
+_TOC_KILL_GRACE = 5
+
+# Marks the start of the JSON payload in the child's stdout. Everything the
+# child prints before this — and everything anything else in that interpreter
+# prints — is noise to be discarded (#455).
+_TOC_SENTINEL = "@@ZOTERO_MCP_TOC@@"
+
+# Child script. It imports ONLY PyMuPDF — never zotero_mcp — so the subprocess
+# cannot trigger FastMCP server initialization (macOS 'spawn' deadlock, #178).
+#
+# SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX) is set first on
+# Windows: without it an access violation in fitz pops up Windows Error
+# Reporting, and WerFault.exe inherits the child's stdout/stderr handles and
+# keeps them open while it writes a crash dump. The parent then sees a child
+# that never closes its pipes rather than a crash it can report (#431). With
+# the error mode set, the crash comes back as a plain NTSTATUS exit code.
+#
+# Two things keep the JSON channel clean, and both are needed (#455).
+#
+# The import is `pymupdf`, not `fitz`. PyMuPDF >= 1.28 ends its legacy `fitz`
+# shim with message_warning('The `fitz` API is deprecated ...'), and `message`
+# writes to *stdout*. Since our floor is only pymupdf>=1.24.2, every fresh
+# install resolves a version that does this, which is why `get_pdf_outline`
+# failed on every PDF regardless of the file: the notice arrived ahead of the
+# JSON and json.loads choked on the first character. `fitz` remains the
+# fallback for PyMuPDF older than 1.24.3, which has no `pymupdf` name.
+#
+# The payload is also sentinel-delimited, which is the part that generalises.
+# Fixing only the import would leave the channel one stray print away from
+# breaking again, and some of those prints are not ours to prevent: a
+# sitecustomize hook, a .pth file, or a C-level write from MuPDF itself all
+# land on fd 1 before or during our code and none of them can be caught from
+# inside this script. Taking everything after the last sentinel is immune to
+# all of it.
+_TOC_CHILD_SCRIPT = (
+    "import json, sys\n"
+    "if sys.platform == 'win32':\n"
+    "    try:\n"
+    "        import ctypes\n"
+    "        ctypes.windll.kernel32.SetErrorMode(0x0001 | 0x0002)\n"
+    "    except Exception:\n"
+    "        pass\n"
+    "try:\n"
+    "    import pymupdf as fitz\n"
+    "except ImportError:\n"
+    "    try:\n"
+    "        import fitz\n"
+    "    except ImportError:\n"
+    f"        sys.exit({_TOC_EXIT_NO_PYMUPDF})\n"
+    "doc = fitz.open(sys.argv[1])\n"
+    "toc = doc.get_toc()\n"
+    "doc.close()\n"
+    f"sys.stdout.write({_TOC_SENTINEL!r} + json.dumps(toc))\n"
+)
+
+
+class TocOutcome(NamedTuple):
+    """Result of :func:`_extract_pdf_toc`.
+
+    ``status`` is one of ``ok``, ``no_pymupdf``, ``crashed``, ``timeout`` or
+    ``error``; ``detail`` carries a short human-readable reason for the
+    non-ok statuses.
+    """
+
+    status: str
+    toc: list
+    detail: str = ""
+
+
+def _reap_toc_child(proc, grace: float = _TOC_KILL_GRACE) -> None:
+    """Kill an overdue child and stop waiting on it within a bounded time.
+
+    Deliberately does NOT re-enter ``communicate()`` after the kill. That is
+    what ``subprocess.run``'s timeout path does, and on Windows it can block
+    forever: a crashed child's stdout/stderr handles may still be held by
+    WerFault.exe, so the pipes never reach EOF and the read never returns
+    (#431). Closing our own ends of the pipes and giving the child a short
+    window to be reaped is enough; anything still lingering is left to the OS
+    rather than allowed to hang the server.
+    """
+    import subprocess
+
+    try:
+        proc.kill()
+    except Exception:
+        pass
+    for pipe in (proc.stdout, proc.stderr):
+        if pipe is None:
+            continue
+        try:
+            pipe.close()
+        except Exception:
+            pass
+    try:
+        proc.wait(timeout=grace)
+    except subprocess.TimeoutExpired:
+        pass
+    except Exception:
+        pass
+
+
+def _extract_pdf_toc(pdf_path: str, timeout: int = _TOC_TIMEOUT) -> TocOutcome:
+    """Read a PDF's table of contents in a throwaway child process.
+
+    ``fitz.Document.get_toc()`` segfaults on some born-digital journal PDFs
+    (#372). A segfault cannot be caught in-process: it takes the whole MCP
+    server down ("Server disconnected"), so the call has to run somewhere
+    that is allowed to die.
+
+    Every exit path — success, crash, timeout, spawn failure — returns within
+    a bounded time. The caller is an MCP tool on a single-channel stdio
+    transport, so a call that never returns takes the whole server with it
+    (#431).
+    """
+    import subprocess
+    import sys
+
+    # Strip API keys from the child's environment: the TOC reader does not
+    # need them, and leaking them via crash dumps (which this child is
+    # expected to produce) or /proc/<pid>/environ is needless exposure.
+    child_env = os.environ.copy()
+    for _key in (
+        "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "ZOTERO_API_KEY",
+    ):
+        child_env.pop(_key, None)
+    child_env.setdefault("PYTHONIOENCODING", "utf-8")
+    child_env.setdefault("PYTHONUTF8", "1")
+
+    try:
+        # stdin is DEVNULL, never inherited: under the stdio transport the
+        # server's stdin IS the MCP pipe from the client, and a child that
+        # outlives its parent would hold that pipe open, so the client never
+        # sees the connection close (#431).
+        proc = subprocess.Popen(
+            [sys.executable, "-c", _TOC_CHILD_SCRIPT, str(pdf_path)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=child_env,
+        )
+    except Exception as exc:
+        return TocOutcome("error", [], str(exc))
+
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _reap_toc_child(proc)
+        return TocOutcome("timeout", [], f"no response after {timeout}s")
+    except Exception as exc:
+        _reap_toc_child(proc)
+        return TocOutcome("error", [], str(exc))
+
+    if proc.returncode == 0:
+        # Take only what follows the last sentinel. Anything ahead of it is
+        # something else in the child's interpreter writing to stdout — a
+        # PyMuPDF deprecation notice, a sitecustomize hook, a MuPDF warning
+        # — and is not ours to parse (#455).
+        payload = stdout or ""
+        if _TOC_SENTINEL in payload:
+            payload = payload.rsplit(_TOC_SENTINEL, 1)[1]
+        elif payload.strip():
+            # The child exited 0 but produced no sentinel. It cannot have
+            # reached its final write, so whatever is here is noise, not a
+            # truncated outline; say that rather than blaming the JSON.
+            return TocOutcome(
+                "error", [], "child produced no outline data (stdout was not tagged)"
+            )
+        try:
+            return TocOutcome("ok", json.loads(payload or "[]"))
+        except ValueError as exc:
+            return TocOutcome("error", [], f"unreadable outline data: {exc}")
+
+    if proc.returncode == _TOC_EXIT_NO_PYMUPDF:
+        return TocOutcome("no_pymupdf", [])
+
+    # POSIX reports a fatal signal as a negative return code; Windows reports
+    # access violations and friends as NTSTATUS-style codes (0xC0000005, ...).
+    if proc.returncode < 0:
+        import signal
+
+        try:
+            name = signal.Signals(-proc.returncode).name
+        except ValueError:
+            name = f"signal {-proc.returncode}"
+        return TocOutcome("crashed", [], name)
+    if proc.returncode >= 0xC0000000:
+        return TocOutcome("crashed", [], f"exit code 0x{proc.returncode:08X}")
+
+    stderr = (stderr or "").strip()
+    return TocOutcome("error", [], stderr[:300] or f"exit code {proc.returncode}")
 
 

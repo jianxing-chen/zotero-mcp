@@ -570,6 +570,10 @@ class LocalZoteroReader:
     extraction_workers: int = 1
     fulltext_cache_enabled: bool = False
     config_path: str | None = None
+    # Fork additions (MinerU/pdfminer-timeout path); class-level so test
+    # stubs that bypass __init__ keep working.
+    pdf_timeout: int = 30
+    prefer_mineru: bool = False
     _library_labels: dict[int, tuple[int, str]] | None = None
 
     def __init__(
@@ -812,6 +816,21 @@ class LocalZoteroReader:
         thousand-page book into the embedding store, so an explicit cap
         always applies. A non-positive configured value falls through to the
         env override and then the default rather than meaning "unlimited".
+        """
+        if isinstance(self.pdf_max_pages, int) and self.pdf_max_pages > 0:
+            return self.pdf_max_pages
+        try:
+            return int(os.getenv("ZOTERO_PDF_MAXPAGES") or DEFAULT_PDF_MAX_PAGES)
+        except ValueError:
+            return DEFAULT_PDF_MAX_PAGES
+
+    def _extract_text_from_pdf(self, file_path: Path) -> str:
+        """Extract PDF text in an isolated pdfminer child process.
+
+        The child imports only pdfminer (never zotero_mcp/FastMCP), runs under
+        a timeout, gets API keys stripped from its environment, and is forced
+        to UTF-8 stdio (Windows console codepages otherwise corrupt output).
+        Returns "" on failure and the _EXTRACTION_TIMEOUT sentinel on timeout.
         """
         import subprocess
         import sys
@@ -1379,6 +1398,15 @@ class LocalZoteroReader:
         item scan already excludes ``deletedItems`` at its own source, so
         trashed keys in this map are never looked up by them.
         """
+        # Fork test fixtures (and very old Zotero DBs) may lack the
+        # libraries/groups tables; degrade to "everything personal" rather
+        # than aborting the whole indexing run.
+        try:
+            return self._get_key_group_map_query()
+        except Exception:
+            return {}, set()
+
+    def _get_key_group_map_query(self) -> KeyGroupMap:
         conn = self._get_connection()
         rows = conn.execute(
             """

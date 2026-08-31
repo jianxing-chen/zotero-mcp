@@ -49,6 +49,9 @@ class _AttachZotero(FakeZotero):
 
     def attachment_both(self, files, parentid=None, **kwargs):
         self.attachments.append({"files": files, "parentid": parentid})
+        # pyzotero upload-result shape; _attach_and_verify reads the key.
+        return {"success": [{"key": "NEWATT01", "filename": files[0][0]}],
+                "unchanged": [], "failure": []}
 
 
 def _bypass_ssrf(monkeypatch):

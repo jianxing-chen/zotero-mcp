@@ -99,6 +99,9 @@ def make_zotero_db(path, *, stored_filename="paper.pdf"):
     conn.close()
 
 
+_LIBRARY_PDF_TEXT = "Attachment page one."
+
+
 def make_library(tmp_path, *, stored_filename="paper.pdf", disk_filename=None):
     """Build a zotero.sqlite plus the attachment file in storage/<KEY>/."""
     db_path = tmp_path / "zotero.sqlite"
@@ -106,8 +109,24 @@ def make_library(tmp_path, *, stored_filename="paper.pdf", disk_filename=None):
     attachment_dir = tmp_path / "storage" / ATTACHMENT_KEY
     attachment_dir.mkdir(parents=True)
     pdf_path = attachment_dir / (disk_filename or stored_filename)
-    pdf_path.write_bytes(b"%PDF-1.4 fake")
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), _LIBRARY_PDF_TEXT)
+    doc.save(str(pdf_path))
+    doc.close()
     return db_path, pdf_path
+
+
+@pytest.fixture(autouse=True)
+def _disable_mineru(monkeypatch):
+    """These tests exercise the PyMuPDF path; a machine with a real MinerU
+    cloud_token configured would otherwise take the async parse path."""
+    from zotero_mcp import mineru_client
+
+    monkeypatch.setattr(mineru_client, "load_mineru_config", lambda: {})
+    monkeypatch.setattr(mineru_client, "is_mineru_enabled", lambda _c: False)
 
 
 def use_local_library(monkeypatch, db_path, fake_zot):
@@ -184,7 +203,7 @@ class TestReadPdfPagesWithAttachmentKey:
 
         result = read_pdf_tools._get_pdf_path(ATTACHMENT_KEY, DummyContext())
 
-        assert result == (str(pdf_path), "Full Text PDF", False)
+        assert result == (str(pdf_path), "Full Text PDF", ATTACHMENT_KEY)
 
     def test_local_mode_still_resolves_parent_key(self, monkeypatch, tmp_path, fake_zot):
         """The parent-key path (the only one that used to work) is unchanged."""
@@ -193,7 +212,7 @@ class TestReadPdfPagesWithAttachmentKey:
 
         result = read_pdf_tools._get_pdf_path(PARENT_KEY, DummyContext())
 
-        assert result == (str(pdf_path), "Parent Article", False)
+        assert result == (str(pdf_path), "Parent Article", ATTACHMENT_KEY)
 
     def test_local_mode_survives_filename_drift(self, monkeypatch, tmp_path, fake_zot):
         """Recorded filename no longer on disk -> scan the storage folder (#291)."""
@@ -204,7 +223,7 @@ class TestReadPdfPagesWithAttachmentKey:
 
         result = read_pdf_tools._get_pdf_path(ATTACHMENT_KEY, DummyContext())
 
-        assert result == (str(pdf_path), "Full Text PDF", False)
+        assert result == (str(pdf_path), "Full Text PDF", ATTACHMENT_KEY)
 
     def test_tool_reads_pages_from_attachment_key(self, monkeypatch, tmp_path, fake_zot):
         """End to end: the tool no longer answers 'No PDF attachment found'."""
@@ -253,11 +272,12 @@ class TestReadPdfPagesWithAttachmentKey:
 
         assert downloaded == [ATTACHMENT_KEY]
         assert result is not None
-        path, title, is_temp = result
+        path, title, attachment_key = result
         assert path.endswith("paper.pdf")
         assert title == "Full Text PDF"
-        # A downloaded copy is ours to delete; a library file never is.
-        assert is_temp is True
+        # Fork shape: the third element is the attachment key (a downloaded
+        # copy resolves with its own key; a library file likewise).
+        assert attachment_key == ATTACHMENT_KEY
         read_pdf_tools._cleanup_path(path)
 
 

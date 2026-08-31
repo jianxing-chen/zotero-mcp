@@ -269,6 +269,9 @@ Every command also accepts `--json` (machine-readable envelope on stdout) and
  - `--force-rebuild`
  - `--limit`
  - `--fulltext`
+ - `--reindex-keys` -- Comma-separated Zotero item keys to force re-embedding (reuses MinerU cache).
+ - `--reindex-cached-mineru` -- Reindex every item with a MinerU cache on disk (the 精读'd papers). Idempotent: skips items already indexed from MinerU cache.
+ - `--force` -- With --reindex-keys/--reindex-cached-mineru, re-embed items already indexed from MinerU cache (bypass idempotency guard).
  - `--allow-mass-deletion`
  - `--config-path`
  - `--db-path`

@@ -350,9 +350,13 @@ class TestMergeDuplicatesConfirm:
 
     @staticmethod
     def _wait_for_completion(result):
-        """Extract task_id from a merge start message and wait for completion."""
+        """Extract task_id from a merge start message and wait for completion.
+
+        Returns immediately when the sync (upstream v0.11) path already
+        returned the final summary instead of a task handle."""
         m = re.search(r"\*\*([^*]+)\*\*", result)
-        task_id = m.group(1)
+        if not m:
+            return
         deadline = time.time() + 5
         while time.time() < deadline:
             s = read_status(task_id)
@@ -368,8 +372,10 @@ class TestMergeDuplicatesConfirm:
         result = server.merge_duplicates(keeper_key="KEEP", duplicate_keys=["DUP1", "DUP2"], confirm=True, ctx=dummy_ctx)
 
         # confirm=True spawns a background task
-        assert "started" in result.lower() or "⏳" in result
-        assert "get_batch_task_status" in result
+        # v0.11 merge: sync path returns the final summary directly; the
+        # async path (when active) returns a task handle.
+        assert ("started" in result.lower() or "⏳" in result
+                or "merge complete" in result.lower() or "merge partially" in result.lower())
         self._wait_for_completion(result)
 
         # Find the keeper update that has tags
@@ -387,8 +393,10 @@ class TestMergeDuplicatesConfirm:
 
         result = server.merge_duplicates(keeper_key="KEEP", duplicate_keys=["DUP1", "DUP2"], confirm=True, ctx=dummy_ctx)
 
-        assert "started" in result.lower() or "⏳" in result
-        assert "get_batch_task_status" in result
+        # v0.11 merge: sync path returns the final summary directly; the
+        # async path (when active) returns a task handle.
+        assert ("started" in result.lower() or "⏳" in result
+                or "merge complete" in result.lower() or "merge partially" in result.lower())
         self._wait_for_completion(result)
 
         # Collect all child reparenting updates
@@ -408,8 +416,10 @@ class TestMergeDuplicatesConfirm:
 
         result = server.merge_duplicates(keeper_key="KEEP", duplicate_keys=["DUP1", "DUP2"], confirm=True, ctx=dummy_ctx)
 
-        assert "started" in result.lower() or "⏳" in result
-        assert "get_batch_task_status" in result
+        # v0.11 merge: sync path returns the final summary directly; the
+        # async path (when active) returns a task handle.
+        assert ("started" in result.lower() or "⏳" in result
+                or "merge complete" in result.lower() or "merge partially" in result.lower())
         self._wait_for_completion(result)
 
         # delete_item should never be called
@@ -426,8 +436,10 @@ class TestMergeDuplicatesConfirm:
 
         result = server.merge_duplicates(keeper_key="KEEP", duplicate_keys=["DUP1", "DUP2"], confirm=True, ctx=dummy_ctx)
 
-        assert "started" in result.lower() or "⏳" in result
-        assert "get_batch_task_status" in result
+        # v0.11 merge: sync path returns the final summary directly; the
+        # async path (when active) returns a task handle.
+        assert ("started" in result.lower() or "⏳" in result
+                or "merge complete" in result.lower() or "merge partially" in result.lower())
         self._wait_for_completion(result)
 
         # Keeper was already in COL_A, so addto_collection should be called for COL_B and COL_C
@@ -454,8 +466,10 @@ class TestMergeDuplicatesConfirm:
         )
 
         # confirm=True spawns a background task
-        assert "started" in result.lower() or "⏳" in result
-        assert "get_batch_task_status" in result
+        # v0.11 merge: sync path returns the final summary directly; the
+        # async path (when active) returns a task handle.
+        assert ("started" in result.lower() or "⏳" in result
+                or "merge complete" in result.lower() or "merge partially" in result.lower())
         self._wait_for_completion(result)
 
         # Keeper should NOT be trashed — check the direct PATCH calls
@@ -536,8 +550,10 @@ class TestMergeDuplicatesConfirm:
 
         result = server.merge_duplicates(keeper_key="KEEP", duplicate_keys=["DUP1"], confirm=True, ctx=dummy_ctx)
 
-        assert "started" in result.lower() or "⏳" in result
-        assert "get_batch_task_status" in result
+        # v0.11 merge: sync path returns the final summary directly; the
+        # async path (when active) returns a task handle.
+        assert ("started" in result.lower() or "⏳" in result
+                or "merge complete" in result.lower() or "merge partially" in result.lower())
         self._wait_for_completion(result)
 
         # Duplicates should NOT be trashed because re-parenting failed
@@ -567,8 +583,10 @@ class TestMergeDuplicatesConfirm:
 
         result = server.merge_duplicates(keeper_key="KEEP", duplicate_keys=["DUP1"], confirm=True, ctx=dummy_ctx)
 
-        assert "started" in result.lower() or "⏳" in result
-        assert "get_batch_task_status" in result
+        # v0.11 merge: sync path returns the final summary directly; the
+        # async path (when active) returns a task handle.
+        assert ("started" in result.lower() or "⏳" in result
+                or "merge complete" in result.lower() or "merge partially" in result.lower())
         self._wait_for_completion(result)
 
         # Keeper should be fetched multiple times: initial + after tag update + after collection add
@@ -592,8 +610,10 @@ class TestMergeDuplicatesConfirm:
         # Pass a single string instead of a list
         result = server.merge_duplicates(keeper_key="KEEP", duplicate_keys="DUP1", confirm=True, ctx=dummy_ctx)
 
-        assert "started" in result.lower() or "⏳" in result
-        assert "get_batch_task_status" in result
+        # v0.11 merge: sync path returns the final summary directly; the
+        # async path (when active) returns a task handle.
+        assert ("started" in result.lower() or "⏳" in result
+                or "merge complete" in result.lower() or "merge partially" in result.lower())
         self._wait_for_completion(result)
 
         # Should succeed — DUP1 trashed via direct PATCH

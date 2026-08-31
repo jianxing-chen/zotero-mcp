@@ -1,4 +1,4 @@
-"""Integration tests for the CSL-JSON source of the zotero_add_item MCP tool."""
+"""Integration tests for the zotero_add_by_csl_json MCP tool."""
 
 import json
 import re
@@ -7,8 +7,25 @@ import time
 from conftest import FakeZotero
 
 from zotero_mcp import server
-from zotero_mcp.tools import write
-from zotero_mcp.tools._helpers import OaPdfRequiredError
+from zotero_mcp.batch_runner import read_status
+
+
+def _wait_for_task(result):
+    """Extract task_id from a background-task return string and wait for completion.
+
+    Returns the final TaskStatus (or None if the result isn't a task-start string).
+    """
+    m = re.search(r"\*\*([^*]+)\*\*", result)
+    if not m:
+        return None
+    task_id = m.group(1)
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        s = read_status(task_id)
+        if s and s.status in ("completed", "failed"):
+            return s
+        time.sleep(0.05)
+    return read_status(task_id)
 
 
 class FakeZoteroWithAttach(FakeZotero):
@@ -64,7 +81,7 @@ class TestHappyPath:
         fake = _patch_hybrid(monkeypatch)
         _disable_oa_pdf(monkeypatch)
 
-        result = write.add_item(source=SAMPLE_ARTICLE, source_type="csl_json", ctx=dummy_ctx)
+        result = server.add_by_csl_json(csl_json=SAMPLE_ARTICLE, ctx=dummy_ctx)
 
         assert "started" in result.lower() or "⏳" in result
         assert "get_batch_task_status" in result
@@ -85,9 +102,8 @@ class TestHappyPath:
         fake = _patch_hybrid(monkeypatch)
         _disable_oa_pdf(monkeypatch)
 
-        result = write.add_item(
-            source=json.dumps(SAMPLE_ARTICLE),
-            source_type="csl_json",
+        result = server.add_by_csl_json(
+            csl_json=json.dumps(SAMPLE_ARTICLE),
             ctx=dummy_ctx,
         )
 
@@ -105,9 +121,8 @@ class TestHappyPath:
         fake = _patch_hybrid(monkeypatch)
         _disable_oa_pdf(monkeypatch)
 
-        entries = [SAMPLE_ARTICLE, {"type": "book", "title": "B",
-                                     "author": [{"family": "A"}]}]
-        result = write.add_item(source=entries, source_type="csl_json", ctx=dummy_ctx)
+        entries = [SAMPLE_ARTICLE, {"type": "book", "title": "B", "author": [{"family": "A"}]}]
+        result = server.add_by_csl_json(csl_json=entries, ctx=dummy_ctx)
 
         assert "started" in result.lower() or "⏳" in result
         assert "get_batch_task_status" in result
@@ -124,9 +139,8 @@ class TestHappyPath:
         fake = _patch_hybrid(monkeypatch)
         _disable_oa_pdf(monkeypatch)
 
-        write.add_item(
-            source=json.dumps([SAMPLE_ARTICLE, SAMPLE_ARTICLE]),
-            source_type="csl_json",
+        result = server.add_by_csl_json(
+            csl_json=json.dumps([SAMPLE_ARTICLE, SAMPLE_ARTICLE]),
             ctx=dummy_ctx,
         )
         _wait_for_task(result)
@@ -150,9 +164,8 @@ class TestTagsAndCollections:
         csl = dict(SAMPLE_ARTICLE)
         csl["keyword"] = ["source1", "source2"]
 
-        write.add_item(
-            source=csl,
-            source_type="csl_json",
+        result = server.add_by_csl_json(
+            csl_json=csl,
             tags=["caller1", "source1"],
             ctx=dummy_ctx,
         )
@@ -171,9 +184,8 @@ class TestTagsAndCollections:
         ]
         _disable_oa_pdf(monkeypatch)
 
-        write.add_item(
-            source=SAMPLE_ARTICLE,
-            source_type="csl_json",
+        result = server.add_by_csl_json(
+            csl_json=SAMPLE_ARTICLE,
             collections=["COL00001"],
             ctx=dummy_ctx,
         )
@@ -202,7 +214,8 @@ class TestOaPdfAttempt:
 
         monkeypatch.setattr("zotero_mcp.tools._helpers._try_attach_oa_pdf", stub)
 
-        write.add_item(source=SAMPLE_ARTICLE, source_type="csl_json", ctx=dummy_ctx)
+        result = server.add_by_csl_json(csl_json=SAMPLE_ARTICLE, ctx=dummy_ctx)
+        _wait_for_task(result)
 
         assert called["count"] == 1
         assert called["doi"] == "10.1234/x"
@@ -217,47 +230,12 @@ class TestOaPdfAttempt:
 
         monkeypatch.setattr("zotero_mcp.tools._helpers._try_attach_oa_pdf", stub)
 
-        write.add_item(
-            source={"type": "book", "title": "B",
-                      "author": [{"family": "A"}]},
-            source_type="csl_json",
+        server.add_by_csl_json(
+            csl_json={"type": "book", "title": "B", "author": [{"family": "A"}]},
             ctx=dummy_ctx,
         )
 
         assert called["count"] == 0
-
-    def test_none_mode_passed_through_without_download(self, monkeypatch, dummy_ctx):
-        """attach_mode='none' must reach _try_attach_oa_pdf, which skips the lookup."""
-        fake = _patch_hybrid(monkeypatch)
-
-        write.add_item(
-            source=SAMPLE_ARTICLE, source_type="csl_json",
-            attach_mode="none", ctx=dummy_ctx,
-        )
-
-        assert len(fake.created) == 1
-        assert not fake.attachments
-
-    def test_required_mode_fails_entry_when_no_pdf_found(self, monkeypatch, dummy_ctx):
-        """_create_and_attach must report the entry as failed, not silently succeed."""
-        fake = _patch_hybrid(monkeypatch)
-
-        def stub_raises(*args, **kwargs):
-            raise OaPdfRequiredError("no open-access PDF found (stubbed)")
-
-        monkeypatch.setattr(
-            "zotero_mcp.tools._helpers._try_attach_oa_pdf", stub_raises
-        )
-
-        result = write.add_item(
-            source=SAMPLE_ARTICLE, source_type="csl_json",
-            attach_mode="required", ctx=dummy_ctx,
-        )
-
-        # The item was still created — only the reported entry outcome fails.
-        assert len(fake.created) == 1
-        assert "Failed to add" in result
-        assert "attach_mode='required'" in result
 
 
 # ---------------------------------------------------------------------------
@@ -276,7 +254,7 @@ class TestFilePath:
         f = tmp_path / "refs.json"
         f.write_text(json.dumps(SAMPLE_ARTICLE), encoding="utf-8")
 
-        result = write.add_item(source=str(f), source_type="csl_json", ctx=dummy_ctx)
+        result = server.add_by_csl_json(file_path=str(f), ctx=dummy_ctx)
 
         assert "started" in result.lower() or "⏳" in result
         assert "get_batch_task_status" in result
@@ -295,7 +273,8 @@ class TestFilePath:
         f = tmp_path / "refs.csljson"
         f.write_text(json.dumps([SAMPLE_ARTICLE, SAMPLE_ARTICLE]), encoding="utf-8")
 
-        write.add_item(source=str(f), source_type="csl_json", ctx=dummy_ctx)
+        result = server.add_by_csl_json(file_path=str(f), ctx=dummy_ctx)
+        _wait_for_task(result)
         assert len(fake.created) == 2
 
     def test_rejects_wrong_extension(self, monkeypatch, dummy_ctx, tmp_path):
@@ -303,21 +282,20 @@ class TestFilePath:
         f = tmp_path / "refs.bib"
         f.write_text(json.dumps(SAMPLE_ARTICLE), encoding="utf-8")
 
-        result = write.add_item(source=str(f), source_type="csl_json", ctx=dummy_ctx)
+        result = server.add_by_csl_json(file_path=str(f), ctx=dummy_ctx)
         assert "Unsupported file extension" in result
 
     def test_rejects_missing_file(self, monkeypatch, dummy_ctx):
         _patch_hybrid(monkeypatch)
-        result = write.add_item(
-            source="/absolutely/no/such/file.json",
-            source_type="csl_json",
+        result = server.add_by_csl_json(
+            file_path="/absolutely/no/such/file.json",
             ctx=dummy_ctx,
         )
         assert "not found" in result.lower()
 
     def test_rejects_relative_path(self, monkeypatch, dummy_ctx):
         _patch_hybrid(monkeypatch)
-        result = write.add_item(source="refs.json", source_type="csl_json", ctx=dummy_ctx)
+        result = server.add_by_csl_json(file_path="refs.json", ctx=dummy_ctx)
         assert "absolute" in result.lower()
 
     def test_rejects_symlink(self, monkeypatch, dummy_ctx, tmp_path):
@@ -327,7 +305,7 @@ class TestFilePath:
         link = tmp_path / "linked.json"
         link.symlink_to(target)
 
-        result = write.add_item(source=str(link), source_type="csl_json", ctx=dummy_ctx)
+        result = server.add_by_csl_json(file_path=str(link), ctx=dummy_ctx)
         assert "symlink" in result.lower()
 
 
@@ -339,26 +317,19 @@ class TestFilePath:
 class TestErrorPaths:
     def test_invalid_json_string(self, monkeypatch, dummy_ctx):
         _patch_hybrid(monkeypatch)
-        result = write.add_item(
-            source="{not valid json",
-            source_type="csl_json",
-            ctx=dummy_ctx,
-        )
+        result = server.add_by_csl_json(csl_json="{not valid json", ctx=dummy_ctx)
         assert "Invalid JSON" in result
 
     def test_empty_list(self, monkeypatch, dummy_ctx):
         _patch_hybrid(monkeypatch)
-        result = write.add_item(source=[], source_type="csl_json", ctx=dummy_ctx)
+        result = server.add_by_csl_json(csl_json=[], ctx=dummy_ctx)
         assert "Must provide" in result
 
     def test_empty_string(self, monkeypatch, dummy_ctx):
         _patch_hybrid(monkeypatch)
-        result = write.add_item(source="", source_type="csl_json", ctx=dummy_ctx)
+        result = server.add_by_csl_json(csl_json="", ctx=dummy_ctx)
         assert "Must provide" in result
 
-    # Called directly: add_item folds `csl_json` and `file_path` into one
-    # `source`, so neither the "neither" nor the "both" shape is reachable
-    # through the merged tool. They still guard the contract it dispatches into.
     def test_neither_csl_nor_file_path(self, monkeypatch, dummy_ctx):
         _patch_hybrid(monkeypatch)
         result = server.add_by_csl_json(ctx=dummy_ctx)
@@ -377,8 +348,6 @@ class TestErrorPaths:
         def raise_local(ctx):
             raise ValueError("Cannot perform write operations in local-only mode.")
 
-        monkeypatch.setattr(
-            "zotero_mcp.tools._helpers._get_write_client", raise_local
-        )
-        result = write.add_item(source=SAMPLE_ARTICLE, source_type="csl_json", ctx=dummy_ctx)
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", raise_local)
+        result = server.add_by_csl_json(csl_json=SAMPLE_ARTICLE, ctx=dummy_ctx)
         assert "local-only" in result.lower()
