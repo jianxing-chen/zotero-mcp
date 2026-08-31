@@ -62,6 +62,20 @@ def fake_zot():
     return FakeZotero()
 
 
+@pytest.fixture(autouse=True)
+def _disable_mineru(monkeypatch):
+    """These tests exercise the PyMuPDF fallback path; disable MinerU so the
+    async background-parse path (introduced to avoid MCP timeouts on cold
+    cache) is not triggered. Without this, a user with a real cloud_token
+    configured would see "parse started" messages instead of page content.
+    """
+    from zotero_mcp import mineru_client
+
+    monkeypatch.setattr(mineru_client, "load_mineru_config", lambda: {})
+    monkeypatch.setattr(mineru_client, "is_mineru_enabled", lambda _c: False)
+
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -119,6 +133,8 @@ class TestHappyPath:
         assert "# PDF Pages 1-1 of My Paper Title" in result
         assert "**Item Key:** KEY123" in result
         assert "**Total pages in PDF:** 1" in result
+        assert "**Coverage:** p.1-1/1" in result
+        assert "**Cache:** 不适用" in result
 
 
 class TestErrors:
@@ -170,7 +186,9 @@ class TestErrors:
         assert "out of range" in result
         assert "1-3" in result
 
-    def test_too_many_pages(self, monkeypatch, dummy_ctx, fake_zot):
+    def test_large_page_range_no_cap(self, monkeypatch, dummy_ctx, fake_zot):
+        """The 50-page-per-call cap has been removed; requesting 55 pages of a
+        100-page PDF should succeed (PyMuPDF fallback), not error."""
         _patch_fitz(monkeypatch, [FakePage("p")] * 100, total=100)
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
@@ -179,7 +197,11 @@ class TestErrors:
 
         result = server.read_pdf_pages(item_key="ITEM01", start_page=1, end_page=55, ctx=dummy_ctx)
 
-        assert "max 50" in result
+        # No error; PyMuPDF fallback returned content for all 55 pages.
+        assert "max 50" not in result
+        assert "PyMuPDF (fallback)" in result
+        assert "## Page 1" in result
+        assert "## Page 55" in result
 
     def test_missing_fitz_module(self, monkeypatch, dummy_ctx, fake_zot):
         monkeypatch.setattr(

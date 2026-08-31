@@ -37,7 +37,7 @@ TEST_ARXIV_ID = "1602.03837"
 
 class _Ctx:
     def info(self, *a, **k):
-        print(f"    [info] {_a[0] if _a else a[0] if a else ''}")
+        print(f"    [info] {a[0] if a else ''}")
 
     def warning(self, *a, **k):
         print(f"    [warn] {a[0] if a else ''}")
@@ -88,7 +88,6 @@ def _download_to_tmp(url: str, dest_name: str) -> Path:
     if resp is None:
         raise RuntimeError("SSRF guard rejected the URL or redirect chain")
     resp.raise_for_status()
-    content_type = resp.headers.get("Content-Type", "")
     with open(dest, "wb") as f:
         for chunk in resp.iter_content(chunk_size=8192):
             f.write(chunk)
@@ -134,7 +133,7 @@ def test_ads():
                 continue
             resp.raise_for_status()
             ct = resp.headers.get("Content-Type", "")
-            head = b""
+            _ = ct  # content-type logged for debugging if needed
             with open("/dev/null", "wb") as _f:  # drain safely
                 pass
             # Read enough to check the magic header

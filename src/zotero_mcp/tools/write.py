@@ -2766,21 +2766,53 @@ def get_pdf_outline(item_key: str, *, ctx: Context) -> str:
         if not pdf_child:
             return f"No PDF attachment found for item `{item_key}`."
 
+        attachment_key = pdf_child["key"]
+
+        # ---- Tier 1: MinerU cache ----
+        # When a MinerU parse exists for this attachment, derive the outline
+        # from the high-precision cached Markdown instead of re-downloading
+        # the PDF. This (a) avoids the transient ``file://`` protocol bug
+        # seen when ``zot.dump`` hits a bad local Zotero API state, and
+        # (b) reflects the document's actual structure as MinerU parsed it
+        # (publishers' embedded bookmarks can be missing or stale).
+        try:
+            from zotero_mcp.tools.read_pdf import _outline_from_mineru_cache
+
+            cached_outline = _outline_from_mineru_cache(attachment_key)
+            if cached_outline:
+                ctx.info(f"Outline served from MinerU cache for {attachment_key}")
+                return cached_outline
+        except Exception as e:
+            ctx.info(f"MinerU cache outline unavailable ({e}); falling back to PDF download")
+
+        # ---- Tier 2: PyMuPDF on a freshly downloaded PDF ----
         try:
             import fitz
         except ImportError:
             return "Error: PyMuPDF (fitz) is required for PDF outline extraction."
 
-        attachment_key = pdf_child["key"]
         filename = pdf_child.get("data", {}).get("filename", "document.pdf")
 
-        # Download PDF (works for both local/WebDAV/web storage)
+        # Download PDF via the multi-source downloader (local API → WebDAV →
+        # Web API). Using `zot.dump` directly only tries one source and fails
+        # hard when the local Zotero API returns a `file://` URI it can't
+        # resolve (e.g. transient desktop client state); the multi-source
+        # path falls back to WebDAV / Web API instead.
         with tempfile.TemporaryDirectory() as tmpdir:
-            zot.dump(attachment_key, filename=filename, path=tmpdir)
-            pdf_path = os.path.join(tmpdir, filename)
-            if not os.path.exists(pdf_path) or os.path.getsize(pdf_path) == 0:
-                return f"Could not download PDF for attachment `{attachment_key}`."
-            doc = fitz.open(pdf_path)
+            download = _client.download_attachment_file(
+                attachment_key,
+                tmpdir,
+                filename,
+                local_client=_client.get_local_zotero_client(),
+                web_client=None if _utils.is_local_mode() else zot,
+            )
+            if not (download.path and download.path.exists() and download.path.stat().st_size > 0):
+                errors = "\n".join(f"  - {e}" for e in download.errors) if download.errors else "  - unknown"
+                return (
+                    f"Could not download PDF for attachment `{attachment_key}`.\n"
+                    f"Attempted sources:\n{errors}"
+                )
+            doc = fitz.open(str(download.path))
             toc = doc.get_toc()
             doc.close()
 

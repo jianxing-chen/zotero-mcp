@@ -105,9 +105,9 @@ def get_item_metadata(
         "only the first N pages (default 10, configurable via "
         "fulltext_display_max_pages / pdf_max_pages in config). For a "
         "long paper (thesis, book) the text is truncated and you may miss "
-        "content. To read the FULL document page-by-page without silent "
-        "truncation, use zotero_read_pdf_pages with consecutive ranges "
-        "instead. "
+        "content. To read the FULL document page-by-page with structured "
+        "formulas/tables AND page numbers for citation, use "
+        "zotero_read_pdf_pages instead. "
         "item_key: 8-character Zotero item key (parent item, not the "
         "attachment). The tool locates the attached PDF/EPUB itself. "
         "Scope: active library only. "
@@ -179,7 +179,8 @@ def get_item_fulltext(item_key: str, *, ctx: Context) -> str:
                                 source = extracted[1] if len(extracted) > 1 else "file"
                                 ctx.info(f"Retrieved full text from local storage ({source})")
                                 return _helpers._prepend_size_warning(
-                                    f"{metadata}\n\n---\n\n## Full Text\n\n{extracted[0]}",
+                                    f"{metadata}\n\n---\n\n"
+                                    f"## Full Text\n\n{extracted[0]}",
                                     "Consider using zotero_semantic_search to find specific content instead of reading full papers.",
                                 )
         except Exception as local_extract_error:
@@ -199,7 +200,8 @@ def get_item_fulltext(item_key: str, *, ctx: Context) -> str:
             if full_text_data and "content" in full_text_data and full_text_data["content"]:
                 ctx.info("Successfully retrieved full text from Zotero's index")
                 return _helpers._prepend_size_warning(
-                    f"{metadata}\n\n---\n\n## Full Text\n\n{full_text_data['content']}",
+                    f"{metadata}\n\n---\n\n"
+                    f"## Full Text\n\n{full_text_data['content']}",
                     "Consider using zotero_semantic_search to find specific content instead of reading full papers.",
                 )
         except Exception as fulltext_error:
@@ -222,7 +224,8 @@ def get_item_fulltext(item_key: str, *, ctx: Context) -> str:
                     ctx.info(f"Downloaded file via {download.source} to {download.path}, converting to markdown")
                     converted_text = _client.convert_to_markdown(download.path)
                     return _helpers._prepend_size_warning(
-                        f"{metadata}\n\n---\n\n## Full Text\n\n{converted_text}",
+                        f"{metadata}\n\n---\n\n"
+                        f"## Full Text\n\n{converted_text}",
                         "Consider using zotero_semantic_search to find specific content instead of reading full papers.",
                     )
 
@@ -599,7 +602,7 @@ def get_collection_items(
         "Use this to see what's organized and what isn't, and to spot items "
         "duplicated across folders. "
         "limit: max items to list in EACH of the unfiled and multi-collection "
-        "sections (default 50, max 500). The Overview counts are always "
+        "sections (default 50, max 5000). The Overview counts are always "
         "complete regardless of limit. "
         "Returns three markdown sections: Overview (total/filed/unfiled/multi "
         "counts), Unfiled Items (key, title, date, [PDF]), and Items in "
@@ -625,7 +628,7 @@ def audit_collection_membership(limit: int | str | None = 50, *, ctx: Context) -
     try:
         ctx.info("Auditing collection membership for entire library")
         zot = _client.get_zotero_client()
-        limit = _helpers._normalize_limit(limit, default=50, max_val=500)
+        limit = _helpers._normalize_limit(limit, default=50, max_val=5000)
 
         # Build collection key→name map for readable output. Non-fatal — if
         # this fails we degrade to showing raw keys in the multi-collection

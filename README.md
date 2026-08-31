@@ -135,9 +135,10 @@ zotero-mcp openai-batch-import                    # import completed embeddings
 - **Extract formulas as LaTeX and tables as HTML** — impossible with plain PyMuPDF text-layer extraction
 - When an LLM calls `zotero_read_pdf_pages` to read a paper, MinerU returns correct formulas like `$\text{Attention}(Q,K,V)=\text{softmax}(\frac{QK^T}{\sqrt{d_k}})V$`
 - **MinerU cache → vector index**: after reading a paper once, `reindex_keys` builds a full-document vector index from MinerU's per-page text — with **page numbers in search results** and **no 20-chunk cap** (every page of a 500-page book is searchable). Enables "semantic search定位 → read_pdf_pages精读验证" workflow.
-- Three backends: `cloud` (mineru.net API, recommended), `api` (remote service), `hybrid` (local GPU), `pipeline` (local CPU fallback) — hybrid auto-degrades to pipeline on OOM
+- One backend: `cloud` (mineru.net online API, recommended) — no local torch/ray dependency. The `api` (remote FastAPI) and local CLI (`hybrid`/`pipeline`) backends are disabled at the config layer; their code is retained for future re-enablement.
 - Results cached per attachment key to avoid re-parsing
 - Any failure silently falls back to PyMuPDF — no MinerU installed = 100% original behavior
+- **Async first-parse**: on a cold cache, `zotero_read_pdf_pages` does NOT block on the multi-minute MinerU parse — it spawns a background task and returns a `task_id` (poll `zotero_get_batch_task_status`); the next call hits the cache instantly.
 
 ### 🔭 NASA ADS Astrophysics Literature (new)
 - **`zotero_add_by_bibcode`**: import papers by bibcode — fetches ADS metadata, converts to a Zotero item, stores bibcode in the Extra field for dedup, and attempts OA PDF download (Unpaywall cascade + ADS link_gateway fallback)
@@ -210,7 +211,7 @@ Heavy ML/PDF dependencies are separated into optional extras so the base install
 
 > **ADS needs no extra**: NASA ADS integration only requires `requests` (already a core dep) — just set the `ADS_API_TOKEN` env var.
 >
-> **MinerU dependency isolation**: the `[mineru]` extra pulls `mineru[all]` (includes torch). To avoid dependency conflicts, install MinerU in a separate venv and point the `mineru.executable` config at its CLI — the main package stays torch-free. The `api` backend mode needs zero local deps.
+> **MinerU has zero local deps**: only the `cloud` backend (mineru.net online API) is supported, so zotero-mcp stays torch-free on the host. The `[mineru]` extra is no longer needed for the cloud path (it pulled the local `mineru[all]` package for the now-disabled local CLI backends).
 
 ```bash
 # Full install with all features
@@ -280,32 +281,23 @@ When enabled, the `zotero_read_pdf_pages` tool returns structured Markdown — *
 zotero-mcp setup   # the wizard asks whether to configure MinerU
 ```
 
-The wizard guides you through choosing a backend:
-- **`cloud`** (recommended): MinerU cloud API (mineru.net) — highest accuracy (vlm 95+), ~15s/paper, needs `cloud_token`
-- **`api`**: call a remote MinerU FastAPI service (zero local torch/ray deps) — configure `api_url`
-- **`hybrid`**: local `mineru` CLI with GPU — auto-falls back to `pipeline` on OOM
-- **`pipeline`**: local CPU, always works but slower
+The wizard configures the `cloud` backend (the only supported one):
+- **`cloud`** (recommended, only supported): MinerU cloud API (mineru.net) — highest accuracy (vlm 95+), ~15s/paper, needs `cloud_token` from <https://mineru.net/apiManage/docs>
 
-Fallback chain (all automatic): `cloud-vlm → cloud-pipeline → local hybrid → local pipeline → PyMuPDF`.
+The `api` (remote FastAPI) and local CLI (`hybrid`/`pipeline`) backends are **disabled at the config layer** — their code is retained in the module for future re-enablement but `is_mineru_available` returns False for them. Any failure falls back to PyMuPDF.
 
-**Pin a single backend per call.** The `zotero_read_pdf_pages` tool accepts an optional `backend` parameter (`cloud` / `pipeline` / `hybrid` / `api`) to use ONLY that extractor and skip the cross-backend fallback chain — more precise when you know which method you want. Omit it (the default) to use the configured backend with the full degradation chain:
+**Async first-parse.** On a cold cache, `zotero_read_pdf_pages` does NOT block on the multi-minute MinerU parse — it spawns a background task and returns a `task_id`. Poll `zotero_get_batch_task_status(task_id=...)` for progress; once `completed`, call `zotero_read_pdf_pages` again to get the structured content instantly (cache hit). For immediate content without waiting, set `mineru.enabled=false` to use the PyMuPDF fallback.
 
-```
-# Force cloud only (no fallback to local CLI on failure):
-zotero_read_pdf_pages(item_key="AB123456", start_page=1, end_page=10, backend="cloud")
-
-# Force local pipeline only:
-zotero_read_pdf_pages(item_key="AB123456", start_page=1, backend="pipeline")
-```
+**No per-call page cap.** You may request the full document (`start_page=1, end_page=N`) in one call. The 50-page-per-call limit has been removed.
 
 ```json
 // mineru block in ~/.config/zotero-mcp/config.json
 {
   "mineru": {
     "enabled": true,
-    "backend": "hybrid",
-    "api_url": null,
-    "executable": null,
+    "backend": "cloud",
+    "cloud_token": "your-mineru-net-token",
+    "cloud_model": "vlm",
     "timeout": 600,
     "cache_dir": "~/.cache/zotero-mcp/mineru"
   }
@@ -639,7 +631,7 @@ Edit `~/.config/zotero-mcp/config.json` and set the `semantic_search` block. You
 
 #### Step 4: Configure MinerU structured PDF reading (optional)
 
-MinerU gives `zotero_read_pdf_pages` accurate formulas (LaTeX) and tables (HTML) instead of PyMuPDF's garbled text-layer output. Three backends, with automatic fallback:
+MinerU gives `zotero_read_pdf_pages` accurate formulas (LaTeX) and tables (HTML) instead of PyMuPDF's garbled text-layer output. Only the `cloud` backend is supported:
 
 ```jsonc
 {
@@ -648,7 +640,6 @@ MinerU gives `zotero_read_pdf_pages` accurate formulas (LaTeX) and tables (HTML)
     "backend": "cloud",
     "cloud_token": "your-mineru-net-token",
     "cloud_model": "vlm",
-    "executable": "/path/to/mineru",
     "timeout": 600
   }
 }
@@ -656,13 +647,13 @@ MinerU gives `zotero_read_pdf_pages` accurate formulas (LaTeX) and tables (HTML)
 
 | Backend | Speed | Accuracy | Requires |
 |---|---|---|---|
-| `"cloud"` (recommended) | ~15s/paper | highest (vlm 95+) | `cloud_token` from <https://mineru.net/apiManage/docs> |
-| `"hybrid"` / `"hybrid-auto-engine"` | ~3min (local GPU) | high (85+) | local `mineru` CLI (MinerU 3.x) |
-| `"pipeline"` | slower (CPU) | high (85+) | local `mineru` CLI |
+| `"cloud"` (only supported) | ~15s/paper | highest (vlm 95+) | `cloud_token` from <https://mineru.net/apiManage/docs> |
 
-**Fallback chain** (all automatic): `cloud-vlm → cloud-pipeline → local hybrid → local pipeline → PyMuPDF`. If you don't configure MinerU at all, `zotero_read_pdf_pages` uses PyMuPDF (fast, but formulas/tables may be garbled on LaTeX papers).
+The `api` (remote FastAPI) and local CLI (`hybrid`/`pipeline`) backends are **disabled at the config layer** — their code is retained for future re-enablement but `is_mineru_available` returns False for them. Any failure falls back to PyMuPDF.
 
-> **Caching**: MinerU results are cached at `~/.cache/zotero-mcp/mineru/<attachment_key>/` (only `fulltext.md` + `pages.json` + `meta.json`, ~50KB per paper). First read of a paper triggers a full parse; subsequent reads of any page hit the cache in <0.1s. Cache invalidates on PDF size change.
+**Async first-parse**: on a cold cache, `zotero_read_pdf_pages` spawns a background task and returns a `task_id` instead of blocking on the multi-minute parse. Poll `zotero_get_batch_task_status(task_id=...)`; once `completed`, call `zotero_read_pdf_pages` again for instant structured content (cache hit).
+
+> **Caching**: MinerU results are cached at `~/.cache/zotero-mcp/mineru/<attachment_key>/` (only `fulltext.md` + `pages.json` + `meta.json`, ~50KB per paper). First read of a paper triggers a background full parse; subsequent reads of any page hit the cache in <0.1s. Cache invalidates on PDF size change.
 
 #### Step 5: Build the semantic search index
 
@@ -717,7 +708,7 @@ Start Zotero desktop (for local API), then launch your MCP client. Try these:
   },
   "mineru": {
     "enabled": true, "backend": "cloud", "cloud_token": "your-mineru-token",
-    "cloud_model": "vlm", "executable": "/usr/local/bin/mineru", "timeout": 600
+    "cloud_model": "vlm", "timeout": 600
   },
   "browser_fetch": {
     "enabled": false,

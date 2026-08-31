@@ -192,9 +192,10 @@ class TestFindDuplicatesNoPicle:
 
 
 class TestPdfOutlineDownloadMethod:
-    """PDF outline always uses zot.dump(), not direct file path access."""
+    """PDF outline uses the multi-source downloader (local API → WebDAV → Web API),
+    not a single `zot.dump` call that fails hard on transient `file://` URIs."""
 
-    def test_dump_called_not_direct_path(self, monkeypatch):
+    def test_outline_uses_multi_source_downloader(self, monkeypatch):
         import sys
         import types
 
@@ -225,6 +226,7 @@ class TestPdfOutlineDownloadMethod:
 
         fake = FakeZotDump()
         monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
+        monkeypatch.setattr("zotero_mcp.client.get_local_zotero_client", lambda: fake)
         monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: True)
 
         # Mock fitz
@@ -242,7 +244,11 @@ class TestPdfOutlineDownloadMethod:
         ctx = DummyContext()
         result = server.get_pdf_outline(item_key="PARENT01", ctx=ctx)
 
-        assert len(dump_called) == 1, "dump() should be called even in local mode"
+        # The multi-source downloader ultimately calls dump() on the local
+        # client when one is available — verify the PDF was actually fetched.
+        assert len(dump_called) == 1, (
+            "download_attachment_file should reach the local dump() path"
+        )
         assert "Intro" in result
 
 
@@ -260,3 +266,141 @@ class TestBatchUpdateTagsFilter:
 
         sig = inspect.signature(server.batch_update_tags)
         assert "tag" in sig.parameters, "batch_update_tags must have a 'tag' parameter for tag-based filtering"
+
+
+# ---------------------------------------------------------------------------
+# Bug 6: get_pdf_outline should prefer MinerU cache over re-downloading PDF.
+# Reading from the cache avoids the transient `file://` protocol bug and
+# reflects the document's actual structure (publisher bookmarks can be stale).
+# ---------------------------------------------------------------------------
+
+
+class TestPdfOutlineMineruCachePreferred:
+    """get_pdf_outline reads from the MinerU cache when available, and only
+    falls back to PyMuPDF (via PDF download) when no cache exists."""
+
+    def test_returns_mineru_cache_outline_without_download(self, monkeypatch, tmp_path):
+        """When a MinerU cache exists for the attachment, the outline is
+        derived from the cache and the PDF is NOT downloaded."""
+        import sys
+        import types
+
+        # Set up a fake MinerU cache dir.
+        cache_root = tmp_path / "mineru"
+        cache_root.mkdir()
+        attachment_key = "ATT01"
+        cache_dir = cache_root / attachment_key
+        cache_dir.mkdir()
+        # fulltext.md with markdown headings.
+        (cache_dir / "fulltext.md").write_text(
+            "# Title\n\n"
+            "## ABSTRACT\n\n"
+            "body...\n\n"
+            "## 1. Introduction\n\n"
+            "intro body\n\n"
+            "## 2. Methods\n\n"
+            "methods body\n",
+            encoding="utf-8",
+        )
+        # pages.json: page 1 contains ABSTRACT + Introduction, page 2 has Methods.
+        (cache_dir / "pages.json").write_text(
+            json.dumps([
+                "# Title\n\n## ABSTRACT\n\nbody...\n\n## 1. Introduction\n\nintro body",
+                "## 2. Methods\n\nmethods body",
+            ]),
+            encoding="utf-8",
+        )
+
+        # Patch the cache resolution to point at our temp dir.
+        import zotero_mcp.mineru_client as mc
+        monkeypatch.setattr(mc, "_resolve_cache_dir", lambda config: cache_root)
+        # MinerU enabled/available so the cache path runs.
+        monkeypatch.setattr(mc, "is_mineru_enabled", lambda cfg: True)
+
+        # The Zotero client returns a single PDF child attachment.
+        class FakeZot(FakeZotero):
+            def children(self, key, **kw):
+                return [{
+                    "key": attachment_key,
+                    "data": {
+                        "itemType": "attachment",
+                        "contentType": "application/pdf",
+                        "filename": "paper.pdf",
+                        "parentItem": key,
+                    },
+                }]
+
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: FakeZot())
+        monkeypatch.setattr("zotero_mcp.client.get_local_zotero_client", lambda: None)
+        monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: True)
+
+        # Patch download_attachment_file — it should NOT be called.
+        download_calls = []
+        def _no_download(*a, **kw):
+            download_calls.append(a)
+            raise AssertionError("download_attachment_file should not be called when MinerU cache exists")
+        import zotero_mcp.client as _c
+        monkeypatch.setattr(_c, "download_attachment_file", _no_download)
+
+        ctx = DummyContext()
+        result = server.get_pdf_outline(item_key="PARENT01", ctx=ctx)
+
+        assert "via MinerU cache" in result, "should note the MinerU cache source"
+        assert "Introduction" in result
+        assert "Methods" in result
+        assert download_calls == [], "PDF should not be downloaded when cache hits"
+
+    def test_falls_back_to_pymupdf_when_no_cache(self, monkeypatch, tmp_path):
+        """When no MinerU cache exists, falls back to PyMuPDF via download."""
+        import sys
+        import types
+
+        # Empty cache dir — no MinerU cache for the attachment.
+        cache_root = tmp_path / "mineru"
+        cache_root.mkdir()
+
+        import zotero_mcp.mineru_client as mc
+        monkeypatch.setattr(mc, "_resolve_cache_dir", lambda config: cache_root)
+        monkeypatch.setattr(mc, "is_mineru_enabled", lambda cfg: True)
+
+        attachment_key = "ATT01"
+        class FakeZot(FakeZotero):
+            def children(self, key, **kw):
+                return [{
+                    "key": attachment_key,
+                    "data": {
+                        "itemType": "attachment",
+                        "contentType": "application/pdf",
+                        "filename": "paper.pdf",
+                        "parentItem": key,
+                    },
+                }]
+
+            def dump(self, key, filename=None, path=None):
+                import os
+                if path and filename:
+                    with open(os.path.join(path, filename), "wb") as f:
+                        f.write(b"%PDF-1.4 fake")
+
+        fake = FakeZot()
+        monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
+        monkeypatch.setattr("zotero_mcp.client.get_local_zotero_client", lambda: fake)
+        monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: True)
+
+        # Mock fitz
+        class FakeDoc:
+            def get_toc(self):
+                return [[1, "Intro", 1]]
+            def close(self):
+                pass
+
+        fake_fitz = types.ModuleType("fitz")
+        fake_fitz.open = lambda *a, **kw: FakeDoc()
+        monkeypatch.setitem(sys.modules, "fitz", fake_fitz)
+
+        ctx = DummyContext()
+        result = server.get_pdf_outline(item_key="PARENT01", ctx=ctx)
+
+        assert "Intro" in result
+        # Should NOT have the "via MinerU cache" header — that's the fallback path.
+        assert "via MinerU cache" not in result

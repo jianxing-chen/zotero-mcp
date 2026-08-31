@@ -562,7 +562,7 @@ def search_by_citation_key(citekey: str, *, ctx: Context) -> str:
         "join_mode: 'all' (AND, default) or 'any' (OR). "
         "sort_by: dateAdded, dateModified, title, creator, etc. "
         "sort_direction: 'asc' (default) or 'desc'. "
-        "limit: max results (default 50, max 500). "
+        "limit: max results (default 50, max 5000). "
         "Example: zotero_advanced_search(conditions=[{'field': 'itemType', "
         "'operation': 'is', 'value': 'preprint'}, {'field': 'dateAdded', "
         "'operation': 'isAfter', 'value': '2026-03-22'}], "
@@ -609,7 +609,7 @@ def advanced_search(
         if join_mode not in {"all", "any"}:
             return "Error: join_mode must be either 'all' or 'any'"
 
-        limit = _helpers._normalize_limit(limit, default=50, max_val=500)
+        limit = _helpers._normalize_limit(limit, default=50, max_val=5000)
 
         ctx.info(f"Performing advanced search with {len(conditions)} conditions")
         zot = _client.get_zotero_client()
@@ -788,10 +788,17 @@ def advanced_search(
         if not results:
             return "No items found matching the search criteria."
 
+        total_matched = len(results)
         results = results[:limit]
 
         output = ["# Advanced Search Results", ""]
-        output.append(f"Found {len(results)} items matching the search criteria:")
+        if total_matched > limit:
+            output.append(
+                f"Found {total_matched} items matching the search criteria "
+                f"(showing first {limit} — increase the `limit` parameter to see more):"
+            )
+        else:
+            output.append(f"Found {total_matched} items matching the search criteria:")
         output.append("")
         output.append("## Search Criteria")
         output.append(f"Join mode: {join_mode.upper()}")

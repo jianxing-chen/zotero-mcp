@@ -136,7 +136,7 @@ def _setup(monkeypatch, items):
 
 def test_batch_update_extra_updates_multiple_items(monkeypatch, tmp_path):
     monkeypatch.setattr("zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks")
-    fake = _setup(monkeypatch, _make_items())
+    _setup(monkeypatch, _make_items())
 
     result = server.batch_update_extra(
         item_keys=["ITEM0001", "ITEM0002"],
@@ -152,7 +152,7 @@ def test_batch_update_extra_removes_keys(monkeypatch, tmp_path):
     monkeypatch.setattr("zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks")
     items = _make_items()
     items[0]["data"]["extra"] = "Citation Key: smith2020\ntex.otscore: 2"
-    fake = _setup(monkeypatch, items)
+    _setup(monkeypatch, items)
 
     result = server.batch_update_extra(
         item_keys=["ITEM0001"],
@@ -166,7 +166,7 @@ def test_batch_update_extra_removes_keys(monkeypatch, tmp_path):
 
 def test_batch_update_extra_skips_attachments(monkeypatch, tmp_path):
     monkeypatch.setattr("zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks")
-    fake = _setup(monkeypatch, _make_items())
+    _setup(monkeypatch, _make_items())
 
     result = server.batch_update_extra(
         item_keys=["ITEM0001", "ATTACH01"],
@@ -180,7 +180,7 @@ def test_batch_update_extra_skips_attachments(monkeypatch, tmp_path):
 
 def test_batch_update_extra_accepts_json_string_set_keys(monkeypatch, tmp_path):
     monkeypatch.setattr("zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks")
-    fake = _setup(monkeypatch, _make_items())
+    _setup(monkeypatch, _make_items())
 
     result = server.batch_update_extra(
         item_keys='["ITEM0002"]',
@@ -224,7 +224,7 @@ def test_batch_update_extra_replace_incompatible_with_remove_keys(monkeypatch):
 
 def test_batch_update_extra_continues_after_missing_item(monkeypatch, tmp_path):
     monkeypatch.setattr("zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks")
-    fake = _setup(monkeypatch, _make_items())
+    _setup(monkeypatch, _make_items())
 
     result = server.batch_update_extra(
         item_keys=["NOSUCHKEY", "ITEM0002"],

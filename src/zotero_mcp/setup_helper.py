@@ -12,7 +12,6 @@ import getpass
 import json
 import os
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 
@@ -473,6 +472,11 @@ def setup_mineru_config(existing: dict | None = None) -> dict:
     MinerU gives the ``zotero_read_pdf_pages`` tool accurate formulas (LaTeX)
     and tables (HTML). It is optional and disabled by default; the tool falls
     back to PyMuPDF text extraction when MinerU is off or unavailable.
+
+    Only the ``cloud`` backend (MinerU online API at mineru.net) is supported.
+    It needs a ``cloud_token`` from https://mineru.net/apiManage/docs and has
+    no local torch/ray dependency. The ``api`` and local CLI backends are
+    disabled at the config layer (their code is retained for future use).
     """
     existing = existing or {}
     print("\n" + "=" * 60)
@@ -498,56 +502,32 @@ def setup_mineru_config(existing: dict | None = None) -> dict:
         cfg["enabled"] = False
         return cfg
 
-    cfg = {"enabled": True}
+    cfg = {"enabled": True, "backend": "cloud"}
 
-    # Backend selection
-    print("\nChoose a backend:")
-    print("  1) api       — call a remote MinerU FastAPI service (no local torch/ray)")
-    print("  2) hybrid    — local mineru CLI with GPU (fast, needs GPU 8GB+)")
-    print("  3) pipeline  — local mineru CLI, CPU-only (slower, always works)")
-    print("Hybrid automatically falls back to pipeline on GPU OOM/failure.")
-    print(f"Default [1-3, current={existing.get('backend', 'hybrid')}]: ", end="")
+    # Cloud token (required for the cloud backend).
+    print(
+        "\nBackend: cloud (MinerU online API at mineru.net — recommended).\n"
+        "Only the cloud backend is supported. It needs a cloud_token from\n"
+        "https://mineru.net/apiManage/docs (free quota available)."
+    )
+    print(f"\nMinerU cloud_token [current={existing.get('cloud_token') or 'none'}]: ", end="")
     try:
-        bchoice = input().strip()
+        cloud_token = input().strip()
     except (EOFError, KeyboardInterrupt):
-        bchoice = ""
-    if bchoice == "1":
-        cfg["backend"] = "api"
-    elif bchoice == "3":
-        cfg["backend"] = "pipeline"
-    else:
-        cfg["backend"] = "hybrid"
+        cloud_token = ""
+    cfg["cloud_token"] = cloud_token or existing.get("cloud_token")
 
-    if cfg["backend"] == "api":
-        print(f"\nMinerU API URL (e.g. http://gpu-host:8000) [current={existing.get('api_url') or 'none'}]: ", end="")
-        try:
-            api_url = input().strip()
-        except (EOFError, KeyboardInterrupt):
-            api_url = ""
-        cfg["api_url"] = api_url or None
-    else:
-        # Local CLI: probe the executable and offer to set an explicit path.
-        which = shutil.which("mineru")
-        default_exe = existing.get("executable") or which
-        print(f"\nmineru executable path [blank=auto-detect, found={which or 'none'}]: ", end="")
-        try:
-            exe = input().strip()
-        except (EOFError, KeyboardInterrupt):
-            exe = ""
-        cfg["executable"] = exe or default_exe or None
-        # Liveness probe — non-blocking.
-        target = cfg["executable"] or which
-        if target:
-            try:
-                result = subprocess.run([target, "--version"], capture_output=True, text=True, timeout=10)
-                if result.returncode == 0:
-                    print(f"  ✓ mineru CLI reachable: {result.stdout.strip()[:60]}")
-                else:
-                    print("  ⚠ mineru CLI returned non-zero. Install with: pip install mineru[all]")
-            except Exception:
-                print("  ⚠ could not run mineru CLI. Install with: pip install mineru[all]")
-        else:
-            print("  ⚠ mineru not on PATH. Install with: pip install mineru[all]")
+    # Cloud model (vlm recommended for highest accuracy).
+    print(
+        f"\nCloud model ('vlm' recommended for highest accuracy, 'pipeline' fallback)\n"
+        f"Default [vlm/pipeline, current={existing.get('cloud_model', 'vlm')}]: ",
+        end="",
+    )
+    try:
+        model_choice = input().strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        model_choice = ""
+    cfg["cloud_model"] = model_choice if model_choice in ("vlm", "pipeline") else existing.get("cloud_model", "vlm")
 
     # Timeout
     print(f"\nPer-PDF timeout in seconds [current={existing.get('timeout', 600)}]: ", end="")

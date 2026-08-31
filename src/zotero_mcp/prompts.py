@@ -213,7 +213,6 @@ def read_paper(item_key: str, focus: str = "") -> str:
             "   - **Methodology** (model, data, experimental setup)",
             "   - **Key results** (cite specific numbers, formulas, figures)",
             "   - **Conclusions & limitations**",
-            "   Reference page numbers for important findings (e.g. 'p. 12').",
             "",
             "If the user later asks to highlight (zotero_create_annotation) text "
             "from a MinerU-parsed page, prefer plain-text sentences — formulas "

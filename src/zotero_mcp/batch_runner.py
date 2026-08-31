@@ -200,11 +200,17 @@ def spawn_task(status: TaskStatus, worker_fn: Callable[[TaskStatus], None]) -> N
         try:
             update_status(status.task_id, status="running", started_at=now)
             worker_fn(status)
-            update_status(
-                status.task_id,
-                status="completed",
-                completed_at=datetime.now(timezone.utc).isoformat(),
-            )
+            # The worker is responsible for setting its own terminal status
+            # (completed/failed) via update_status() — it has the context to
+            # distinguish "parse succeeded" from "parse returned None". Only
+            # set completed here if the worker forgot to (defensive fallback).
+            current = read_status(status.task_id)
+            if current is None or current.status == "running":
+                update_status(
+                    status.task_id,
+                    status="completed",
+                    completed_at=datetime.now(timezone.utc).isoformat(),
+                )
         except Exception as e:
             logger.exception(f"Batch task {status.task_id} failed: {e}")
             update_status(

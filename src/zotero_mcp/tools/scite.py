@@ -303,7 +303,7 @@ def enrich_search(
         "collection: collection name OR 8-char key; names are resolved "
         "via zotero_search_collections. "
         "tag: existing tag name (exact, case-sensitive). "
-        "limit: items to check per call — default 50, max 500. Items "
+        "limit: items to check per call — default 50, max 5000. Items "
         "without a DOI are skipped silently (Scite needs DOIs). "
         "Scope: active library only. No Scite account or API key needed; "
         "the public endpoints can fail transiently — on network errors "
@@ -326,7 +326,7 @@ def check_retractions(
     """Check Zotero items for editorial notices (retractions, corrections)."""
     try:
         zot = _client.get_zotero_client()
-        limit_int = _helpers._normalize_limit(limit, default=50, max_val=500)
+        limit_int = _helpers._normalize_limit(limit, default=50, max_val=5000)
 
         # Fetch items
         if collection:

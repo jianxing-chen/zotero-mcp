@@ -41,16 +41,23 @@ class TestConfig:
         assert M.is_mineru_enabled({"enabled": True}) is True
 
     def test_available_api_requires_url(self):
+        # ``api`` backend is disabled at the config layer (only ``cloud`` is
+        # routed). is_mineru_available returns False regardless of api_url.
         assert M.is_mineru_available({"backend": "api"}) is False
-        assert M.is_mineru_available({"backend": "api", "api_url": "http://h:8000"}) is True
+        assert M.is_mineru_available({"backend": "api", "api_url": "http://h:8000"}) is False
 
     def test_available_local_requires_executable(self, monkeypatch):
-        # No executable configured and not on PATH → unavailable.
+        # Local CLI backends (hybrid/pipeline/vlm) are disabled at the config
+        # layer. is_mineru_available returns False regardless of executable.
         monkeypatch.setattr(M.shutil, "which", lambda _name: None)
         assert M.is_mineru_available({"backend": "hybrid"}) is False
 
         monkeypatch.setattr(M.shutil, "which", lambda _name: "/usr/local/bin/mineru")
-        assert M.is_mineru_available({"backend": "hybrid"}) is True
+        assert M.is_mineru_available({"backend": "hybrid"}) is False
+
+    def test_available_cloud_requires_token(self):
+        assert M.is_mineru_available({"backend": "cloud"}) is False
+        assert M.is_mineru_available({"backend": "cloud", "cloud_token": "tok"}) is True
 
     def test_available_explicit_executable_missing(self, tmp_path):
         cfg = {"backend": "hybrid", "executable": str(tmp_path / "nonexistent")}
@@ -59,6 +66,14 @@ class TestConfig:
 
 # --------------------------------------------------------------------------- #
 # CLI subprocess invocation & hybrid→pipeline fallback
+#
+# The local CLI backends (hybrid/pipeline/vlm) are **disabled at the config
+# layer** — ``_dispatch_parse`` and ``is_mineru_available`` will not route to
+# them. However, the underlying implementation (``_call_cli_with_fallback``,
+# ``_call_mineru_cli``) is **retained** in the module for future
+# re-enablement. The tests in this class exercise that retained code
+# directly, so it does not rot. The ``TestDispatchRoutingDisabled`` class
+# below verifies the config-layer gating.
 # --------------------------------------------------------------------------- #
 class TestCliFallback:
     def _make_completed(self, returncode=0, stdout="", stderr="", md_content=""):
@@ -79,7 +94,12 @@ class TestCliFallback:
 
         return _run_side_effect
 
-    def test_hybrid_success(self, tmp_path, monkeypatch):
+    def test_hybrid_success_direct_call(self, tmp_path, monkeypatch):
+        """Calling _call_cli_with_fallback directly: hybrid backend succeeds.
+
+        The CLI code is retained even though _dispatch_parse no longer routes
+        to it. This test exercises the retained path so it does not rot.
+        """
         pdf = tmp_path / "paper.pdf"
         pdf.write_bytes(b"%PDF-1.4 fake")
         config = {"enabled": True, "backend": "hybrid", "timeout": 30}
@@ -90,13 +110,15 @@ class TestCliFallback:
             self._make_completed(md_content="# Page\n\n$$x^2$$ content"),
         )
 
-        parsed = M.read_cached_or_parse("ATTKEY", pdf, config, force_rebuild=True)
-        assert parsed is not None
+        result = M._call_cli_with_fallback(pdf, -1, -1, config, 30)
+        assert result is not None
+        md, _content_list, source = result
         # "hybrid" is normalized to "hybrid-auto-engine" (MinerU 3.x canonical name)
-        assert parsed.source == "mineru:hybrid-auto-engine"
-        assert "x^2" in parsed.markdown
+        assert source == "mineru:hybrid-auto-engine"
+        assert "x^2" in md
 
-    def test_hybrid_failure_falls_back_to_pipeline(self, tmp_path, monkeypatch):
+    def test_hybrid_failure_falls_back_to_pipeline_direct_call(self, tmp_path, monkeypatch):
+        """Direct _call_cli_with_fallback: hybrid OOM → pipeline retry succeeds."""
         pdf = tmp_path / "paper.pdf"
         pdf.write_bytes(b"%PDF-1.4 fake")
         config = {"enabled": True, "backend": "hybrid", "timeout": 30}
@@ -122,13 +144,15 @@ class TestCliFallback:
 
         monkeypatch.setattr(M.subprocess, "run", _run)
 
-        parsed = M.read_cached_or_parse("ATTKEY", pdf, config, force_rebuild=True)
-        assert parsed is not None
-        assert parsed.source == "mineru:pipeline"
-        assert "pipeline output" in parsed.markdown
+        result = M._call_cli_with_fallback(pdf, -1, -1, config, 30)
+        assert result is not None
+        md, _cl, source = result
+        assert source == "mineru:pipeline"
+        assert "pipeline output" in md
         assert call_count["n"] == 2  # hybrid tried, then pipeline
 
-    def test_both_backends_fail_returns_none(self, tmp_path, monkeypatch):
+    def test_both_backends_fail_returns_none_direct(self, tmp_path, monkeypatch):
+        """Direct _call_cli_with_fallback: both backends fail → None."""
         pdf = tmp_path / "paper.pdf"
         pdf.write_bytes(b"%PDF-1.4 fake")
         config = {"enabled": True, "backend": "hybrid", "timeout": 30}
@@ -139,9 +163,10 @@ class TestCliFallback:
             lambda cmd, **k: subprocess.CompletedProcess(cmd, returncode=1, stderr="dead"),
         )
 
-        assert M.read_cached_or_parse("ATTKEY", pdf, config, force_rebuild=True) is None
+        assert M._call_cli_with_fallback(pdf, -1, -1, config, 30) is None
 
-    def test_timeout_returns_none(self, tmp_path, monkeypatch):
+    def test_timeout_returns_none_direct(self, tmp_path, monkeypatch):
+        """Direct _call_cli_with_fallback: subprocess timeout → None."""
         pdf = tmp_path / "paper.pdf"
         pdf.write_bytes(b"%PDF-1.4 fake")
         config = {"enabled": True, "backend": "pipeline", "timeout": 30}
@@ -151,22 +176,21 @@ class TestCliFallback:
             raise subprocess.TimeoutExpired(cmd, 30)
 
         monkeypatch.setattr(M.subprocess, "run", _raise_timeout)
-        assert M.read_cached_or_parse("ATTKEY", pdf, config, force_rebuild=True) is None
+        assert M._call_cli_with_fallback(pdf, -1, -1, config, 30) is None
 
-    def test_no_executable_returns_none(self, tmp_path, monkeypatch):
+    def test_no_executable_returns_none_direct(self, tmp_path, monkeypatch):
+        """Direct _call_cli_with_fallback: no executable resolved → None."""
         pdf = tmp_path / "paper.pdf"
         pdf.write_bytes(b"%PDF-1.4 fake")
         config = {"enabled": True, "backend": "hybrid"}
         monkeypatch.setattr(M.shutil, "which", lambda _n: None)
-        assert M.read_cached_or_parse("ATTKEY", pdf, config, force_rebuild=True) is None
+        assert M._call_cli_with_fallback(pdf, -1, -1, config, 30) is None
 
-    # ----- backend_override: pinned single backend, no cross-backend fallback -----
-
-    def test_pinned_hybrid_no_pipeline_fallback(self, tmp_path, monkeypatch):
-        """backend_override='hybrid' + hybrid fails → None, NOT retried as pipeline."""
+    def test_pinned_hybrid_no_pipeline_fallback_direct(self, tmp_path, monkeypatch):
+        """backend='hybrid' + no_pipeline_fallback=True + hybrid fails → None."""
         pdf = tmp_path / "paper.pdf"
         pdf.write_bytes(b"%PDF-1.4 fake")
-        config = {"enabled": True, "backend": "pipeline", "timeout": 30}  # config says pipeline...
+        config = {"enabled": True, "backend": "pipeline", "timeout": 30}
         monkeypatch.setattr(M.shutil, "which", lambda _n: "/usr/local/bin/mineru")
 
         calls = []
@@ -176,32 +200,113 @@ class TestCliFallback:
             return subprocess.CompletedProcess(cmd, returncode=1, stderr="OOM")
 
         monkeypatch.setattr(M.subprocess, "run", _run)
-        # ...but override forces hybrid, and hybrid fails → no pipeline retry
-        parsed = M.read_cached_or_parse("ATTKEY", pdf, config, force_rebuild=True, backend_override="hybrid")
-        assert parsed is None
-        # Only hybrid was tried; pipeline was NOT attempted (override pinned it).
+        # Force hybrid via backend kwarg; hybrid fails → no pipeline retry.
+        result = M._call_cli_with_fallback(
+            pdf, -1, -1, config, 30, backend="hybrid", no_pipeline_fallback=True
+        )
+        assert result is None
+        # Only hybrid was tried; pipeline was NOT attempted.
         assert calls == ["hybrid-auto-engine"]
 
-    def test_pinned_pipeline_no_hybrid_attempt(self, tmp_path, monkeypatch):
-        """backend_override='pipeline' → only pipeline runs, hybrid never tried."""
+
+# --------------------------------------------------------------------------- #
+# Dispatch routing: only 'cloud' is routed; api/CLI disabled at config layer
+# --------------------------------------------------------------------------- #
+class TestDispatchRoutingDisabled:
+    """Verify _dispatch_parse / read_cached_or_parse refuse non-cloud backends.
+
+    The api and local-CLI code paths are retained in the module but
+    _dispatch_parse will not route to them. read_cached_or_parse returns None
+    for any backend other than 'cloud', so callers fall back to PyMuPDF.
+    """
+
+    def test_dispatch_api_returns_none(self, tmp_path, monkeypatch):
+        """backend='api' with api_url configured → _dispatch_parse returns None."""
         pdf = tmp_path / "paper.pdf"
         pdf.write_bytes(b"%PDF-1.4 fake")
-        config = {"enabled": True, "backend": "hybrid", "timeout": 30}  # config says hybrid...
-        monkeypatch.setattr(M.shutil, "which", lambda _n: "/usr/local/bin/mineru")
-        monkeypatch.setattr(M.subprocess, "run", self._make_completed(md_content="pipeline ok"))
-        # ...but override forces pipeline only
-        parsed = M.read_cached_or_parse("ATTKEY", pdf, config, force_rebuild=True, backend_override="pipeline")
-        assert parsed is not None
-        assert parsed.source == "mineru:pipeline"
+        config = {"backend": "api", "api_url": "http://h:8000", "timeout": 30}
+        # Even if _call_mineru_api would succeed, dispatch must not call it.
+        api_called = []
+        monkeypatch.setattr(
+            M, "_call_mineru_api", lambda *a, **k: api_called.append(1) or ("md", None, "mineru:api")
+        )
+        assert M._dispatch_parse(pdf, -1, -1, config) is None
+        assert api_called == []
 
-    def test_pinned_cloud_failure_no_local_fallback(self, tmp_path, monkeypatch):
-        """backend_override='cloud' + cloud fails → None, NOT retried via local CLI."""
+    def test_dispatch_hybrid_returns_none(self, tmp_path, monkeypatch):
+        """backend='hybrid' with executable on PATH → _dispatch_parse returns None."""
+        pdf = tmp_path / "paper.pdf"
+        pdf.write_bytes(b"%PDF-1.4 fake")
+        config = {"backend": "hybrid", "timeout": 30}
+        monkeypatch.setattr(M.shutil, "which", lambda _n: "/usr/local/bin/mineru")
+        cli_called = []
+        monkeypatch.setattr(
+            M,
+            "_call_cli_with_fallback",
+            lambda *a, **k: cli_called.append(1) or ("md", None, "mineru:hybrid-auto-engine"),
+        )
+        assert M._dispatch_parse(pdf, -1, -1, config) is None
+        assert cli_called == []
+
+    def test_dispatch_pipeline_returns_none(self, tmp_path, monkeypatch):
+        """backend='pipeline' → _dispatch_parse returns None (CLI disabled)."""
+        pdf = tmp_path / "paper.pdf"
+        pdf.write_bytes(b"%PDF-1.4 fake")
+        config = {"backend": "pipeline", "timeout": 30}
+        monkeypatch.setattr(M.shutil, "which", lambda _n: "/usr/local/bin/mineru")
+        cli_called = []
+        monkeypatch.setattr(
+            M, "_call_cli_with_fallback", lambda *a, **k: cli_called.append(1) or ("md", None, "mineru:pipeline")
+        )
+        assert M._dispatch_parse(pdf, -1, -1, config) is None
+        assert cli_called == []
+
+    def test_dispatch_pinned_api_returns_none(self, tmp_path, monkeypatch):
+        """backend_override='api' → _dispatch_parse returns None (api disabled)."""
+        pdf = tmp_path / "paper.pdf"
+        pdf.write_bytes(b"%PDF-1.4 fake")
+        config = {"backend": "cloud", "cloud_token": "tok", "timeout": 30}
+        api_called = []
+        monkeypatch.setattr(
+            M, "_call_mineru_api", lambda *a, **k: api_called.append(1) or ("md", None, "mineru:api")
+        )
+        assert M._dispatch_parse(pdf, -1, -1, config, backend_override="api") is None
+        assert api_called == []
+
+    def test_read_cached_or_parse_hybrid_returns_none(self, tmp_path, monkeypatch):
+        """read_cached_or_parse with backend='hybrid' → None (cache miss + disabled)."""
+        pdf = tmp_path / "paper.pdf"
+        pdf.write_bytes(b"%PDF-1.4 fake")
+        config = {"enabled": True, "backend": "hybrid", "timeout": 30}
+        monkeypatch.setattr(M.shutil, "which", lambda _n: "/usr/local/bin/mineru")
+        # Even with a CLI that would succeed, routing is disabled → None.
+        cli_called = []
+        monkeypatch.setattr(
+            M,
+            "_call_cli_with_fallback",
+            lambda *a, **k: cli_called.append(1) or ("md", None, "mineru:hybrid-auto-engine"),
+        )
+        assert M.read_cached_or_parse("ATTKEY", pdf, config, force_rebuild=True) is None
+        assert cli_called == []
+
+    def test_read_cached_or_parse_api_returns_none(self, tmp_path, monkeypatch):
+        """read_cached_or_parse with backend='api' + api_url → None (api disabled)."""
+        pdf = tmp_path / "paper.pdf"
+        pdf.write_bytes(b"%PDF-1.4 fake")
+        config = {"enabled": True, "backend": "api", "api_url": "http://h:8000", "timeout": 30}
+        api_called = []
+        monkeypatch.setattr(
+            M, "_call_mineru_api", lambda *a, **k: api_called.append(1) or ("md", None, "mineru:api")
+        )
+        assert M.read_cached_or_parse("ATTKEY", pdf, config, force_rebuild=True) is None
+        assert api_called == []
+
+    def test_read_cached_or_parse_pinned_cloud_failure_returns_none(self, tmp_path, monkeypatch):
+        """backend_override='cloud' + cloud fails → None (no local CLI fallback)."""
         pdf = tmp_path / "paper.pdf"
         pdf.write_bytes(b"%PDF-1.4 fake")
         config = {"enabled": True, "backend": "pipeline", "cloud_token": "tok", "timeout": 30}
-        # Cloud returns None (failure)
         monkeypatch.setattr(M, "_call_mineru_cloud", lambda *a, **k: None)
-        # Local CLI would succeed — but it must NOT be called when pinned to cloud.
         local_called = []
         monkeypatch.setattr(
             M,
@@ -209,64 +314,22 @@ class TestCliFallback:
             lambda *a, **k: local_called.append("called") or ("md", None, "mineru:pipeline"),
         )
         parsed = M.read_cached_or_parse("ATTKEY", pdf, config, force_rebuild=True, backend_override="cloud")
-        assert parsed is None  # cloud failed, no fallback
-        assert local_called == []  # local CLI never invoked
-
-    def test_no_override_keeps_full_fallback_chain(self, tmp_path, monkeypatch):
-        """Without backend_override (None), the full fallback chain is intact."""
-        pdf = tmp_path / "paper.pdf"
-        pdf.write_bytes(b"%PDF-1.4 fake")
-        config = {"enabled": True, "backend": "cloud", "cloud_token": "tok", "timeout": 30}
-        # Cloud fails; local CLI should be tried (full fallback preserved).
-        monkeypatch.setattr(M, "_call_mineru_cloud", lambda *a, **k: None)
-        monkeypatch.setattr(M, "_call_cli_with_fallback", lambda *a, **k: ("md", None, "mineru:pipeline"))
-        parsed = M.read_cached_or_parse("ATTKEY", pdf, config, force_rebuild=True)
-        assert parsed is not None
-        assert parsed.source == "mineru:pipeline"
-
-    def test_pinned_cloud_no_token_returns_none_not_local(self, tmp_path, monkeypatch):
-        """Pinned cloud but no cloud_token → None, NOT silently run local CLI.
-
-        The caller pinned cloud specifically to avoid local GPU/CPU work;
-        falling through to local CLI would violate that contract.
-        """
-        pdf = tmp_path / "paper.pdf"
-        pdf.write_bytes(b"%PDF-1.4 fake")
-        config = {"enabled": True, "backend": "pipeline", "timeout": 30}  # no cloud_token
-        local_called = []
-        monkeypatch.setattr(
-            M,
-            "_call_cli_with_fallback",
-            lambda *a, **k: local_called.append("called") or ("md", None, "mineru:pipeline"),
-        )
-        parsed = M.read_cached_or_parse("ATTKEY", pdf, config, force_rebuild=True, backend_override="cloud")
-        assert parsed is None
-        assert local_called == []  # local CLI never invoked
-
-    def test_pinned_api_no_url_returns_none_not_local(self, tmp_path, monkeypatch):
-        """Pinned api but no api_url → None, NOT silently run local CLI."""
-        pdf = tmp_path / "paper.pdf"
-        pdf.write_bytes(b"%PDF-1.4 fake")
-        config = {"enabled": True, "backend": "pipeline", "timeout": 30}  # no api_url
-        local_called = []
-        monkeypatch.setattr(
-            M,
-            "_call_cli_with_fallback",
-            lambda *a, **k: local_called.append("called") or ("md", None, "mineru:pipeline"),
-        )
-        parsed = M.read_cached_or_parse("ATTKEY", pdf, config, force_rebuild=True, backend_override="api")
         assert parsed is None
         assert local_called == []
 
-    def test_unpinned_cloud_no_token_falls_to_local(self, tmp_path, monkeypatch):
-        """Without pinning, cloud-no-token should still fall back to local CLI."""
+    def test_read_cached_or_parse_cloud_no_token_returns_none(self, tmp_path, monkeypatch):
+        """backend='cloud' but no cloud_token → None (no local CLI fallback)."""
         pdf = tmp_path / "paper.pdf"
         pdf.write_bytes(b"%PDF-1.4 fake")
         config = {"enabled": True, "backend": "cloud", "timeout": 30}  # no cloud_token
-        monkeypatch.setattr(M, "_call_cli_with_fallback", lambda *a, **k: ("md", None, "mineru:pipeline"))
-        parsed = M.read_cached_or_parse("ATTKEY", pdf, config, force_rebuild=True)
-        assert parsed is not None
-        assert parsed.source == "mineru:pipeline"
+        local_called = []
+        monkeypatch.setattr(
+            M,
+            "_call_cli_with_fallback",
+            lambda *a, **k: local_called.append("called") or ("md", None, "mineru:pipeline"),
+        )
+        assert M.read_cached_or_parse("ATTKEY", pdf, config, force_rebuild=True) is None
+        assert local_called == []
 
 
 # --------------------------------------------------------------------------- #
@@ -401,23 +464,66 @@ class TestSplitPages:
 
 
 # --------------------------------------------------------------------------- #
-# API backend
+# API backend — disabled at the config layer (code retained)
 # --------------------------------------------------------------------------- #
 class TestApiBackend:
-    # These tests use the fake host ``h`` (non-resolvable); bypass the SSRF
-    # host check so the api-backend routing logic can be exercised. The guard
-    # itself is covered by TestMineruSSRFGuard below.
+    # The ``api`` backend (remote FastAPI /file_parse) is disabled at the config
+    # layer — _dispatch_parse will not route to it. The underlying
+    # ``_call_mineru_api`` implementation is retained for future re-enablement
+    # and is exercised directly by TestApiBackendCodeRetained below. These
+    # tests verify the disabled-routing behavior.
+
+    def test_api_routing_disabled_returns_none(self, tmp_path, monkeypatch):
+        """backend='api' + api_url configured → read_cached_or_parse returns None.
+
+        Even if _call_mineru_api would succeed, _dispatch_parse must not call
+        it (api is disabled at the config layer).
+        """
+        pdf = tmp_path / "paper.pdf"
+        pdf.write_bytes(b"%PDF-1.4 fake")
+        config = {"enabled": True, "backend": "api", "api_url": "http://h:8000", "timeout": 30}
+
+        api_called = []
+        monkeypatch.setattr(
+            M, "_call_mineru_api", lambda *a, **k: api_called.append(1) or ("md", None, "mineru:api")
+        )
+        assert M.read_cached_or_parse("ATTKEY", pdf, config, force_rebuild=True) is None
+        assert api_called == []
+
+    def test_api_failure_still_returns_none(self, tmp_path, monkeypatch):
+        """backend='api' + api failing → None (was already None; still None when disabled)."""
+        pdf = tmp_path / "paper.pdf"
+        pdf.write_bytes(b"%PDF-1.4 fake")
+        config = {"enabled": True, "backend": "api", "api_url": "http://h:8000", "timeout": 30}
+        # _call_mineru_api would return None (failure) — but it must not be called.
+        api_called = []
+        monkeypatch.setattr(M, "_call_mineru_api", lambda *a, **k: api_called.append(1) or None)
+        assert M.read_cached_or_parse("ATTKEY", pdf, config, force_rebuild=True) is None
+        assert api_called == []
+
+
+# --------------------------------------------------------------------------- #
+# Retained api code — direct invocation (not routed via _dispatch_parse)
+# --------------------------------------------------------------------------- #
+class TestApiBackendCodeRetained:
+    """Exercise the retained _call_mineru_api implementation directly.
+
+    The api backend is disabled at the config layer, but its code is kept in
+    the module. These tests call _call_mineru_api directly so the retained
+    code does not rot. If the api backend is re-enabled in the future, these
+    tests already cover the implementation.
+    """
+
     def _bypass_ssrf(self, monkeypatch):
         monkeypatch.setattr(M, "_url_is_public", lambda url: True)
 
-    def test_api_success(self, tmp_path, monkeypatch):
+    def test_api_code_success_direct_call(self, tmp_path, monkeypatch):
         import io
         import zipfile
 
         self._bypass_ssrf(monkeypatch)
         pdf = tmp_path / "paper.pdf"
         pdf.write_bytes(b"%PDF-1.4 fake")
-        config = {"enabled": True, "backend": "api", "api_url": "http://h:8000", "timeout": 30}
 
         # Build a fake zip response containing a .md.
         buf = io.BytesIO()
@@ -432,19 +538,17 @@ class TestApiBackend:
 
         fake_requests = type("R", (), {"post": staticmethod(lambda *a, **k: _FakeResp())})()
         monkeypatch.setitem(sys.modules, "requests", fake_requests)
-        # The function imports requests lazily inside; patch the module attr too.
-        monkeypatch.setattr(M, "_call_mineru_api", M._call_mineru_api)
 
-        parsed = M.read_cached_or_parse("ATTKEY", pdf, config, force_rebuild=True)
-        assert parsed is not None
-        assert parsed.source == "mineru:api"
-        assert "mc^2" in parsed.markdown
+        result = M._call_mineru_api(pdf, -1, -1, "http://h:8000", 30)
+        assert result is not None
+        md, _content_list, source = result
+        assert source == "mineru:api"
+        assert "mc^2" in md
 
-    def test_api_failure_returns_none(self, tmp_path, monkeypatch):
+    def test_api_code_failure_returns_none_direct(self, tmp_path, monkeypatch):
         self._bypass_ssrf(monkeypatch)
         pdf = tmp_path / "paper.pdf"
         pdf.write_bytes(b"%PDF-1.4 fake")
-        config = {"enabled": True, "backend": "api", "api_url": "http://h:8000", "timeout": 30}
 
         class _FakeResp:
             status_code = 500
@@ -454,7 +558,7 @@ class TestApiBackend:
         fake_requests = type("R", (), {"post": staticmethod(lambda *a, **k: _FakeResp())})()
         monkeypatch.setitem(sys.modules, "requests", fake_requests)
 
-        assert M.read_cached_or_parse("ATTKEY", pdf, config, force_rebuild=True) is None
+        assert M._call_mineru_api(pdf, -1, -1, "http://h:8000", 30) is None
 
 
 # --------------------------------------------------------------------------- #

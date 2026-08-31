@@ -9,11 +9,17 @@ LLM actually needs to read formula/table content.
 Backend strategy (configured via ``~/.config/zotero-mcp/config.json`` →
 ``mineru.backend``):
 
-- ``api``      — call a remote MinerU FastAPI service (``MINERU_API_URL``).
-                 Zero local dependency on torch/ray.
-- ``hybrid``   — local ``mineru`` CLI with ``-b hybrid-engine`` (GPU). Falls
-                 back to ``pipeline`` on OOM / non-zero exit.
-- ``pipeline`` — local ``mineru`` CLI with ``-b pipeline`` (CPU, always works).
+- ``cloud``   — MinerU cloud API at mineru.net (token-authed async upload +
+                poll). **The only currently supported backend.** Highest
+                accuracy (vlm 95+), no local torch/ray dependency.
+
+The ``api`` (remote FastAPI ``/file_parse``) and local CLI backends
+(``hybrid``/``pipeline``/``vlm``) are **disabled at the config layer** —
+``is_mineru_available`` returns False for them and ``_dispatch_parse`` will
+not route to them. Their implementation is **retained in this module** for
+future re-enablement; restoring support only requires relaxing the guards in
+``is_mineru_available`` and ``_dispatch_parse``. zotero-mcp stays torch-free
+on the host.
 
 Any failure returns ``None`` so the caller silently falls back to PyMuPDF.
 
@@ -62,7 +68,10 @@ class ParseResult:
 
     ``markdown`` is the full document (all pages, cross-page).
     ``pages`` is the per-page split (1-indexed in caller conventions; element 0 = page 1).
-    ``source`` is one of {"mineru:hybrid", "mineru:pipeline", "mineru:api", "mineru:cached"}.
+    ``source`` is one of {"mineru:cloud-vlm", "mineru:cloud-pipeline", "mineru:cached"}.
+    The legacy "mineru:hybrid"/"mineru:pipeline"/"mineru:api" labels are no
+    longer produced (those backends are disabled at the config layer) but the
+    code paths that emitted them are retained for future re-enablement.
     """
 
     markdown: str
@@ -127,16 +136,21 @@ def _resolve_timeout(config: dict[str, Any]) -> int:
 def is_mineru_available(config: dict[str, Any]) -> bool:
     """Quick check: can we actually run MinerU with the current config?
 
-    - ``cloud`` backend: requires a cloud_token (liveness probed lazily).
-    - ``api`` backend: requires a non-empty ``api_url``.
-    - ``hybrid``/``pipeline``: requires the mineru executable to resolve.
+    Only the ``cloud`` backend (MinerU online API at mineru.net) is currently
+    supported. The ``api`` backend (remote FastAPI ``/file_parse``) and the
+    local CLI backends (``hybrid``/``pipeline``/``vlm``) are **disabled at the
+    config layer** — their implementations are retained in this module for
+    future re-enablement, but ``_dispatch_parse`` will not route to them.
+    zotero-mcp therefore stays torch-free on the host.
+
+    Returns True iff ``backend == "cloud"`` AND a ``cloud_token`` is present
+    (config ``cloud_token`` field or ``MINERU_API_TOKEN`` env var).
     """
     backend = _normalize_backend(config.get("backend"))
     if backend == "cloud":
         return bool(config.get("cloud_token") or os.getenv("MINERU_API_TOKEN"))
-    if backend == "api":
-        return bool(config.get("api_url"))
-    return _resolve_executable(config) is not None
+    # api / hybrid / pipeline / vlm / hybrid-auto-engine / ... — all disabled.
+    return False
 
 
 # --------------------------------------------------------------------------- #
@@ -267,13 +281,16 @@ def _normalize_backend(raw: str | None) -> str:
     """Normalize a configured backend name to a canonical value.
 
     Backend families:
-      - ``cloud`` / ``online``: MinerU cloud API (mineru.net, token-authed)
-      - ``hybrid`` / ``hybrid-engine``: local hybrid-auto-engine (MinerU 3.x)
-      - ``vlm`` / ``vlm-engine``: local vlm-auto-engine
-      - ``pipeline``: local CPU pipeline (stable across versions)
-      - ``api``: local mineru-api server (legacy /file_parse)
+      - ``cloud`` / ``online``: MinerU cloud API (mineru.net, token-authed) —
+        the only backend currently routed by ``_dispatch_parse``.
+      - ``api``: local mineru-api server (legacy /file_parse). *Disabled* at
+        the config layer; code retained for future re-enablement.
+      - ``hybrid`` / ``hybrid-engine``: local hybrid-auto-engine (MinerU 3.x).
+        *Disabled*. Code retained.
+      - ``vlm`` / ``vlm-engine``: local vlm-auto-engine. *Disabled*.
+      - ``pipeline``: local CPU pipeline. *Disabled*. Code retained.
     """
-    b = (raw or "hybrid-auto-engine").lower().strip()
+    b = (raw or "cloud").lower().strip()
     # Map short forms → canonical names.
     if b in ("cloud", "online"):
         return "cloud"
@@ -483,7 +500,7 @@ def _call_mineru_api(
             endpoint,
             timeout,
             method="POST",
-            files={"files": (pdf_path.name, fh, "application/pdf")},
+            files={"files": (_ensure_pdf_upload_name(pdf_path), fh, "application/pdf")},
             data=data,
             stream=True,
         )
@@ -522,6 +539,21 @@ _MINERU_CLOUD_BASE = "https://mineru.net/api/v4"
 _CLOUD_POLL_INTERVAL = 3.0  # seconds between status checks
 
 
+def _ensure_pdf_upload_name(pdf_path: Path) -> str:
+    """Return a filename with a ``.pdf`` extension for cloud upload.
+
+    MinerU cloud API infers file type from the filename extension and
+    rejects uploads whose name lacks ``.pdf`` (e.g. some Zotero-stored
+    PDFs have no extension on disk: ``Chen et al. - 2022 - Slowly...``).
+    We synthesize an upload name with ``.pdf`` appended when needed —
+    no on-disk rename, just the multipart filename sent to the API.
+    """
+    name = pdf_path.name
+    if name.lower().endswith(".pdf"):
+        return name
+    return f"{name}.pdf"
+
+
 def _cloud_request(method: str, path: str, token: str, **kwargs) -> dict | None:
     """Authenticated request to the MinerU cloud API. Returns parsed JSON or None."""
     import requests
@@ -550,9 +582,18 @@ def _cloud_download_zip(zip_url: str) -> bytes | None:
     """
     resp = _guarded_download(zip_url, timeout=120)
     if resp is None:
+        logger.warning(f"MinerU cloud zip download failed (no response): {zip_url[:120]}")
         return None
     if resp.status_code != 200:
+        logger.warning(
+            f"MinerU cloud zip download HTTP {resp.status_code}: {resp.text[:200] if hasattr(resp, 'text') else ''}"
+        )
         return None
+    size = len(resp.content)
+    if size == 0:
+        logger.warning("MinerU cloud zip download returned 0 bytes")
+        return None
+    logger.info(f"MinerU cloud zip downloaded: {size} bytes")
     return resp.content
 
 
@@ -629,7 +670,7 @@ def _cloud_parse_single(
     source = f"mineru:cloud-{model_version}"
 
     # 1. Apply for upload URL.
-    file_entry: dict[str, Any] = {"name": pdf_path.name}
+    file_entry: dict[str, Any] = {"name": _ensure_pdf_upload_name(pdf_path)}
     # Cloud uses 1-indexed page_ranges string like "2,4-6"; we have 0-indexed.
     if start_page_0 >= 0 and end_page_0 >= 0:
         # Convert 0-based to 1-based for the API.
@@ -671,10 +712,19 @@ def _cloud_parse_single(
 
     # 3. Poll for completion.
     deadline = time.time() + timeout
+    poll_count = 0
+    last_state = None
     while time.time() < deadline:
         poll = _cloud_request("GET", f"/extract-results/batch/{batch_id}", token)
         if poll is None:
             # Network/transport error — may be transient, keep polling.
+            poll_count += 1
+            if poll_count % 10 == 1:  # log every ~30s, not every 3s
+                elapsed = int(time.time() - (deadline - timeout))
+                logger.info(
+                    f"MinerU cloud poll #{poll_count} ({elapsed}s elapsed): "
+                    f"no response (transient network error), retrying..."
+                )
             time.sleep(_CLOUD_POLL_INTERVAL)
             continue
         if poll.get("code") != 0:
@@ -687,16 +737,33 @@ def _cloud_parse_single(
             return None
         results = (poll.get("data") or {}).get("extract_result") or []
         if not results:
+            poll_count += 1
+            if poll_count % 10 == 1:
+                elapsed = int(time.time() - (deadline - timeout))
+                logger.info(
+                    f"MinerU cloud poll #{poll_count} ({elapsed}s elapsed): "
+                    f"waiting for results..."
+                )
             time.sleep(_CLOUD_POLL_INTERVAL)
             continue
         item = results[0]
         state = item.get("state")
+        # Log state transitions (not every poll — only when state changes).
+        # Using WARNING level so it's visible under the default ZOTERO_MCP_LOG_LEVEL=WARNING.
+        if state != last_state:
+            elapsed = int(time.time() - (deadline - timeout))
+            logger.warning(
+                f"MinerU cloud parse state -> {state or '(unknown)'} "
+                f"({elapsed}s elapsed, poll #{poll_count + 1})"
+            )
+            last_state = state
         if state == "done":
             zip_url = item.get("full_zip_url")
             if not zip_url:
                 logger.warning("MinerU cloud: done but no full_zip_url")
                 return None
             # 4. Download + extract.
+            logger.warning(f"MinerU cloud parse done ({model_version}), downloading results...")
             zip_bytes = _cloud_download_zip(zip_url)
             if zip_bytes is None:
                 return None
@@ -912,83 +979,46 @@ def _dispatch_parse(
     *,
     backend_override: str | None = None,
 ) -> tuple[str, list[dict] | None, str] | None:
-    """Route to cloud / api / local-CLI backend per config.
+    """Route to a MinerU backend per config.
 
-    Degradation chain (most-preferred first), when ``backend_override`` is
-    None (the default — full fallback):
-      1. ``cloud`` — MinerU online API (mineru.net, vlm→pipeline), if token set
-      2. ``api`` — local mineru-api server (/file_parse), if api_url set
-      3. local CLI — hybrid-auto-engine → pipeline (inside _call_cli_with_fallback)
+    Only the ``cloud`` backend (MinerU online API at mineru.net) is currently
+    routed. The ``api`` backend (remote FastAPI ``/file_parse``) and the local
+    CLI backends (``hybrid``/``pipeline``/``vlm``) are **disabled at the config
+    layer** — their implementations are retained in this module for future
+    re-enablement but this function will not call them. To restore one,
+    re-add the routing branch below.
 
     When ``backend_override`` is set, the caller pinned a single backend and
-    NO cross-backend fallback occurs — only that path runs, and a failure
-    returns None (cloud's internal vlm→pipeline model downgrade still applies,
-    since that is a model choice within the cloud backend, not a backend
-    crossing). This lets 精读 callers force a specific extraction method.
+    NO cross-backend fallback occurs — only that path runs (cloud's internal
+    vlm→pipeline model downgrade still applies, since that is a model choice
+    within the cloud backend, not a backend crossing). A pinned non-cloud
+    backend returns None immediately with a warning.
 
     Returns (markdown, content_list, source_label) or None.
     """
     backend = _normalize_backend(backend_override or config.get("backend"))
     timeout = _resolve_timeout(config)
-    pinned = backend_override is not None
 
-    # 1. Cloud backend.
-    cloud_token = config.get("cloud_token") or os.getenv("MINERU_API_TOKEN")
+    # 1. Cloud backend (the only supported backend).
     if backend == "cloud":
+        cloud_token = config.get("cloud_token") or os.getenv("MINERU_API_TOKEN")
         if not cloud_token:
-            if pinned:
-                # Pinned cloud but no token configured: must NOT silently
-                # fall through to local CLI (the caller pinned cloud to
-                # avoid local GPU/CPU work). Return None so the caller sees
-                # a clean failure instead of an unexpected local parse.
-                logger.warning("MinerU backend pinned to 'cloud' but no cloud_token configured; returning None.")
-                return None
-            logger.warning("MinerU backend=cloud but no cloud_token configured; falling back to local CLI.")
-        else:
-            cloud_model = config.get("cloud_model", "vlm")
-            result = _call_mineru_cloud(pdf_path, start_page_0, end_page_0, cloud_token, cloud_model, timeout)
-            if result is not None:
-                return result
-            if pinned:
-                # Pinned cloud: don't fall through to local CLI.
-                logger.info("MinerU cloud failed (pinned backend); not falling back.")
-                return None
-            logger.info("MinerU cloud failed; falling back to local CLI.")
+            logger.warning(
+                "MinerU backend is 'cloud' but no cloud_token configured "
+                "(set mineru.cloud_token or MINERU_API_TOKEN); returning None."
+            )
+            return None
+        cloud_model = config.get("cloud_model", "vlm")
+        return _call_mineru_cloud(pdf_path, start_page_0, end_page_0, cloud_token, cloud_model, timeout)
 
-    # 2. Local mineru-api backend (legacy /file_parse).
-    if backend == "api":
-        api_url = config.get("api_url")
-        if not api_url:
-            if pinned:
-                # Pinned api but no api_url: same rationale as cloud —
-                # don't silently run the local CLI.
-                logger.warning("MinerU backend pinned to 'api' but no api_url configured; returning None.")
-                return None
-            logger.warning("MinerU backend=api but no api_url configured; trying local CLI.")
-        else:
-            result = _call_mineru_api(pdf_path, start_page_0, end_page_0, api_url, timeout)
-            if result is not None:
-                return result
-            if pinned:
-                logger.info("MinerU api failed (pinned backend); not falling back.")
-                return None
-            logger.info("MinerU api backend failed; falling back to local CLI.")
-        # Fall through to local CLI (only when not pinned).
-
-    if pinned:
-        # Pinned local backend (hybrid/pipeline/etc.): run only that, no
-        # GPU→pipeline fallback within the local CLI either.
-        return _call_cli_with_fallback(
-            pdf_path,
-            start_page_0,
-            end_page_0,
-            config,
-            timeout,
-            backend=backend,
-            no_pipeline_fallback=True,
-        )
-
-    return _call_cli_with_fallback(pdf_path, start_page_0, end_page_0, config, timeout)
+    # 2. api / hybrid / pipeline / vlm — all disabled at the config layer.
+    #    Code retained for future re-enablement; routing is intentionally off.
+    logger.warning(
+        f"MinerU backend '{backend}' is disabled in this build (only 'cloud' "
+        f"is supported). Configure backend='cloud' with a cloud_token from "
+        f"https://mineru.net/apiManage/docs. Returning None."
+    )
+    return None
 
 
 def _invalidate_cache(attachment_key: str, config: dict[str, Any]) -> None:
