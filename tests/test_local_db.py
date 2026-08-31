@@ -1,6 +1,8 @@
+import sqlite3
 from pathlib import Path
 
-from zotero_mcp.local_db import LocalZoteroReader, ZoteroItem
+from zotero_mcp.extract import DEFAULT_ATTACHMENT_PRIORITY
+from zotero_mcp.local_db import PERSONAL_LIBRARY_GROUP_ID, LocalZoteroReader, ZoteroItem
 
 
 class FakeLocalZoteroReader(LocalZoteroReader):
@@ -11,7 +13,7 @@ class FakeLocalZoteroReader(LocalZoteroReader):
         self.db_path = "/dev/null"
         self._connection = None
         self.pdf_max_pages = 10
-        self.pdf_timeout = 30
+        self.attachment_priority = DEFAULT_ATTACHMENT_PRIORITY
         self._fake_text = fake_text
         self._fake_pdf_path = fake_pdf_path
 
@@ -112,7 +114,9 @@ class TestResolveAttachmentPath:
         base_dir.mkdir()
         # Write a prefs.js with baseAttachmentPath
         prefs = tmp_path / "prefs.js"
-        prefs.write_text(f'user_pref("extensions.zotero.baseAttachmentPath", "{base_dir}");\n')
+        prefs.write_text(
+            f'user_pref("extensions.zotero.baseAttachmentPath", "{base_dir}");\n'
+        )
         result = reader._resolve_attachment_path("X", "attachments:subfolder/paper.pdf")
         assert result == base_dir / "subfolder" / "paper.pdf"
 
@@ -171,13 +175,10 @@ class TestGetAttachmentPaths:
         assert reader.get_attachment_paths("MISSING") == []
 
     def test_multiple_attachments(self, tmp_path):
-        reader = self._make_reader(
-            tmp_path,
-            [
-                ("A", "storage:a.pdf", "application/pdf"),
-                ("B", "storage:b.html", "text/html"),
-            ],
-        )
+        reader = self._make_reader(tmp_path, [
+            ("A", "storage:a.pdf", "application/pdf"),
+            ("B", "storage:b.html", "text/html"),
+        ])
         result = reader.get_attachment_paths("PARENT")
         assert [a["key"] for a in result] == ["A", "B"]
 
@@ -261,7 +262,9 @@ def _create_feed_db(db_path: Path) -> None:
         VALUES (100, 'FEEDKEY1', 7, 10, '2026-06-01 10:00:00')
         """
     )
-    conn.execute("INSERT INTO feedItems (itemID, readTime, translatedTime) VALUES (100, NULL, NULL)")
+    conn.execute(
+        "INSERT INTO feedItems (itemID, readTime, translatedTime) VALUES (100, NULL, NULL)"
+    )
     conn.executemany(
         "INSERT INTO itemDataValues (valueID, value) VALUES (?, ?)",
         [
@@ -282,7 +285,9 @@ def _create_feed_db(db_path: Path) -> None:
             (26, 1005),
         ],
     )
-    conn.execute("INSERT INTO creators (creatorID, firstName, lastName) VALUES (1, 'Ada', 'Lovelace')")
+    conn.execute(
+        "INSERT INTO creators (creatorID, firstName, lastName) VALUES (1, 'Ada', 'Lovelace')"
+    )
     conn.execute("INSERT INTO itemCreators (itemID, creatorID) VALUES (100, 1)")
     conn.commit()
     conn.close()
@@ -314,6 +319,247 @@ def test_get_feed_items_includes_doi(tmp_path):
     assert items[0]["DOI"] == "10.1234/example.doi"
 
 
+# ---------------------------------------------------------------------------
+# get_key_group_map (#163): library attribution for the semantic indexer
+# ---------------------------------------------------------------------------
+
+GROUP_ID = 6015547
+
+
+def _create_multilib_db(db_path: Path) -> None:
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE libraries (
+            libraryID INTEGER PRIMARY KEY,
+            type TEXT NOT NULL,
+            editable INT NOT NULL,
+            filesEditable INT NOT NULL
+        );
+        CREATE TABLE groups (
+            groupID INTEGER PRIMARY KEY,
+            libraryID INT NOT NULL UNIQUE,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL,
+            version INT NOT NULL
+        );
+        CREATE TABLE items (
+            itemID INTEGER PRIMARY KEY,
+            key TEXT,
+            libraryID INT
+        );
+        CREATE TABLE deletedItems (
+            itemID INTEGER PRIMARY KEY
+        );
+        """
+    )
+    # libraryID 1 = personal ("user"), matching Zotero's own convention.
+    conn.execute("INSERT INTO libraries VALUES (1, 'user', 1, 1)")
+    conn.execute("INSERT INTO libraries VALUES (5, 'group', 1, 1)")
+    conn.execute("INSERT INTO libraries VALUES (10, 'feed', 0, 0)")
+    conn.execute("INSERT INTO libraries VALUES (20, 'publications', 1, 0)")
+    conn.execute(
+        f"INSERT INTO groups (groupID, libraryID, name, description, version) "
+        f"VALUES ({GROUP_ID}, 5, 'AI in entrepreneurship', '', 1)"
+    )
+
+    conn.execute("INSERT INTO items (itemID, key, libraryID) VALUES (1, 'USERKEY1', 1)")
+    conn.execute("INSERT INTO items (itemID, key, libraryID) VALUES (2, 'GROUPKEY1', 5)")
+    conn.execute("INSERT INTO items (itemID, key, libraryID) VALUES (3, 'FEEDKEY1', 10)")
+    conn.execute("INSERT INTO items (itemID, key, libraryID) VALUES (4, 'PUBKEY1', 20)")
+    conn.execute("INSERT INTO items (itemID, key, libraryID) VALUES (5, 'DELETEDKEY1', 1)")
+    conn.execute("INSERT INTO deletedItems (itemID) VALUES (5)")
+    conn.commit()
+    conn.close()
+
+
+def test_get_key_group_map_user_library_maps_to_zero(tmp_path):
+    db_path = tmp_path / "zotero.sqlite"
+    _create_multilib_db(db_path)
+    reader = LocalZoteroReader(db_path=str(db_path))
+    try:
+        result = reader.get_key_group_map()
+    finally:
+        reader.close()
+    assert result.groups["USERKEY1"] == PERSONAL_LIBRARY_GROUP_ID == 0
+
+
+def test_get_key_group_map_group_library_maps_to_group_id(tmp_path):
+    db_path = tmp_path / "zotero.sqlite"
+    _create_multilib_db(db_path)
+    reader = LocalZoteroReader(db_path=str(db_path))
+    try:
+        result = reader.get_key_group_map()
+    finally:
+        reader.close()
+    assert result.groups["GROUPKEY1"] == GROUP_ID
+
+
+def test_get_key_group_map_feed_items_excluded_not_personal(tmp_path):
+    db_path = tmp_path / "zotero.sqlite"
+    _create_multilib_db(db_path)
+    reader = LocalZoteroReader(db_path=str(db_path))
+    try:
+        result = reader.get_key_group_map()
+    finally:
+        reader.close()
+    assert "FEEDKEY1" not in result.groups
+    assert "FEEDKEY1" in result.excluded_keys
+
+
+def test_get_key_group_map_publications_library_excluded_not_personal(tmp_path):
+    """'My Publications' has no group_id equivalent; must not silently
+    collapse into the personal library (0)."""
+    db_path = tmp_path / "zotero.sqlite"
+    _create_multilib_db(db_path)
+    reader = LocalZoteroReader(db_path=str(db_path))
+    try:
+        result = reader.get_key_group_map()
+    finally:
+        reader.close()
+    assert "PUBKEY1" not in result.groups
+    assert "PUBKEY1" in result.excluded_keys
+
+
+def test_get_key_group_map_includes_trashed_items_with_their_library(tmp_path):
+    """Trashed items stay in the map, attributed to their true library: the
+    group_id backfill relies on that so each library's own scoped deletion
+    pass cleans its trash. Live-item scans never look trashed keys up —
+    their item sources already exclude deletedItems."""
+    db_path = tmp_path / "zotero.sqlite"
+    _create_multilib_db(db_path)
+    reader = LocalZoteroReader(db_path=str(db_path))
+    try:
+        result = reader.get_key_group_map()
+    finally:
+        reader.close()
+    assert result.groups["DELETEDKEY1"] == 0
+    assert "DELETEDKEY1" not in result.excluded_keys
+
+
+# ---------------------------------------------------------------------------
+# _iter_parent_attachments: trashed attachments excluded, PDFs first
+# ---------------------------------------------------------------------------
+
+
+def _create_attachment_db(db_path: Path) -> None:
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE items (
+            itemID INTEGER PRIMARY KEY,
+            key TEXT,
+            libraryID INT
+        );
+        CREATE TABLE itemAttachments (
+            itemID INTEGER PRIMARY KEY,
+            parentItemID INT,
+            path TEXT,
+            contentType TEXT
+        );
+        CREATE TABLE deletedItems (
+            itemID INTEGER PRIMARY KEY
+        );
+        """
+    )
+    conn.execute("INSERT INTO items (itemID, key, libraryID) VALUES (1, 'PARENT1', 1)")
+    conn.commit()
+    conn.close()
+
+
+def _add_attachment(db_path, item_id, key, parent_id, path, content_type, trashed=False):
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "INSERT INTO items (itemID, key, libraryID) VALUES (?, ?, 1)", (item_id, key)
+    )
+    conn.execute(
+        "INSERT INTO itemAttachments (itemID, parentItemID, path, contentType) "
+        "VALUES (?, ?, ?, ?)",
+        (item_id, parent_id, path, content_type),
+    )
+    if trashed:
+        conn.execute("INSERT INTO deletedItems (itemID) VALUES (?)", (item_id,))
+    conn.commit()
+    conn.close()
+
+
+class TestIterParentAttachments:
+    def _iter(self, db_path):
+        reader = LocalZoteroReader(db_path=str(db_path))
+        try:
+            return list(reader._iter_parent_attachments(1))
+        finally:
+            reader.close()
+
+    def test_trashed_attachment_excluded(self, tmp_path):
+        """A trashed HTML snapshot must not shadow the live PDF (its stale
+        .zotero-ft-cache would otherwise win the fulltext fallback)."""
+        db_path = tmp_path / "zotero.sqlite"
+        _create_attachment_db(db_path)
+        _add_attachment(db_path, 10, "HTMLKEY", 1, "storage:page.html", "text/html", trashed=True)
+        _add_attachment(db_path, 11, "PDFKEY", 1, "storage:paper.pdf", "application/pdf")
+        result = self._iter(db_path)
+        assert [r[0] for r in result] == ["PDFKEY"]
+
+    def test_pdf_yielded_before_other_types(self, tmp_path):
+        """PDFs come first regardless of insertion order, so the ft-cache
+        fallback in _extract_fulltext_for_item prefers the PDF's cache."""
+        db_path = tmp_path / "zotero.sqlite"
+        _create_attachment_db(db_path)
+        _add_attachment(db_path, 10, "HTMLKEY", 1, "storage:page.html", "text/html")
+        _add_attachment(db_path, 11, "PDFKEY", 1, "storage:paper.pdf", "application/pdf")
+        result = self._iter(db_path)
+        assert [r[0] for r in result] == ["PDFKEY", "HTMLKEY"]
+
+    def test_only_trashed_attachments_yields_nothing(self, tmp_path):
+        db_path = tmp_path / "zotero.sqlite"
+        _create_attachment_db(db_path)
+        _add_attachment(db_path, 10, "GONE1", 1, "storage:a.pdf", "application/pdf", trashed=True)
+        _add_attachment(db_path, 11, "GONE2", 1, "storage:b.html", "text/html", trashed=True)
+        assert self._iter(db_path) == []
+
+    def test_null_content_type_sorts_after_pdf(self, tmp_path):
+        """NULL contentType must neither crash the ORDER BY nor outrank a PDF."""
+        db_path = tmp_path / "zotero.sqlite"
+        _create_attachment_db(db_path)
+        _add_attachment(db_path, 10, "NOCTYPE", 1, "storage:mystery.bin", None)
+        _add_attachment(db_path, 11, "PDFKEY", 1, "storage:paper.pdf", "application/pdf")
+        result = self._iter(db_path)
+        assert [r[0] for r in result] == ["PDFKEY", "NOCTYPE"]
+
+    def test_trashed_parent_does_not_hide_live_attachment(self, tmp_path):
+        """Only the attachment's own deletedItems row is checked; parent-trash
+        inheritance is deliberately out of scope (callers resolve the parent
+        through live-item paths that already exclude trashed parents)."""
+        db_path = tmp_path / "zotero.sqlite"
+        _create_attachment_db(db_path)
+        conn = sqlite3.connect(db_path)
+        conn.execute("INSERT INTO deletedItems (itemID) VALUES (1)")
+        conn.commit()
+        conn.close()
+        _add_attachment(db_path, 10, "PDFKEY", 1, "storage:paper.pdf", "application/pdf")
+        result = self._iter(db_path)
+        assert [r[0] for r in result] == ["PDFKEY"]
+
+
+def test_get_key_group_map_full_key_set_partition(tmp_path):
+    """Every key — trashed included — ends up in exactly one of
+    groups/excluded_keys."""
+    db_path = tmp_path / "zotero.sqlite"
+    _create_multilib_db(db_path)
+    reader = LocalZoteroReader(db_path=str(db_path))
+    try:
+        result = reader.get_key_group_map()
+    finally:
+        reader.close()
+    assert set(result.groups) | result.excluded_keys == {
+        "USERKEY1", "GROUPKEY1", "FEEDKEY1", "PUBKEY1", "DELETEDKEY1",
+    }
+    assert not (set(result.groups) & result.excluded_keys)
+
+# ---------------------------------------------------------------------------
+# Fork: reverse-lookup attachment keys -> parent item keys (MinerU indexing)
+# ---------------------------------------------------------------------------
 def _create_attachments_db(db_path: Path) -> None:
     """Minimal schema for get_parent_keys_for_attachments: items + itemAttachments."""
     import sqlite3
@@ -371,7 +617,6 @@ def _create_attachments_db(db_path: Path) -> None:
     )
     conn.commit()
     conn.close()
-
 
 class TestGetParentKeysForAttachments:
     """Reverse-lookup attachment keys → parent item keys."""

@@ -66,7 +66,9 @@ from zotero_mcp.tools.annotations import (  # noqa: F401
     get_annotations,
     get_batch_task_status,
     get_notes,
+    get_notes_tool,
     get_page_layout,
+    manage_note,
     search_notes,
     update_annotation,
     update_note,
@@ -90,7 +92,6 @@ from zotero_mcp.tools.retrieval import (  # noqa: F401
     get_item_fulltext,
     get_item_metadata,
     get_item_related,
-    get_items_children,
     get_recent,
     get_tags,
     list_feeds,
@@ -117,7 +118,10 @@ from zotero_mcp.tools.write import (  # noqa: F401
     add_by_isbn,
     add_by_url,
     add_from_file,
+    add_item,
     add_item_relation,
+    attach_file,
+    batch_update,
     batch_update_extra,
     batch_update_tags,
     create_collection,
@@ -136,9 +140,19 @@ from zotero_mcp.tools.write import (  # noqa: F401
     upgrade_preprint_pdfs,
     upgrade_preprints,
 )
+
+from zotero_mcp.toolsets import apply_toolsets
 from zotero_mcp.utils import (  # noqa: F401
     clean_html,
     format_creators,
     format_item_result,
     is_local_mode,
 )
+
+# Apply the optional-toolset profile now that every tool module above has
+# registered its tools. This uses the stdio default; `zotero-mcp serve`
+# re-applies once the real transport is known, which is what lets the ChatGPT
+# connector tools appear only when the server is actually reachable by ChatGPT.
+# Callers that import `mcp` directly still get the configured profile rather
+# than the full surface.
+apply_toolsets(mcp)

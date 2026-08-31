@@ -7,6 +7,9 @@ class DummyContext:
 
 
 class FakeFeedReader:
+    def __init__(self, db_path=None):
+        pass
+
     def get_feeds(self):
         return [
             {

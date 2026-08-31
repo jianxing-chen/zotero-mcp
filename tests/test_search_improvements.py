@@ -147,6 +147,58 @@ class TestSearchWithVariants:
         assert captured["itemType"] == "-note"
         assert captured["tag"] == ["research"]
 
+    def test_titlecreatoryear_excludes_note_content_matches(self):
+        # Zotero's own server-side quicksearch matches a standalone note's
+        # *content* in titleCreatorYear mode (notes have no title/creator/
+        # year field) — that contradicts the #167 SQL backend, which never
+        # matches note content there. _search_with_variants must filter
+        # these out so both backends agree (see _exclude_note_content_matches).
+        paper = {"key": "P1", "data": {"itemType": "journalArticle", "title": "Paper"}}
+        note = {"key": "N1", "data": {"itemType": "note", "note": "mentions Paper"}}
+        zot = self._make_zot({"Paper": [paper, note]})
+
+        result = search_module._search_with_variants(
+            zot, "Paper", "titleCreatorYear", 10
+        )
+
+        keys = {item["key"] for item in result}
+        assert keys == {"P1"}
+
+    def test_everything_mode_still_includes_notes(self):
+        # 'everything' mode is content search by design — must stay untouched.
+        note = {"key": "N1", "data": {"itemType": "note", "note": "mentions Paper"}}
+        zot = self._make_zot({"Paper": [note]})
+
+        result = search_module._search_with_variants(
+            zot, "Paper", "everything", 10
+        )
+
+        assert {item["key"] for item in result} == {"N1"}
+
+
+class TestSearchItemsCollectionKeyExcludesNotes:
+    """search_items's collection_key path bypasses _search_with_variants
+    entirely (queries zot.collection_items directly) — same
+    _exclude_note_content_matches fix must be wired in there too."""
+
+    def test_titlecreatoryear_excludes_note_content_matches(self, monkeypatch):
+        from zotero_mcp import server
+
+        paper = {"key": "P1", "data": {"itemType": "journalArticle", "title": "Paper"}}
+        note = {"key": "N1", "data": {"itemType": "note", "note": "mentions Paper"}}
+        fake_zot = MagicMock()
+        fake_zot.collection = MagicMock(return_value={"key": "COLL0001"})
+        fake_zot.collection_items = MagicMock(return_value=[paper, note])
+        monkeypatch.setattr(search_module._client, "get_zotero_client", lambda: fake_zot)
+
+        result = server.search_items(
+            query="Paper", qmode="titleCreatorYear", collection_key="COLL0001",
+            ctx=DummyContext(),
+        )
+
+        assert "P1" in result
+        assert "N1" not in result
+
 
 # ---------------------------------------------------------------------------
 # TestFallbackCascade
@@ -603,3 +655,76 @@ class TestCascadeTimeout:
 
         # Should return "no items found" without trying all strategies
         assert "No items found" in result
+
+
+# ---------------------------------------------------------------------------
+# search_by_tag scope legibility (#418)
+# ---------------------------------------------------------------------------
+
+def _tagged(key):
+    return {"key": key, "data": {"key": key, "itemType": "journalArticle",
+                                 "title": f"Item {key}", "creators": [], "tags": [],
+                                 "collections": ["OTHERCOL"]}}
+
+
+class _ScopeZotero:
+    """Collection is empty for the tag; the library is not."""
+
+    def __init__(self, library_hits):
+        self._library_hits = library_hits
+
+    def collection(self, key):
+        return {"key": key, "data": {"name": "Literature Review"}}
+
+    def collection_items(self, key, **kwargs):
+        return []
+
+    def add_parameters(self, **kwargs):
+        pass
+
+    def items(self, **kwargs):
+        return self._library_hits
+
+
+def test_empty_scoped_tag_search_names_the_collection(monkeypatch):
+    """The bare "no items found" read as "this tag matches nothing anywhere",
+    which invites a retry without collection_key whose library-wide results
+    look scoped."""
+    from zotero_mcp import server
+    monkeypatch.setattr("zotero_mcp.client.get_zotero_client",
+                        lambda: _ScopeZotero([_tagged("KYYQ2HSY")]))
+
+    result = server.search_by_tag(tag=["didn't use"], collection_key="MSYFGVKG",
+                                  limit=6, ctx=DummyContext())
+
+    assert "MSYFGVKG" in result
+    assert "collection was searched" in result
+    assert "without collection_key searches the whole library" in result
+
+
+def test_unscoped_tag_search_says_it_is_unscoped(monkeypatch):
+    """A library-wide result must not be mistakable for a scoped one."""
+    from zotero_mcp import server
+    hits = [_tagged(k) for k in ("KYYQ2HSY", "YLVWDV8K", "JVB8MG2B")]
+    monkeypatch.setattr("zotero_mcp.client.get_zotero_client",
+                        lambda: _ScopeZotero(hits))
+
+    result = server.search_by_tag(tag=["didn't use"], limit=6, ctx=DummyContext())
+
+    assert "entire library" in result
+    assert "no collection scope applied" in result
+    assert "in Collection" not in result
+
+
+def test_scoped_hits_still_name_the_collection(monkeypatch):
+    from zotero_mcp import server
+
+    class Scoped(_ScopeZotero):
+        def collection_items(self, key, **kwargs):
+            return [_tagged("INSCOPE1")]
+
+    monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: Scoped([]))
+    result = server.search_by_tag(tag=["t"], collection_key="MSYFGVKG",
+                                  limit=6, ctx=DummyContext())
+    assert "in Collection MSYFGVKG" in result
+    assert "entire library" not in result

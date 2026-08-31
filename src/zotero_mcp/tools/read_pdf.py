@@ -14,6 +14,8 @@ from zotero_mcp import client as _client
 from zotero_mcp import mineru_client
 from zotero_mcp import utils as _utils
 from zotero_mcp._app import mcp
+from zotero_mcp.config import load_config
+from zotero_mcp.extract import extract_pdf, pdf_page_count
 from zotero_mcp.tools import _helpers
 
 if TYPE_CHECKING:
@@ -22,14 +24,43 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _cleanup_path(file_path: str) -> None:
-    """Remove a downloaded PDF and its parent temp directory."""
-    try:
-        parent = os.path.dirname(file_path)
-        if os.path.exists(parent) and parent.startswith(tempfile.gettempdir()):
-            import shutil
+_TMPDIR_PREFIX = "zotero_pdf_"
 
-            shutil.rmtree(parent, ignore_errors=True)
+
+def _cleanup_path(file_path: str) -> None:
+    """Remove a PDF this module downloaded, along with the directory it made.
+
+    Deletes the file's *parent directory*, so it must only ever be handed a
+    path inside a directory this module created with ``mkdtemp``. Two things
+    are checked before removing anything, both of which have bitten:
+
+    - The directory's name must carry our ``zotero_pdf_`` prefix. A bare
+      "is it under the temp dir" test is not enough: on Linux
+      ``gettempdir()`` is ``/tmp``, so a path like ``/tmp/paper.pdf`` has
+      ``/tmp`` as its parent and passes that test, and the call then wipes
+      the entire system temp directory. macOS hides the bug, because there
+      ``gettempdir()`` is under ``/var/folders`` and the prefix never
+      matches ``/tmp``.
+    - The directory must still be a strict subdirectory of the temp root, so
+      the root itself can never be the target.
+
+    A file resolved out of the user's Zotero storage must never be passed
+    here: deleting its parent takes the user's own copy of the PDF with it.
+    """
+    try:
+        parent = os.path.dirname(os.path.abspath(file_path))
+        temp_root = os.path.abspath(tempfile.gettempdir())
+        if not os.path.isdir(parent):
+            return
+        if os.path.samefile(parent, temp_root):
+            return
+        if os.path.commonpath([parent, temp_root]) != temp_root:
+            return
+        if not os.path.basename(parent).startswith(_TMPDIR_PREFIX):
+            return
+        import shutil
+
+        shutil.rmtree(parent, ignore_errors=True)
     except Exception:
         pass
 
@@ -69,16 +100,23 @@ def _get_pdf_path(item_key: str, ctx: Context) -> tuple[str, str, str | None] | 
         from zotero_mcp.local_db import LocalZoteroReader
 
         if _utils.is_local_mode():
-            config_path = Path.home() / ".config" / "zotero-mcp" / "config.json"
-            zotero_db_path = None
-            if config_path.exists():
-                try:
-                    with open(config_path, encoding="utf-8") as _f:
-                        _cfg = json.load(_f)
-                        zotero_db_path = _cfg.get("semantic_search", {}).get("zotero_db_path")
-                except Exception:
-                    pass
-            with LocalZoteroReader(db_path=zotero_db_path) as reader:
+            with LocalZoteroReader(db_path=load_config().resolve_zotero_db_path()) as reader:
+                # The key may name the PDF attachment itself. Attachments have
+                # no children, so the parent scan below comes up empty and we
+                # would wrongly report "No PDF attachment found" (#372).
+                attachment = reader.get_attachment_by_key(item_key)
+                if attachment and "pdf" in (attachment["content_type"] or "").lower():
+                    resolved = reader._resolve_attachment_path(
+                        item_key, attachment["zotero_path"] or ""
+                    )
+                    if not (resolved and resolved.exists()):
+                        # Recorded filename drifted on disk — scan the folder (#291)
+                        resolved = reader._scan_storage_for_attachment(
+                            item_key, attachment["content_type"]
+                        )
+                    if resolved and resolved.exists():
+                        return str(resolved), attachment["title"] or item_key, False
+
                 local_item = reader.get_item_by_key(item_key)
                 if local_item:
                     for att_key, path, ctype in reader._iter_parent_attachments(local_item.item_id):
@@ -117,7 +155,9 @@ def _get_pdf_path(item_key: str, ctx: Context) -> tuple[str, str, str | None] | 
 
     # Fallback: resolve via the multi-source downloader (local -> WebDAV ->
     # Zotero cloud) so WebDAV-backed attachments work, not just cloud storage.
-    attachment = _client.get_attachment_details(zot, item)
+    # PDF only: this tool renders page ranges, so a markdown-first
+    # attachment_priority must not hand it a file it cannot paginate.
+    attachment = _client.get_attachment_details(zot, item, priority=("pdf",))
     if not attachment:
         return None
 
@@ -653,8 +693,10 @@ def _extract_with_pymupdf(
             text = page.get_text()
             output.append(f"## Page {page_num + 1}")
             output.append("")
-            if text.strip():
-                output.append(text.strip())
+            if markdown.strip():
+                output.append(markdown.strip())
+            elif page_index in doc.needs_ocr:
+                output.append("*[No text layer on this page — it is a scanned image]*")
             else:
                 output.append("*[No extractable text on this page]*")
             output.append("")

@@ -1,27 +1,43 @@
 """
 ChromaDB client for semantic search functionality.
 
-This module provides persistent vector database storage and embedding functions
-for semantic search over Zotero libraries.
+This module provides persistent vector database storage for semantic search
+over Zotero libraries.
+
+The embedding functions themselves now live in :mod:`zotero_mcp.embeddings`.
+They are re-exported below because ``zotero_mcp.chroma_client`` is where every
+caller — and every existing test — imports them from, and because ChromaDB's
+registry maps a persisted collection's embedding-function name to a specific
+class object, so the re-exported name has to *be* the registered class.
 """
 
 import json
 import logging
 import os
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
+
+# Re-exported for backward compatibility; see the module docstring.
+from zotero_mcp.embeddings.providers import (  # noqa: F401
+    CUSTOM_EMBEDDING_FUNCTIONS,
+    GeminiEmbeddingFunction,
+    HuggingFaceEmbeddingFunction,
+    OllamaEmbeddingFunction,
+    OpenAIEmbeddingFunction,
+    ensure_embedding_functions_registered,
+)
+from zotero_mcp.embeddings.registry import create_embedding_function, merge_env_config
+from zotero_mcp.utils import install_hint, suppress_stdout
 
 try:
     import chromadb
     from chromadb import Documents, EmbeddingFunction, Embeddings
     from chromadb.config import Settings
-    from chromadb.utils.embedding_functions import register_embedding_function
 except ImportError as e:
     raise ImportError(
         "chromadb is required for semantic search. Install it with: pip install 'zotero-mcp-server[semantic]'"
     ) from e
-
-from zotero_mcp.utils import suppress_stdout
 
 logger = logging.getLogger(__name__)
 
@@ -491,6 +507,11 @@ class ChromaClient:
 
         self.persist_directory = persist_directory
 
+        # Make sure our classes — not ChromaDB's same-named built-ins — answer
+        # the registry lookup used when a persisted collection config is
+        # rebuilt below (issue #382).
+        ensure_embedding_functions_registered()
+
         # Initialize ChromaDB client with stdout suppression
         with suppress_stdout():
             self.client = chromadb.PersistentClient(
@@ -590,7 +611,15 @@ class ChromaClient:
                     raise
 
     def _create_embedding_function(self) -> EmbeddingFunction:
-        """Create the appropriate embedding function based on configuration."""
+        """Create the appropriate embedding function based on configuration.
+
+        The provider registry owns the model-string -> embedding-function
+        mapping; see :func:`zotero_mcp.embeddings.registry.resolve_provider`
+        for the resolution rules. OpenAI is special-cased to this module's
+        ``OpenAIEmbeddingFunction``, which carries the fork's ``dimensions``
+        / rate-limit / request-batching support on top of the registry's
+        provider.
+        """
         if self.embedding_model == "openai":
             model_name = self.embedding_config.get("model_name", "text-embedding-3-small")
             api_key = self.embedding_config.get("api_key")
@@ -603,35 +632,7 @@ class ChromaClient:
                 rate_limit_rps=self.embedding_config.get("rate_limit_rps"),
                 dimensions=self.embedding_config.get("dimensions"),
             )
-
-        elif self.embedding_model == "gemini":
-            model_name = self.embedding_config.get("model_name", "gemini-embedding-001")
-            api_key = self.embedding_config.get("api_key")
-            base_url = self.embedding_config.get("base_url")
-            return GeminiEmbeddingFunction(model_name=model_name, api_key=api_key, base_url=base_url)
-
-        elif self.embedding_model == "ollama":
-            model_name = self.embedding_config.get("model_name", "qwen3-embedding")
-            base_url = self.embedding_config.get("base_url")
-            return OllamaEmbeddingFunction(model_name=model_name, base_url=base_url)
-
-        elif self.embedding_model == "qwen":
-            model_name = self.embedding_config.get("model_name", "Qwen/Qwen3-Embedding-0.6B")
-            return HuggingFaceEmbeddingFunction(model_name=model_name)
-
-        elif self.embedding_model == "embeddinggemma":
-            model_name = self.embedding_config.get("model_name", "google/embeddinggemma-300m")
-            return HuggingFaceEmbeddingFunction(model_name=model_name)
-
-        elif self.embedding_model not in ["default", "openai", "gemini", "ollama"]:
-            # Treat any other value as a HuggingFace model name
-            return HuggingFaceEmbeddingFunction(model_name=self.embedding_model)
-
-        else:
-            # Use ChromaDB's default embedding function (all-MiniLM-L6-v2)
-            ef = chromadb.utils.embedding_functions.DefaultEmbeddingFunction()
-            ef.max_input_tokens = 256  # all-MiniLM-L6-v2 max_seq_length
-            return ef
+        return create_embedding_function(self.embedding_model, self.embedding_config)
 
     @property
     def embedding_max_tokens(self) -> int:
@@ -705,12 +706,18 @@ class ChromaClient:
         returned asynchronously without calling the realtime embeddings API.
         """
         try:
-            self.collection.upsert(
-                documents=documents,
-                metadatas=metadatas,
-                ids=ids,
-                embeddings=embeddings,
-            )
+            # Same max_batch_size constraint as upsert_documents.
+            try:
+                max_batch = int(self.client.get_max_batch_size())
+            except Exception:
+                max_batch = 5000
+            for i in range(0, len(ids), max_batch):
+                self.collection.upsert(
+                    documents=documents[i:i + max_batch],
+                    metadatas=metadatas[i:i + max_batch],
+                    ids=ids[i:i + max_batch],
+                    embeddings=embeddings[i:i + max_batch],
+                )
             logger.info(f"Upserted {len(documents)} precomputed embeddings to ChromaDB collection")
         except Exception as e:
             logger.error(f"Error upserting precomputed embeddings to ChromaDB: {e}")
@@ -788,7 +795,7 @@ class ChromaClient:
             logger.error(f"Error deleting documents from ChromaDB: {e}")
             raise
 
-    def delete_item_chunks(self, item_key: str) -> None:
+    def delete_item_chunks(self, item_key: str, group_id: int | None = None) -> None:
         """Delete all passage chunks belonging to one item (chunked collections).
 
         Passage chunks carry ``parent_item_key`` in their metadata; deleting by
@@ -796,11 +803,21 @@ class ChromaClient:
         chunks are re-upserted, so a document that shrank to fewer passages
         never leaves orphaned chunks behind. No-op-safe on item-level
         collections (nothing matches the filter).
+
+        Args:
+            item_key: Parent item whose chunks to delete.
+            group_id: When given, restrict the delete to chunks attributed to
+                that library — the deletion pass passes its run scope so a
+                mixed-attribution chunk set (partial rewrite, key collision)
+                never loses another library's chunks.
         """
+        where: dict[str, Any] = {"parent_item_key": item_key}
+        if group_id is not None:
+            where = {"$and": [{"parent_item_key": item_key}, {"group_id": int(group_id)}]}
         try:
-            self.collection.delete(where={"parent_item_key": item_key})
+            self.collection.delete(where=where)
         except Exception as e:
-            logger.debug(f"delete_item_chunks({item_key}) failed: {e}")
+            logger.warning(f"delete_item_chunks({item_key}) failed: {e}")
 
     def get_collection_info(self) -> dict[str, Any]:
         """Get information about the collection."""
@@ -844,13 +861,19 @@ class ChromaClient:
 
     def get_document_metadata(self, doc_id: str) -> dict[str, Any] | None:
         """
-        Get metadata for a document if it exists.
+        Get metadata for an item if it is indexed.
+
+        With passage chunking enabled, an item is stored only under its chunk
+        ids (``<key>#<n>``) and never under the bare item key, so an exact-id
+        lookup on the key alone misses every chunked item. Chunk 0 carries the
+        same item-level metadata (``date_modified``, ``has_fulltext``) that
+        callers need, so fall back to it.
 
         Args:
-            doc_id: Document ID to look up
+            doc_id: Item key (or full document id) to look up
 
         Returns:
-            Metadata dictionary if document exists, None otherwise
+            Metadata dictionary if the item is indexed, None otherwise
         """
         try:
             result = self.collection.get(ids=[doc_id], include=["metadatas"])
@@ -870,18 +893,91 @@ class ChromaClient:
         except Exception:
             return set()
 
-    def get_all_ids(self) -> set[str]:
+    def get_all_ids(self, where: dict[str, Any] | None = None) -> set[str]:
         """Return every id currently stored in the collection.
 
         Used by incremental sync to compute deletions: items in the local
         collection but no longer present in the Zotero library.
+
+        Args:
+            where: Optional ChromaDB metadata filter (e.g.
+                ``{"group_id": 0}``) applied DB-side. Documents missing a
+                filtered key never match, so callers scoping by ``group_id``
+                structurally exclude unattributed documents.
+
+        Errors return an empty set, which every caller treats as "nothing
+        eligible" — deletion passes fail toward deleting nothing.
         """
         try:
-            result = self.collection.get(include=[])
+            result = self.collection.get(where=where, include=[])
             return set(result.get("ids", []))
         except Exception as e:
             logger.error(f"Error listing collection ids: {e}")
             return set()
+
+    def iter_metadatas(self, batch_size: int = 500) -> Iterator[tuple[list[str], list[dict[str, Any]]]]:
+        """Stream ``(ids, metadatas)`` over the whole collection in batches.
+
+        Snapshots the id set first, then pages metadata with
+        ``collection.get(ids=chunk)`` — deliberately not ``limit``/``offset``,
+        whose ordering across pages is an undocumented implementation detail,
+        and never one unbounded ids list (the "too many SQL variables"
+        failure, #368). Callers may update already-yielded documents between
+        batches (the group_id backfill does); a snapshot makes that safe by
+        construction. Documents deleted mid-iteration are simply absent from
+        their page.
+
+        Backend failures RAISE — deliberately not routed through
+        ``get_all_ids``, whose swallow-into-empty-set contract is safe for
+        deletion ("nothing eligible") but inverts here: the backfill's
+        one-time schema gate closes permanently on "success", so an error
+        masquerading as an empty collection would silently disable the
+        migration with zero documents tagged.
+        """
+        batch_size = int(batch_size)
+        if batch_size < 1:
+            raise ValueError(f"batch_size must be >= 1, got {batch_size}")
+        # Cap at the same order as the backend batch limit so a caller cannot
+        # accidentally defeat the bounded-ids protection this method exists
+        # to provide.
+        batch_size = min(batch_size, 5000)
+        all_ids = sorted(self.collection.get(include=[]).get("ids") or [])
+        for start in range(0, len(all_ids), batch_size):
+            chunk = all_ids[start:start + batch_size]
+            result = self.collection.get(ids=chunk, include=["metadatas"])
+            ids = result.get("ids") or []
+            if not ids:
+                continue
+            metadatas = result.get("metadatas") or [{} for _ in ids]
+            yield ids, metadatas
+
+    def update_metadatas(self, ids: list[str], metadatas: list[dict[str, Any]]) -> None:
+        """Metadata-only update for existing documents; never re-embeds.
+
+        Callers must pass complete metadata dicts: chromadb 1.5.x merges
+        the given keys into existing metadata, while other versions have
+        replaced the whole dict — full dicts behave identically under both.
+        Split under the backend's max batch size like ``upsert_documents``
+        (#369).
+        """
+        if not ids:
+            return
+        try:
+            try:
+                max_batch = int(self.client.get_max_batch_size())
+            except Exception:
+                max_batch = 5000
+            if max_batch < 1:
+                max_batch = 5000
+            for i in range(0, len(ids), max_batch):
+                self.collection.update(
+                    ids=ids[i:i + max_batch],
+                    metadatas=metadatas[i:i + max_batch],
+                )
+            logger.info(f"Updated metadata for {len(ids)} documents")
+        except Exception as e:
+            logger.error(f"Error updating document metadata: {e}")
+            raise
 
 
 def create_chroma_client(config_path: str | None = None) -> ChromaClient:
@@ -982,13 +1078,34 @@ class _NoEmbeddingFunction(EmbeddingFunction):
     for the default backend, eagerly downloads the ~80MB ONNX MiniLM model.
     Counting rows never embeds anything, so this is never actually called; it
     raises if it ever is, to make misuse loud rather than silently wrong.
+
+    ``name()`` MUST return ``"default"``. ChromaDB >=1.x validates the supplied
+    embedding function against the collection's persisted config in
+    ``validate_embedding_function_conflict_on_get`` and raises a ``ValueError``
+    whenever the supplied ``name()`` differs from the persisted one — *unless*
+    the supplied name is ``"default"``, which short-circuits the check. Without
+    this, opening a collection that was built with any real backend (default,
+    openai, gemini, ...) raises a conflict; ``read_collection_status`` then
+    swallowed that error and reported "0 documents / not initialized" against a
+    fully populated database (issue #362).
     """
+
+    def __init__(self):
+        pass
 
     def __call__(self, input: Documents) -> Embeddings:  # pragma: no cover - never invoked
         raise RuntimeError("embedding is unavailable in status-only mode")
 
+    @staticmethod
+    def name() -> str:
+        return "default"
 
-def read_collection_status(config_path: str | None = None) -> dict[str, Any]:
+
+def read_collection_status(
+    config_path: str | None = None,
+    *,
+    persist_directory: str | None = None,
+) -> dict[str, Any]:
     """Read ChromaDB collection stats WITHOUT loading an embedding model.
 
     The full :class:`ChromaClient` constructor builds the embedding function,
@@ -998,6 +1115,9 @@ def read_collection_status(config_path: str | None = None) -> dict[str, Any]:
     configured model name, neither of which requires the model itself. This
     opens the persisted database directly and reads the count, mirroring the
     shape returned by :meth:`ChromaClient.get_collection_info`.
+
+    ``persist_directory`` defaults to ``ChromaClient``'s location
+    (``~/.config/zotero-mcp/chroma_db``); it is parameterised for testing.
     """
     collection_name = "zotero_library"
     embedding_model = "default"
@@ -1017,7 +1137,8 @@ def read_collection_status(config_path: str | None = None) -> dict[str, Any]:
     if env_model and embedding_model in (None, "default"):
         embedding_model = env_model
 
-    persist_directory = str(Path.home() / ".config" / "zotero-mcp" / "chroma_db")
+    if persist_directory is None:
+        persist_directory = str(Path.home() / ".config" / "zotero-mcp" / "chroma_db")
     base = {
         "name": collection_name,
         "embedding_model": embedding_model,

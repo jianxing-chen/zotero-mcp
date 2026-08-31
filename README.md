@@ -1,3 +1,5 @@
+<!-- mcp-name: io.github.54yyyu/zotero-mcp -->
+
 # Zotero MCP: Chat with your Research Library—Local or Web—in Claude, ChatGPT, ZCode, and more.
 
 <p align="center">
@@ -173,7 +175,29 @@ zotero-mcp openai-batch-import                    # import completed embeddings
 ### ⌨️ Standalone CLI (`zotero-cli`)
 - Search, browse, and edit your library directly from the terminal — no AI assistant required
 - Ideal for scripting, automation, and quick lookups
-- Short aliases (`s`, `g`, `ann`, `coll`) for interactive use
+- `--json` on every command for pipelines and agents; short aliases (`s`, `g`, `ann`, `coll`) for interactive use
+
+### 🪶 Agent skill — the same library for ~1% of the context
+
+If your agent has shell access (Claude Code, Cursor, Codex, Windsurf, Gemini CLI, Amp, OpenCode …), one command teaches it to drive `zotero-cli` directly:
+
+```bash
+zotero-mcp install-skill
+```
+
+It detects the harnesses in your project and installs to each — no flags, no per-tool instructions to look up.
+
+Why it matters: an MCP server sends **every tool's schema on every request**, before you type anything. The skill sits at 98 tokens until the agent decides it is relevant.
+
+| Route | In context | Paid |
+|---|---:|---|
+| MCP server, default profile (38 tools) | **13,448** | every request |
+| Agent skill, frontmatter only | **98** | always |
+| Agent skill, body loaded | 1,368 | when it fires |
+
+~137x cheaper before either is used, ~10x once the skill has fired. Re-measure any time with `python scripts/measure_context_cost.py`. This is the fixed context cost only — it does not measure task success or round trips, and a cheaper surface that gets the answer wrong is not cheaper. [Details below](#-agent-skill-one-command-for-any-harness).
+
+Both routes work, and they share one config. Use the MCP server when your client speaks MCP but has no shell (Claude Desktop, ChatGPT); use the skill when it has a shell.
 
 ## 🚀 Quick Install
 
@@ -283,6 +307,25 @@ zotero-mcp setup   # the wizard asks whether to configure MinerU
 
 The wizard configures the `cloud` backend (the only supported one):
 - **`cloud`** (recommended, only supported): MinerU cloud API (mineru.net) — highest accuracy (vlm 95+), ~15s/paper, needs `cloud_token` from <https://mineru.net/apiManage/docs>
+
+Two `semantic_search.embedding_config` keys tune the Ollama path for slower
+hardware or very large libraries:
+
+```jsonc
+"embedding_config": {
+  "model_name": "bge-m3",
+  "timeout": 600,            // HTTP timeout per /api/embed call (default 120s)
+  "request_batch_size": 64   // documents per request (default 64)
+}
+```
+
+Raise `timeout` if indexing reports `Read timed out`; lower
+`request_batch_size` to make each request cover less GPU work, which usually
+fixes timeouts more reliably than raising the timeout alone.
+
+When you choose OpenAI, setup also asks whether database updates should use
+OpenAI Batch API. Batch updates are cheaper for large libraries, but they are
+asynchronous: submit the batch, wait for completion, then import the embeddings.
 
 The `api` (remote FastAPI) and local CLI (`hybrid`/`pipeline`) backends are **disabled at the config layer** — their code is retained in the module for future re-enablement but `is_mineru_available` returns False for them. Any failure falls back to PyMuPDF.
 
@@ -440,6 +483,34 @@ The tool tries the HTTP cascade first (ADS PUB_PDF); only when that is blocked d
 
 Adapted from [sciencedirect-live-session-fetcher](https://github.com/Given-Dream/sciencedirect-live-session-fetcher).
 
+### Text Extraction Settings
+
+PDFs are parsed with [pdf-inspector](https://github.com/firecrawl/pdf-inspector), which produces Markdown with the document's heading structure intact. These keys live under `semantic_search.extraction` in `~/.config/zotero-mcp/config.json`:
+
+```json
+{
+  "semantic_search": {
+    "extraction": {
+      "pdf_max_pages": 50,
+      "fulltext_display_max_pages": 10,
+      "attachment_priority": ["markdown", "pdf", "html", "other"]
+    }
+  }
+}
+```
+
+| Key | Default | What it does |
+|---|---|---|
+| `pdf_max_pages` | `50` | Pages extracted per PDF when indexing. Raising it does not widen what search sees on its own — that is bounded by the embedding model's token limit or `chunking.max_chunks_per_item`. |
+| `fulltext_display_max_pages` | `10` | Pages returned by `zotero_get_item_fulltext`. Separate from the above because reading a paper is bounded by your assistant's context, not by recall. |
+| `attachment_priority` | `["pdf", "html", "other"]` | Order in which attachment kinds are tried when an item has several readable files. |
+
+**`attachment_priority`** exists for the case where you have converted a paper to clean Markdown yourself and attached it next to the original PDF. By default the PDF still wins; listing `"markdown"` first makes your converted copy the one that gets read and indexed. Valid entries are `pdf`, `html`, `markdown`, `text` and `other`. `other` is a catch-all matching every kind not named elsewhere in the list, so the default sweeps Markdown and plain text into one bucket where the larger file wins. Omitting `other` means anything unlisted is never chosen.
+
+Changing this setting marks affected items for re-extraction, so a following `zotero-mcp update-db` refreshes text that came from a now-deprioritized attachment rather than leaving stale embeddings behind.
+
+To read one specific attachment regardless of priority, pass that attachment's own key to `zotero_get_item_fulltext` (find it with `zotero_get_item_children`) — an attachment key bypasses the priority order and reads exactly that file.
+
 ## 🖥️ Setup & Usage
 
 **Requirements**
@@ -447,7 +518,19 @@ Adapted from [sciencedirect-live-session-fetcher](https://github.com/Given-Dream
 - Zotero 7+ (for local API with full-text access)
 - An MCP-compatible client (e.g., Claude Desktop, ChatGPT Developer Mode, Cherry Studio, Chorus)
 
-### For Claude Desktop (example MCP client)
+**For ChatGPT setup: see the [Getting Started guide](./docs/getting-started.md).**
+
+### Configure Zotero
+
+The Zotero local API must be enabled for the MCP server to work.
+
+In Zotero 9, the local API toggle is under Settings → Advanced → 'Allow other applications on this computer to communicate with Zotero'.
+
+Here is a screenshot:
+
+![Zotero local API](./docs/zotero-local-api.png)
+
+### For Claude Desktop / Claude Code (MCP client)
 
 #### Configuration
 
@@ -456,7 +539,9 @@ Adapted from [sciencedirect-live-session-fetcher](https://github.com/Given-Dream
    zotero-mcp setup
    ```
 
-2. **Manual configuration** — add to `claude_desktop_config.json`:
+2. **Manual configuration**:
+   For Claude Desktop, add this to `claude_desktop_config.json`.
+   For Claude Code, add this to `~/.claude.json`:
    ```json
    {
      "mcpServers": {
@@ -473,25 +558,50 @@ Adapted from [sciencedirect-live-session-fetcher](https://github.com/Given-Dream
    }
    ```
 
-   For **local read-only use**, `ZOTERO_LOCAL: "true"` is all you need — drop the API_KEY and LIBRARY_ID lines entirely. Add them only to enable **write mode**: the local API is fast but read-only, so the server uses the Zotero web API for write operations.
+   For **local read-only use**, `ZOTERO_LOCAL: "true"` is all you need — drop the `ZOTERO_API_KEY` and `ZOTERO_LIBRARY_ID` lines entirely.
 
-   - Generate an API key from <https://www.zotero.org/settings/security#applications>.
+   The local API is fast but read-only, so the MCP server uses the Zotero web API for write operations.
+
+   To enable **write mode**:
+   - Keep `ZOTERO_LOCAL: "true"` — with API credentials set, the server runs in hybrid mode (fast local reads, web API writes)
+   - Click [here](https://www.zotero.org/settings/security#applications) to generate a Zotero API key and replace `YOUR_API_KEY` with it
    - `ZOTERO_LIBRARY_ID` is your numeric **userID**, shown on that same page (for a group library, use the group's ID and also set `ZOTERO_LIBRARY_TYPE: "group"`).
 
-   > **Tip:** if Claude Desktop can't find the `zotero-mcp` command, use the absolute path (`zotero-mcp setup-info` or `which zotero-mcp`) — GUI apps don't always inherit your shell `PATH`.
+   > **Important Note**: Environmental variables set in the shell you run `claude` in will override these values.
+
+   > **Tip:** If Claude Desktop reports it can't find the `zotero-mcp` command, use the
+   > absolute path instead (run `zotero-mcp setup-info` or `which zotero-mcp` to find it) —
+   > GUI apps don't always inherit your shell `PATH`.
 
 #### Usage
 
 1. Start Zotero desktop (make sure local API is enabled in preferences)
-2. Launch Claude Desktop
-3. Ask in natural language:
-   - "Search my library for papers on machine learning"
-   - "Read page 4 of this transformer paper and explain the attention formula" (MinerU returns correct LaTeX)
-   - "Import 2003ApJ...589L..21B from ADS into my cosmology collection"
-   - "Analyze this paper's citation graph — what high-impact papers am I missing?"
-   - "Move all papers tagged 'survey' into the 'surveys' collection"
-   - "Extract all PDF annotations from my paper on neural networks"
-   - "Find papers conceptually similar to deep learning in computer vision" *(semantic search)*
+2. Launch Claude Desktop / Claude Code
+3. For Claude Desktop, access the Zotero-MCP tool through Claude Desktop's tools interface.
+For Claude Code, run the `/mcp` command, and make sure the Zotero MCP server is connected.
+
+Example prompts:
+- "Search my library for papers on machine learning"
+- "Find recent articles I've added about climate change"
+- "Summarize the key findings from my paper on quantum computing"
+- "Extract all PDF annotations from my paper on neural networks"
+- "Search my notes and annotations for mentions of 'reinforcement learning'"
+- "Show me papers tagged '#Arm' excluding those with '#Crypt' in my library"
+- "Search for papers on operating system with tag '#Arm'"
+- "Export the BibTeX citation for papers on machine learning"
+- **"Find papers conceptually similar to deep learning in computer vision"** *(semantic search)*
+- **"Research that relates to the intersection of AI and healthcare"** *(semantic search)*
+- **"Papers that discuss topics similar to this abstract: [paste text]"** *(semantic search)*
+
+### For Autohand Code
+
+After installing Zotero MCP, add a local read-only server with:
+
+```bash
+autohand mcp add zotero env ZOTERO_LOCAL=true zotero-mcp
+```
+
+Add `--scope project` after `add` to keep the server configuration in the current project. For hybrid or web API access, add the credentials described above to the `env` command. See [Autohand Code](https://github.com/autohandai/code-cli/) for current installation and CLI details.
 
 ### For Cherry Studio
 
@@ -751,11 +861,76 @@ ZOTERO_WEBDAV_PASSWORD=app_password   # Nutstore uses an "app password", not you
 - `ZOTERO_WEBDAV_URL` / `ZOTERO_WEBDAV_USERNAME` / `ZOTERO_WEBDAV_PASSWORD`: WebDAV attachment storage (optional)
 
 **Semantic Search:**
-- `ZOTERO_EMBEDDING_MODEL`: Embedding model (default, openai, gemini, ollama)
-- `OPENAI_API_KEY` / `OPENAI_EMBEDDING_MODEL` / `OPENAI_BASE_URL`
-- `GEMINI_API_KEY` / `GEMINI_EMBEDDING_MODEL` / `GEMINI_BASE_URL`
-- `OLLAMA_EMBEDDING_MODEL` / `OLLAMA_BASE_URL`
-- `ZOTERO_DB_PATH`: Custom `zotero.sqlite` path (optional)
+- `ZOTERO_EMBEDDING_MODEL`: Embedding model to use (default, openai, gemini, ollama)
+- `OPENAI_API_KEY`: Your OpenAI API key (for OpenAI embeddings)
+- `OPENAI_EMBEDDING_MODEL`: OpenAI model name (text-embedding-3-small, text-embedding-3-large)
+- `OPENAI_BASE_URL`: Custom OpenAI endpoint URL (optional, for use with compatible APIs)
+- OpenAI Batch API indexing is configured by `zotero-mcp setup` and can be overridden with
+  `zotero-mcp update-db --openai-batch` or `--no-openai-batch`
+- `GEMINI_API_KEY`: Your Gemini API key (for Gemini embeddings)
+- `GEMINI_EMBEDDING_MODEL`: Gemini model name (gemini-embedding-001)
+- `GEMINI_BASE_URL`: Custom Gemini endpoint URL (optional, for use with compatible APIs)
+- `OLLAMA_EMBEDDING_MODEL`: Ollama embedding model name (qwen3-embedding by default)
+- `OLLAMA_BASE_URL`: Ollama server URL (default: http://localhost:11434)
+- `ZOTERO_DB_PATH`: Custom `zotero.sqlite` path (optional). When unset, the
+  database is located automatically: a data directory configured in Zotero's
+  preferences (read from the profile's `prefs.js`) is tried first, then the
+  default `~/Zotero` location.
+
+**Search backend:**
+- `ZOTERO_SEARCH_BACKEND=sqlite`: Route `zotero_search_items` and
+  `zotero_advanced_search` through direct SQL against `zotero.sqlite` instead of
+  fetching over the API and filtering in Python (default: `api`). Requires
+  `ZOTERO_LOCAL=true`, since it reads the database off disk. Substantially
+  faster on large libraries — an `advanced_search` that pages the whole library
+  over the API drops from minutes to well under a second. Any query the backend
+  doesn't cover falls back to the API path automatically, so the results are
+  either the same or better, never worse.
+
+**Global search across libraries:**
+
+With the SQLite backend enabled, `zotero_search_items`, `zotero_advanced_search`
+and `zotero_semantic_search` accept `search_all_libraries=True` (`--all-libraries`
+on the CLI). One query then covers your personal library and every group library
+at once, and each result is labelled with the library it came from:
+
+```
+**Library:** AI in entrepreneurship (groupID=6015547)
+```
+
+This is deliberately gated on `ZOTERO_SEARCH_BACKEND=sqlite`. The Zotero API can
+only search one library per request, so without direct SQL the best anyone could
+do is replay a single-library search against each library in turn — a different
+and far slower operation. Rather than emulate global search badly, the tools
+refuse and say so.
+
+Two limits follow from how Zotero stores things. **Collections are per-library**
+(`collections.libraryID` is NOT NULL), so `collection_key` and `collection`
+conditions cannot be combined with a global search. **Tags are not** — Zotero
+keeps one database-wide `tags` table shared by every library — so tag filters and
+`tag` conditions work globally and are the recommended way to slice a global
+search.
+
+Duplicates across libraries are returned as-is: the same paper filed in two
+libraries is two items, and collapsing them would hide where each copy lives.
+
+**Tool surface:**
+- `ZOTERO_MCP_TOOLSETS`: Which optional tool groups to expose. Every tool the
+  server registers is sent to the model on *every* request, so the tool list is
+  a fixed cost on your context window. Groups that need an external service,
+  serve maintenance rather than research, or apply only to some users are off
+  by default. See [Tool Groups](#-tool-groups) below.
+
+**Item schema:**
+- `ZOTERO_MCP_SCHEMA_REFRESH=0`: Disable the weekly background refresh of
+  Zotero's item-type schema from `api.zotero.org`. The schema is what routes a
+  generic `title=` update to the field a type actually stores it under (a
+  statute's `nameOfAct`, a case's `caseName`). A copy ships with the package, so
+  disabling the refresh only means new item types added by Zotero after this
+  release won't be picked up until you upgrade. `zotero-mcp schema-refresh`
+  still refreshes on demand.
+- `ZOTERO_MCP_SCHEMA_CACHE`: Custom path for the refreshed schema cache
+  (default: `~/.cache/zotero-mcp/schema.json`).
 
 **NASA ADS (astrophysics literature):**
 - `ADS_API_TOKEN`: NASA ADS API token ([get one free](https://ui.adsabs.harvard.edu/#user/settings/token))
@@ -779,21 +954,208 @@ zotero-mcp db-status                          # Show database status
 zotero-mcp version
 ```
 
+## 🐳 Docker Images (GHCR)
+
+This repository publishes multi-arch container images to GitHub Container Registry:
+
+- `ghcr.io/<owner>/zotero-mcp:<tag>-core` - lightweight install (no optional extras)
+- `ghcr.io/<owner>/zotero-mcp:<tag>-all` - full install with `[semantic,pdf,scite]`
+- Unsuffixed tags (for example `:latest`, `:vX.Y.Z`) point to the `all` flavor
+
+Detailed publishing and runtime notes are in `docs/docker-images.md`.
+
+Tag strategy:
+
+- Release tags: `vX.Y.Z`, `vX.Y`, `vX` (plus `-core` and `-all` variants)
+- Main branch: `latest` (plus `latest-core` and `latest-all`)
+- Immutable SHA tags: `sha-<shortsha>-core`, `sha-<shortsha>-all` (and unsuffixed SHA for `all`)
+
+### Runtime modes in the container
+
+The image supports both MCP server and standalone CLI modes.
+
+- **Server mode (default)**: runs `zotero-mcp serve --transport stdio`
+- **CLI mode**: set `ZOTERO_APP=cli` and pass normal `zotero-cli` arguments
+
+### Docker env vars and persistence
+
+- Container runtime vars: `ZOTERO_APP` (`server` or `cli`) and `ZOTERO_TRANSPORT` (default: `stdio`)
+- All standard Zotero MCP vars are supported in containers (`ZOTERO_LOCAL`, `ZOTERO_API_KEY`, `ZOTERO_LIBRARY_ID`, embedding provider keys, etc.)
+- ChromaDB persistence path in the container is `/home/app/.config/zotero-mcp/chroma_db/`
+- Persist config + ChromaDB by mounting `/home/app/.config/zotero-mcp`
+
+Examples:
+
+```bash
+# Default MCP server mode (stdio)
+docker run --rm ghcr.io/<owner>/zotero-mcp:latest
+
+# MCP server mode with explicit transport
+docker run --rm ghcr.io/<owner>/zotero-mcp:latest serve --transport streamable-http --host 0.0.0.0 --port 8000
+
+# Standalone CLI mode
+docker run --rm -e ZOTERO_APP=cli ghcr.io/<owner>/zotero-mcp:latest search "machine learning"
+
+# Persist config + ChromaDB across runs
+docker run --rm -v zotero-mcp-data:/home/app/.config/zotero-mcp --env-file .env ghcr.io/<owner>/zotero-mcp:latest
+```
+
 ## ⌨️ CLI Mode (`zotero-cli`)
 
-`zotero-cli` is a standalone terminal interface to your Zotero library — same tools as the MCP server but without needing an AI assistant. Useful for quick lookups, shell scripts, and automation.
+`zotero-cli` is a standalone terminal interface to your Zotero library. It uses the same tools as the MCP server but without needing an AI assistant — useful for quick lookups, shell scripts, and automation.
+
+Use `zotero-mcp` when your AI client supports MCP (Claude Desktop, ChatGPT). Use `zotero-cli` for shell scripts, cron jobs, or agentic pipelines with shell access (e.g. Claude Code) — CLI commands cost far fewer tokens than MCP tool schemas and compose naturally with Unix pipes.
+
+Both share the same configuration set up by `zotero-mcp setup`.
+
+### How much context each route costs
+
+The MCP server sends every enabled tool's name, description and JSON parameter schema to the model on **every request**, before you type anything. The CLI route puts only a skill description in context until the model decides it is relevant. Measured on this repo with `python scripts/measure_context_cost.py`:
+
+| Route | Tokens in context | When it is paid |
+|---|---:|---|
+| MCP, default profile (38 tools) | 13,448 | every request |
+| MCP, `ZOTERO_MCP_TOOLSETS=none` (32 tools) | 11,761 | every request |
+| MCP, `ZOTERO_MCP_TOOLSETS=all` (50 tools) | 17,414 | every request |
+| CLI skill, frontmatter only | 98 | always |
+| CLI skill, body loaded | 1,368 | once the skill fires |
+| CLI skill + full command reference | 4,389 | worst case |
+
+That is the *fixed* cost only. It does not measure task success, output size, or how many round trips each route takes to finish a job — a cheaper surface that gets the answer wrong is not cheaper. Numbers are `cl100k_base` tokens and are re-measured, not estimated; `tests/test_context_cost_claim.py` fails if the relationship stops holding.
+
+### 🪶 Agent skill: one command for any harness
+
+```bash
+zotero-mcp install-skill
+```
+
+Run it in your project. It detects which agent harnesses are set up there and installs to each one, in that harness's own format:
+
+| Harness | Detected by | Installs |
+|---|---|---|
+| Claude Code (project) | `.claude/` | `.claude/skills/zotero-cli/` |
+| Claude Code (user) | `~/.claude/` | `~/.claude/skills/zotero-cli/` |
+| Cursor | `.cursor/` | `.cursor/rules/zotero-cli.mdc` |
+| Windsurf | `.windsurf/` | `.windsurf/rules/zotero-cli.md` |
+| Codex, Amp, OpenCode, Jules … | `AGENTS.md` | a pointer block in `AGENTS.md` |
+| Gemini CLI | `GEMINI.md` or `.gemini/` | a pointer block in `GEMINI.md` |
+
+```bash
+zotero-mcp install-skill --list-targets      # what is detected here
+zotero-mcp install-skill --target cursor     # install one explicitly
+zotero-mcp install-skill --force             # overwrite an existing copy
+```
+
+**It will not overwrite your work.** A destination that exists and differs is reported, not replaced, unless you pass `--force`. For shared instruction files it is stricter: only the text between the `zotero-cli` markers is ever managed, so the rest of your `AGENTS.md` is untouchable by construction — re-running updates that block in place rather than appending a second one.
+
+**It keeps the context advantage.** Shared instruction files get a short pointer block, not the whole skill; the body lands beside it and the agent opens it only when it decides Zotero is relevant. Pasting 1,400 tokens into every agent's always-loaded context would spend exactly the advantage this exists for.
+
+The skill teaches the find-keys-then-act loop, `--json`, how to pick among the six search modes, paging, reading a PDF by outline-then-page-range rather than whole, and when an empty result means "the index is not built" rather than "you have no papers on that".
+
+### Machine-readable output (`--json`)
+
+Every command accepts `--json`, before or after the command name. Output is one object per invocation:
+
+```bash
+zotero-cli --json search "attention" --limit 5 --detail keys_only
+# {"ok": true, "command": "search", "schema": 1, "data": {"count": 5, "items": [...]}}
+```
+
+Success carries `data`; failure carries `error.message` and a stable `error.code`, also on stdout, so one stream carries both outcomes. Read commands (search, get, annotations list, notes list, config) return real structure; commands whose answer is a status line return `{"text": ...}`. Run `zotero-cli --json-schema` for the full contract.
+
+```bash
+# Item keys are the currency of every command — pipe them onward
+zotero-cli --json search "diffusion models" --limit 5 --detail keys_only \
+  | jq -r '.data.items[].key' \
+  | while read -r key; do zotero-cli --json get metadata "$key"; done
+```
+
+### Quick reference
 
 ```bash
 zotero-cli search "machine learning"          # keyword search
 zotero-cli s "neural networks" --limit 5      # short alias + limit
 zotero-cli search --mode semantic "attention mechanisms"
 zotero-cli g metadata ABC123 --format bibtex  # BibTeX export
-zotero-cli ann list ABC123                    # annotations
+zotero-cli get fulltext ABC123                 # full text
+zotero-cli get children ABC123                 # attachments and notes
+
+# Edit item metadata
+zotero-cli edit ABC123 --title "New Title"
+zotero-cli edit ABC123 --add-tags "reviewed,important" --date "2024"
+
+# Notes and annotations
+zotero-cli notes list ABC123
+zotero-cli notes create --item-key ABC123 --text "My note" --tags "idea"
+zotero-cli notes create --item-key ABC123 --text -   # read from stdin
+zotero-cli ann list --item-key ABC123         # annotations (short alias)
+zotero-cli ann list --item-key ABC123 --format json  # structured export
+zotero-cli ann search "highlight text"
+
+# Add items
 zotero-cli add doi 10.1038/s41586-021-03819-2
-zotero-cli add doi 10.1038/... -c "Reading List"  # import + file into collection
-zotero-cli coll list                          # list collections
-zotero-cli db update                          # update semantic search DB
-zotero-cli -v search "CRISPR"                 # verbose mode
+zotero-cli add url https://arxiv.org/abs/2301.00001
+zotero-cli add file --filepath /path/to/paper.pdf --title "Override Title"
+zotero-cli add isbn 9780262046305
+zotero-cli add bibtex --file refs.bib                # or --bibtex '@article{...}'
+zotero-cli add bibtex --bibtex - < refs.bib          # stdin via -
+zotero-cli add csl-json --file refs.json             # or --json '...' / --json -
+
+# --collections accepts keys, names, or parent/child paths — resolved and
+# validated before the item is created (a typo fails the add, with suggestions,
+# instead of leaving an unfiled item)
+zotero-cli add doi 10.1038/s41586-021-03819-2 --collections "Reading List"
+zotero-cli collections manage --item-keys ABC123 --add-to "_project/topic"
+
+# Adds are idempotent by default (--if-exists file): if the item is already in
+# the library it is reused — filed into any missing collections, given any
+# missing tags — instead of duplicated. Re-running the same command is a no-op.
+zotero-cli add doi 10.1038/s41586-021-03819-2 -c "Reading List"   # run it twice: converges
+zotero-cli add doi 10.1038/s41586-021-03819-2 --if-exists skip       # never touch existing
+zotero-cli add doi 10.1038/s41586-021-03819-2 --if-exists duplicate  # old behavior
+zotero-cli add doi 10.1038/s41586-021-03819-2 -c "New Topic" --create-collections
+# -c/--collection is repeatable and never comma-split (names with commas work);
+# --collections remains the comma-separated form
+
+# Collections and tags
+zotero-cli coll list                          # list collections (short alias)
+zotero-cli coll search "PhD Research"
+zotero-cli tags list
+
+# Semantic search database
+zotero-cli db update
+zotero-cli db update --fulltext --force-rebuild
+zotero-cli db status
+
+# Library and duplicates
+zotero-cli library info
+zotero-cli duplicates find
+
+# Reading PDFs — find the section first, then read only those pages
+zotero-cli outline ABC123
+zotero-cli read ABC123 --start-page 42 --end-page 55
+zotero-cli path ABC123                        # where the file lives on disk
+
+# Attachments, deletion, bibliographies
+zotero-cli attach ABC123 --file /path/to/paper.pdf
+zotero-cli delete item ABC123
+zotero-cli export --item-keys ABC123,DEF456 --style apa
+zotero-cli export --collection COLL01 --format bibtex
+
+# Discovery and synthesis
+zotero-cli related 10.1038/s41586-021-03819-2 --direction citations
+zotero-cli coverage --collection COLL01
+zotero-cli synthesize --tag "to-read" --format json
+
+# Bulk edits across many items
+zotero-cli batch --item-keys ABC123,DEF456 --add-tags screened
+zotero-cli batch --query "machine learning" --add-tags survey --limit 100
+```
+
+Paging: listings cap at `--limit` and the response names the next offset.
+
+```bash
+zotero-cli --json get collection-items QS7TQPPA --limit 100 --offset 100
 ```
 
 Both `zotero-mcp` and `zotero-cli` share the configuration set up by `zotero-mcp setup`.
@@ -805,34 +1167,131 @@ Both `zotero-mcp` and `zotero-cli` share the configuration set up by `zotero-mcp
 - **Image Annotation Support**: Extract image annotations from PDFs
 - **Seamless Integration**: Works alongside Zotero's native annotation system
 
-For optimal annotation extraction, it is **highly recommended** to install the [Better BibTeX plugin](https://retorque.re/zotero-better-bibtex/installation/). The first time you use PDF annotation features, the necessary tools are automatically downloaded.
+For optimal annotation extraction, it is **highly recommended** to install the [Better BibTeX plugin](https://retorque.re/zotero-better-bibtex/installation/) for Zotero. The annotation-related functions have been primarily tested with this plugin and provide enhanced functionality when it's available.
+
+
+The first time you use PDF annotation features, the necessary tools will be automatically downloaded.
+
+## 🔗 Managing Related Items
+
+Zotero MCP supports managing relationships between items in your library. This is useful for linking related papers, tracking versions, or connecting preprints to their published versions.
+
+> These tools are in the opt-in `relations` group. Enable them with
+> `ZOTERO_MCP_TOOLSETS=relations` — see [Tool Groups](#-tool-groups).
+
+### View Related Items
+```
+zotero_get_item_related(item_key="ABCD1234")
+```
+
+### Add a Relation
+Create a bidirectional link between two items:
+```
+zotero_add_item_relation(
+    item_key="ABCD1234",
+    related_item_key="EFGH5678",
+    relation_type="dc:relation"  # Optional, defaults to "dc:relation"
+)
+```
+
+### Remove a Relation
+```
+zotero_remove_item_relation(
+    item_key="ABCD1234",
+    related_item_key="EFGH5678",
+    remove_bidirectional=True  # Also remove the reverse relation (default: true)
+)
+```
+
+**Relation Types:**
+- `dc:relation` — General related items (default)
+- `owl:sameAs` — Items that are the same work (e.g., preprint and published version)
+
+## 🧰 Tool Groups
+
+Every tool this server registers is sent to the model on **every** request, so
+the tool list is a fixed tax on your context window before you type anything.
+To keep that cost proportionate, optional capabilities are grouped into
+*toolsets* that you turn on when you need them.
+
+Set `ZOTERO_MCP_TOOLSETS` to control which groups are exposed:
+
+| Value | Effect |
+|---|---|
+| *(unset)* | Default profile — core tools plus `libraries`, `search-admin`, `pdf-geometry` |
+| `all` | Everything (the pre-0.9 behaviour) |
+| `none` | Core tools only — the smallest surface |
+| `scite,feeds` | Core plus the named groups |
+| `all,-scite` | Everything except the named groups |
+
+Values are case-insensitive and may be comma- or space-separated. An unknown
+group name is an error at startup rather than a silent no-op.
+
+| Group | Default | Contents |
+|---|---|---|
+| `scite` | off | Scite citation tallies and retraction checks (calls scite.ai; pairs with the `[scite]` extra) |
+| `duplicates` | off | Find and merge duplicate items — library maintenance |
+| `discovery` | off | `find_related_papers`, `library_coverage` — corpus-level exploration |
+| `feeds` | off | Zotero RSS feed subscriptions |
+| `relations` | off | Explicit item-to-item "related items" links |
+| `libraries` | **on** | List and switch between personal/group libraries |
+| `search-admin` | **on** | Build and inspect the semantic search index |
+| `pdf-geometry` | **on** | Page layout and PDF outline — pairs with area annotations |
+| `chatgpt-connector` | auto | The `search`/`fetch` pair required by ChatGPT deep research |
+
+`chatgpt-connector` is scoped by transport: it turns on automatically when the
+server is served over `streamable-http` or `sse` (how ChatGPT reaches it) and
+stays off for `stdio`. Name it explicitly to override either way.
+
+Anything not listed above is **core** and always available.
+
+**Note:** a disabled tool is genuinely absent — not merely hidden — so the
+model cannot call it. If you rely on a capability, enable its group.
+
+Example (Claude Desktop / Claude Code):
+
+```json
+"env": {
+  "ZOTERO_LOCAL": "true",
+  "ZOTERO_MCP_TOOLSETS": "scite,duplicates"
+}
+```
 
 ## 📚 Available Tools
 
-### 🧠 Semantic Search
-- `zotero_semantic_search` / `zotero_update_search_database` / `zotero_get_search_database_status`
+> Availability depends on your `ZOTERO_MCP_TOOLSETS` setting — see
+> [Tool Groups](#-tool-groups) above.
+
+### 🧠 Semantic Search Tools
+- `zotero_semantic_search`: AI-powered similarity search with embedding models
+- `zotero_update_search_database`: Manually update the semantic search database
+- `zotero_get_search_database_status`: Check database status and configuration
 
 ### 🔍 Search
 - `zotero_search_items` / `zotero_advanced_search` / `zotero_search_by_tag` / `zotero_search_by_citation_key`
 - `zotero_get_collections` / `zotero_get_collection_items` / `zotero_get_tags` / `zotero_get_recent`
 - `zotero_audit_collection_membership` — audit the entire library's folder organization in one pass: how many items are filed vs. unfiled, which items belong to no collection, and which items appear in multiple collections
 
-### 📚 Content
-- `zotero_get_item_metadata` (supports `markdown` / `json` / `bibtex`) / `zotero_get_item_fulltext` / `zotero_get_item_children`
-- `zotero_read_pdf_pages` (returns structured formulas/tables when MinerU is enabled)
+### 📚 Content Tools
+- `zotero_get_item_metadata`: Get detailed metadata (supports `format="markdown"`, `format="json"` for complete raw Zotero metadata, and `format="bibtex"`)
+- `zotero_get_item_fulltext`: Get full text content
+- `zotero_get_item_children`: Get attachments and notes for one item or many (pass an array of keys)
 
-### 🔭 NASA ADS (new)
-- `zotero_add_by_bibcode` — import by bibcode
-- `zotero_search_ads` — fielded ADS search
-- `zotero_ads_citation_network` — citation graph analysis
-- `zotero_export_ads` — export citation formats (BibTeX, AASTeX, MNRAS, etc.)
+### 📝 Annotation & Notes Tools
+- `zotero_get_annotations`: Get annotations (including direct PDF extraction); use `format="json"` for normalized records suitable for scripts and other MCP tools
+- `zotero_synthesize_annotations`: Build a per-paper annotation/note digest; supports `format="json"` for structured grouped output
+- `zotero_get_notes`: Retrieve notes from your Zotero library; pass `query` to search note and annotation text instead of listing
+- `zotero_create_annotation`: Create a highlight (`text=`) or an area annotation (`rect=[x, y, width, height]`)
+- `zotero_manage_note`: Create, update, or delete a note via `action="create"|"update"|"delete"` (beta feature)
+- `zotero_get_page_layout`: Detect figure/table regions on a PDF page (with captions and normalized coordinates) for accurate area annotation placement — its reported `bbox` can be passed straight to `zotero_create_annotation(rect=...)`
 
-### 📝 Annotations & Notes
-- `zotero_get_annotations` / `zotero_get_notes` / `zotero_search_notes`
-- `zotero_create_note` / `zotero_update_note` / `zotero_delete_note`
-- `zotero_create_annotation` / `zotero_create_area_annotation` / `zotero_get_page_layout`
-- `zotero_update_annotation` / `zotero_delete_annotation`
-- `zotero_batch_cleanup_notes` — batch-delete (trash) standalone empty notes in one pass; dry-run preview by default
+### 📊 Scite Citation Intelligence Tools
+
+> Opt-in group: enable with `ZOTERO_MCP_TOOLSETS=scite` — see [Tool Groups](#-tool-groups).
+
+- `scite_enrich_item`: Get Scite citation tallies and retraction alerts for a paper
+- `scite_enrich_search`: Search your Zotero library with Scite-enriched results (tallies + alerts inline)
+- `scite_check_retractions`: Scan items for retractions and editorial notices
 
 ### ✏️ Item & Collection Management
 - `zotero_add_by_doi` / `zotero_add_by_url` / `zotero_add_by_isbn` / `zotero_add_by_bibtex` / `zotero_add_by_csl_json` / `zotero_add_from_file`
@@ -842,7 +1301,17 @@ For optimal annotation extraction, it is **highly recommended** to install the [
 - `zotero_enrich_item_metadata` / `zotero_enrich_batch` — back-fill date, journal abbreviation, bibcode, and ADS URL from NASA ADS (title-search fallback for items without DOI/arXiv; auto-upgrades preprints to journalArticle)
 - `zotero_upgrade_preprints` — upgrade arXiv preprints to published journalArticle when ADS has the published version
 
-All add tools take `collections` (keys, names, or `parent/child` paths), `if_exists` (`duplicate` / `file` / `skip`), and `create_missing_collections` parameters.
+All add tools take a `collections` parameter accepting collection keys, names, or `parent/child` paths — resolved and validated before the item is created, so unknown or ambiguous specs fail with suggestions instead of producing an unfiled item. They also take `if_exists` (`"duplicate"` — default — always creates; `"file"` reuses an existing item matching the DOI/arXiv ID/ISBN/URL, filing it into missing collections and adding missing tags; `"skip"` leaves a match untouched) and `create_missing_collections` (create unknown collection specs, including path chains, instead of failing). The `zotero-cli add` commands default to `--if-exists file`.
+- `zotero_attach_file`: Attach a local file or a PDF URL to an existing item by key (no new item created; returns the attachment key; idempotent per filename and content hash)
+- `zotero_set_item_parent`: Set, change, or clear an item's parent (`parent_key=null` makes it top-level)
+- `zotero_create_collection`: Create a new collection (folder/project) in your library
+- `zotero_search_collections`: Search for collections by name to find their keys
+- `zotero_manage_collections`: Add or remove items from collections (accepts keys, names, or `parent/child` paths)
+- `zotero_update_item`: Update metadata for an existing item (title, tags, abstract, date, etc.)
+- `zotero_find_duplicates`: Find duplicate items by title and/or DOI, paged with `limit`/`offset`
+- `zotero_merge_duplicates`: Merge duplicate items with dry-run preview; consolidates all child items. `auto=True` merges every high-confidence (same-DOI) group in one pass behind a two-call plan/confirm gate
+- `zotero_get_pdf_outline`: Extract the table of contents / outline from a PDF attachment
+- `zotero_search_by_citation_key`: Look up items by BetterBibTeX citation key (with Extra field fallback)
 
 ### 📊 Scite Citation Intelligence
 - `scite_enrich_item` / `scite_enrich_search` / `scite_check_retractions`
@@ -857,18 +1326,46 @@ All add tools take `collections` (keys, names, or `parent/child` paths), `if_exi
 ## 🧪 Testing
 
 ```bash
-uv run pytest tests/     # full test suite
+uv run pytest tests/     # 1596 tests, ~7 seconds
 ```
 
 ## 🔍 Troubleshooting
 
-- **No results found**: Ensure Zotero is running and the local API is enabled (`Allow other applications on this computer to communicate with Zotero` in preferences)
-- **Full text not available**: Use Zotero 7+ for local full-text access
-- **Semantic search returns no results**: Initialize with `zotero-mcp update-db`, check `zotero-mcp db-status`
-- **404 after changing embedding model**: `zotero-mcp update-db --force-rebuild`
-- **MinerU unavailable**: Check that `mineru` CLI is on PATH or `mineru.executable` is set; falls back to PyMuPDF automatically
-- **ADS reports token not set**: Run `zotero-mcp setup` to configure `ADS_API_TOKEN`
-- **Database issues after switching install/search methods**: `zotero-mcp update-db --force-rebuild`
+### General Issues
+- **No results found**: Ensure Zotero is running and the local API is enabled. You need to toggle on `Allow other applications on this computer to communicate with Zotero` in Zotero preferences.
+- **Can't connect to library**: Check your API key and library ID if using web API
+- **Full text not available**: Make sure you're using Zotero 7+ for local full-text access
+- **Local library limitations**: Some functionality (tagging, library modifications) may not work with local JS API. Consider using web library setup for full functionality. (See the [docs](docs/getting-started.md#local-library-limitations) for more info.)
+- **Installation/search option switching issues**: Database problems from changing install methods or search options can often be resolved with `zotero-mcp update-db --force-rebuild`
+
+### Semantic Search Issues
+- **"Missing required environment variables" when running update-db**: Run `zotero-mcp setup` to configure your environment, or the CLI will automatically load settings from your MCP client config (e.g., Claude Desktop)
+- **ChromaDB / stale embedding model errors**: If you changed embedding models and see 404 errors (e.g., `text-embedding-004 is not found`), run `zotero-mcp update-db --force-rebuild` to recreate the collection with your current model. If that doesn't work, delete `~/.config/zotero-mcp/chroma_db/` and rebuild.
+- **Database update takes long**: By default, `update-db` is fast (metadata-only). For comprehensive indexing with full-text, use `--fulltext` flag. Use `--limit` parameter for testing: `zotero-mcp update-db --limit 100`
+- **Semantic search returns no results**: Ensure the database is initialized with `zotero-mcp update-db` and check status with `zotero-mcp db-status`
+- **Limited search quality**: For better semantic search results, use `zotero-mcp update-db --fulltext` to index full-text content (requires local Zotero setup)
+- **OpenAI/Gemini API errors**: Verify your API keys are correctly set and have sufficient credits/quota
+
+### Update Issues
+- **Update command fails**: Check your internet connection and try `zotero-mcp update --force`
+- **Configuration lost after update**: The update process preserves configs automatically, but check `~/.config/zotero-mcp/` for backup files
+
+## ☕ Support
+
+Zotero MCP is free and MIT-licensed.
+
+If it saves you or your lab time, sponsoring helps cover the unglamorous parts: Windows and WSL2 edge
+cases, Zotero schema changes, group-library support, and the embedding/search infrastructure.
+
+<a href="https://github.com/sponsors/54yyyu">
+  <img src="https://img.shields.io/badge/Sponsor-GitHub%20Sponsors-ea4aaa?style=for-the-badge&logo=githubsponsors&logoColor=white" alt="Sponsor on GitHub">
+</a>
+<a href="https://buymeacoffee.com/stevenyuyy">
+  <img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me a Coffee">
+</a>
+
+**Labs and institutions:** the $50 and $200 tiers are meant to be expensable, and include priority
+triage on the issues affecting your workflow.
 
 ## 📄 License
 

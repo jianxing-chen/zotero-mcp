@@ -10,6 +10,7 @@ from zotero_mcp.cli_standalone import (
     CLIContext,
     build_parser,
     cmd_add,
+    cmd_annotations,
     cmd_edit,
     cmd_notes,
     cmd_search,
@@ -126,6 +127,10 @@ class TestParser:
         assert args.command in ("annotations", "ann")
         assert args.subcommand == "list"
 
+    def test_annotations_list_json_format(self):
+        args = self.parser.parse_args(["annotations", "list", "--format", "json"])
+        assert args.format == "json"
+
     def test_collections_alias_coll(self):
         args = self.parser.parse_args(["coll", "search", "my collection"])
         assert args.command in ("collections", "coll")
@@ -234,6 +239,31 @@ class TestParser:
 # ---------------------------------------------------------------------------
 
 
+def test_cmd_annotations_passes_json_format(capsys):
+    args = MagicMock(
+        subcommand="list",
+        item_key="PAPER001",
+        pdf_extraction=False,
+        limit=100,
+        format="json",
+        verbose=False,
+        # MagicMock answers every attribute with a truthy mock, so any flag
+        # the CLI reads via getattr() has to be pinned here or it reads as set.
+        json_out=False,
+    )
+    mock_annotations = MagicMock()
+    mock_annotations.get_annotations.return_value = "[]"
+
+    with patch("zotero_mcp.cli_standalone.setup_zotero_environment"):
+        with patch(
+            "zotero_mcp.cli_standalone._import_tools",
+            return_value=(MagicMock(), MagicMock(), mock_annotations, MagicMock(), MagicMock()),
+        ):
+            cmd_annotations(args)
+
+    assert mock_annotations.get_annotations.call_args.kwargs["format"] == "json"
+    assert capsys.readouterr().out.strip() == "[]"
+
 class TestMain:
     def test_no_command_prints_help_and_exits_0(self, capsys):
         with patch("sys.argv", ["zotero-cli"]):
@@ -276,17 +306,12 @@ class TestMain:
 class TestCmdSearch:
     def _args(self, **kwargs):
         defaults = dict(
-            verbose=False,
-            mode="items",
-            query="test",
-            qmode="titleCreatorYear",
-            limit=10,
-            collection=None,
-            conditions=None,
-            join_mode="all",
-            sort_by=None,
-            sort_direction="asc",
-            filters=None,
+            verbose=False, mode="items", query="test", qmode="titleCreatorYear",
+            limit=10, collection=None, conditions=None, join_mode="all",
+            sort_by=None, sort_direction="asc", filters=None,
+            # MagicMock answers every attribute with a truthy mock, so any
+            # flag the CLI reads via getattr() has to be pinned here.
+            json_out=False,
         )
         defaults.update(kwargs)
         return MagicMock(**defaults)

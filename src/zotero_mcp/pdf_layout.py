@@ -2,8 +2,8 @@
 PDF page layout detection for area annotation coordinate grounding.
 
 Detects candidate figure/table regions on a PDF page so that area
-annotations (zotero_create_area_annotation) can be placed on real detected
-content instead of guessed coordinates.
+annotations (zotero_create_annotation with a `rect`) can be placed on real
+detected content instead of guessed coordinates.
 
 Detection sources (all PyMuPDF):
 - raster images: page.get_image_info()
@@ -22,6 +22,8 @@ unruled table header rows may fall outside the box.
 from __future__ import annotations
 
 import re
+
+from zotero_mcp.utils import install_hint
 
 # Region filtering / merging thresholds (normalized page units)
 LAYOUT_MIN_REGION_AREA = 0.01  # drop regions smaller than 1% of page area
@@ -343,7 +345,9 @@ def detect_page_regions(pdf_path: str, page_num: int) -> dict:
     try:
         import fitz
     except ImportError:
-        raise ImportError("PDF layout detection requires PyMuPDF. Install it with: pip install zotero-mcp-server[pdf]")
+        raise ImportError(
+            f"PDF layout detection requires PyMuPDF. {install_hint('pdf')}"
+        )
 
     try:
         doc = fitz.open(pdf_path)

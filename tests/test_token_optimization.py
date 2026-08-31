@@ -193,7 +193,7 @@ class TestAttachmentSummary:
 
 
 # ---------------------------------------------------------------------------
-# Test Fix E: Batch get_item_children
+# Test Fix E: get_item_children in batch (multi-key) mode
 # ---------------------------------------------------------------------------
 
 
@@ -224,9 +224,9 @@ class TestBatchChildren:
 
         zot = BatchZotero()
         monkeypatch.setattr("zotero_mcp.tools.retrieval._client.get_zotero_client", lambda: zot)
-        from zotero_mcp.tools.retrieval import get_items_children
+        from zotero_mcp.tools.retrieval import get_item_children
 
-        result = get_items_children(item_keys=["K1", "K2"], ctx=dummy_ctx)
+        result = get_item_children(item_key=["K1", "K2"], ctx=dummy_ctx)
 
         assert "Paper K1" in result
         assert "Paper K2" in result
@@ -234,7 +234,7 @@ class TestBatchChildren:
         assert "No child items" in result  # K2 has none
 
     def test_json_string_input(self, monkeypatch, dummy_ctx):
-        """Accepts JSON string input for item_keys."""
+        """Accepts JSON string input for item_key."""
 
         class SimpleZotero(FakeZotero):
             def items(self, **kwargs):
@@ -244,11 +244,33 @@ class TestBatchChildren:
                 return []
 
         zot = SimpleZotero()
+        zot._items = [{"key": "X1", "data": {"title": "Test", "itemType": "journalArticle"}}]
         monkeypatch.setattr("zotero_mcp.tools.retrieval._client.get_zotero_client", lambda: zot)
-        from zotero_mcp.tools.retrieval import get_items_children
+        from zotero_mcp.tools.retrieval import get_item_children
 
-        result = get_items_children(item_keys='["X1"]', ctx=dummy_ctx)
+        result = get_item_children(item_key='["X1"]', ctx=dummy_ctx)
         assert "Test" in result
+
+    def test_single_key_keeps_detailed_shape(self, monkeypatch, dummy_ctx):
+        """One key still renders the detailed per-type breakdown."""
+
+        class SingleZotero(FakeZotero):
+            def children(self, key, **kwargs):
+                return [{"key": "C1", "data": {
+                    "itemType": "attachment", "title": "paper.pdf",
+                    "contentType": "application/pdf", "filename": "paper.pdf",
+                }}]
+
+        zot = SingleZotero()
+        zot._items = [{"key": "K1", "data": {"title": "Paper K1", "itemType": "journalArticle"}}]
+        monkeypatch.setattr("zotero_mcp.tools.retrieval._client.get_zotero_client", lambda: zot)
+        from zotero_mcp.tools.retrieval import get_item_children
+
+        result = get_item_children(item_key="K1", ctx=dummy_ctx)
+
+        assert "# Child Items for: Paper K1" in result
+        assert "## Attachments" in result
+        assert "- Key: C1" in result
 
 
 # ---------------------------------------------------------------------------
@@ -367,16 +389,19 @@ class TestCollectionItemsEdgeCases:
             assert "No items found" in result
 
     def test_truncation_message(self, monkeypatch, coll_zot, dummy_ctx):
-        """When limit < total items, truncation message appears."""
+        """When limit < total items, the response says what it showed and how
+        to get the rest. It used to say "increase the limit", which could not
+        work past 100 and never worked at all without an offset (#453)."""
         monkeypatch.setattr("zotero_mcp.tools.retrieval._client.get_zotero_client", lambda: coll_zot)
         from zotero_mcp.tools.retrieval import get_collection_items
 
         result = get_collection_items(collection_key="COL1", detail="summary", limit=1, ctx=dummy_ctx)
-        assert "Showing 1 of 2 items" in result
+        assert "Showing items 1-1 of 2" in result
+        assert "offset=1" in result
 
 
 class TestBatchChildrenEdgeCases:
-    """Error handling for get_items_children."""
+    """Error handling for get_item_children in batch (multi-key) mode."""
 
     def test_bad_key_doesnt_abort_batch(self, monkeypatch, dummy_ctx):
         """One bad key doesn't prevent other keys from being processed."""
@@ -398,9 +423,9 @@ class TestBatchChildrenEdgeCases:
 
         zot = ErrorZotero()
         monkeypatch.setattr("zotero_mcp.tools.retrieval._client.get_zotero_client", lambda: zot)
-        from zotero_mcp.tools.retrieval import get_items_children
+        from zotero_mcp.tools.retrieval import get_item_children
 
-        result = get_items_children(item_keys=["GOOD", "BAD"], ctx=dummy_ctx)
+        result = get_item_children(item_key=["GOOD", "BAD"], ctx=dummy_ctx)
 
         assert "Paper GOOD" in result
         assert "Error fetching children" in result  # BAD key error
@@ -409,9 +434,9 @@ class TestBatchChildrenEdgeCases:
     def test_empty_keys_error(self, monkeypatch, dummy_ctx):
         """Empty keys returns clear error."""
         monkeypatch.setattr("zotero_mcp.tools.retrieval._client.get_zotero_client", lambda: FakeZotero())
-        from zotero_mcp.tools.retrieval import get_items_children
+        from zotero_mcp.tools.retrieval import get_item_children
 
-        result = get_items_children(item_keys=[], ctx=dummy_ctx)
+        result = get_item_children(item_key=[], ctx=dummy_ctx)
         assert "No item keys provided" in result
 
     def test_comma_separated_input(self, monkeypatch, dummy_ctx):
@@ -428,9 +453,9 @@ class TestBatchChildrenEdgeCases:
 
         zot = SimpleZotero()
         monkeypatch.setattr("zotero_mcp.tools.retrieval._client.get_zotero_client", lambda: zot)
-        from zotero_mcp.tools.retrieval import get_items_children
+        from zotero_mcp.tools.retrieval import get_item_children
 
-        result = get_items_children(item_keys="K1,K2,K3", ctx=dummy_ctx)
+        result = get_item_children(item_key="K1,K2,K3", ctx=dummy_ctx)
         assert "Paper K1" in result
         assert "Paper K2" in result
         assert "Paper K3" in result

@@ -1,4 +1,4 @@
-"""Integration tests for the zotero_add_by_bibtex MCP tool."""
+"""Integration tests for the BibTeX source of the zotero_add_item MCP tool."""
 
 import re
 import time
@@ -6,25 +6,7 @@ import time
 from conftest import FakeZotero
 
 from zotero_mcp import server
-from zotero_mcp.batch_runner import read_status
-
-
-def _wait_for_task(result):
-    """Extract task_id from a background-task return string and wait for completion.
-
-    Returns the final TaskStatus (or None if the result isn't a task-start string).
-    """
-    m = re.search(r"\*\*([^*]+)\*\*", result)
-    if not m:
-        return None
-    task_id = m.group(1)
-    deadline = time.time() + 10
-    while time.time() < deadline:
-        s = read_status(task_id)
-        if s and s.status in ("completed", "failed"):
-            return s
-        time.sleep(0.05)
-    return read_status(task_id)
+from zotero_mcp.tools import write
 
 
 class FakeZoteroWithAttach(FakeZotero):
@@ -79,7 +61,7 @@ class TestSingleEntry:
           doi={10.1234/x},
         }
         """
-        result = server.add_by_bibtex(bibtex=bib, ctx=dummy_ctx)
+        result = write.add_item(source=bib, source_type="bibtex", ctx=dummy_ctx)
 
         assert "started" in result.lower() or "⏳" in result
         assert "get_batch_task_status" in result
@@ -101,8 +83,7 @@ class TestSingleEntry:
         _disable_oa_pdf(monkeypatch)
         bib = "@book{MyCite2021, title={B}, author={A, B}, publisher={P}, year=2021}"
 
-        result = server.add_by_bibtex(bibtex=bib, ctx=dummy_ctx)
-        _wait_for_task(result)
+        write.add_item(source=bib, source_type="bibtex", ctx=dummy_ctx)
 
         assert "Citation Key: MyCite2021" in fake.created[0]["extra"]
 
@@ -124,7 +105,7 @@ class TestMultipleEntries:
         @article{a, title={A}, author={X, Y}, year={2020}, doi={10.1234/a}}
         @book{b, title={B}, author={P, Q}, publisher={Pub}, year={2021}}
         """
-        result = server.add_by_bibtex(bibtex=bib, ctx=dummy_ctx)
+        result = write.add_item(source=bib, source_type="bibtex", ctx=dummy_ctx)
 
         assert "started" in result.lower() or "⏳" in result
         assert "get_batch_task_status" in result
@@ -152,8 +133,12 @@ class TestTagsAndCollections:
         @article{x, title={T}, author={A, B}, year={2020},
           keywords={source1, source2}}
         """
-        result = server.add_by_bibtex(bibtex=bib, tags=["caller1", "source1"], ctx=dummy_ctx)
-        _wait_for_task(result)
+        write.add_item(
+            source=bib,
+            source_type="bibtex",
+            tags=["caller1", "source1"],
+            ctx=dummy_ctx,
+        )
 
         tags = [t["tag"] for t in fake.created[0]["tags"]]
         # source1 should only appear once (case-insensitive dedup)
@@ -171,8 +156,9 @@ class TestTagsAndCollections:
         _disable_oa_pdf(monkeypatch)
 
         bib = "@article{x, title={T}, author={A, B}, year={2020}}"
-        result = server.add_by_bibtex(
-            bibtex=bib,
+        write.add_item(
+            source=bib,
+            source_type="bibtex",
             collections=["COL00001", "COL00002"],
             ctx=dummy_ctx,
         )
@@ -192,8 +178,9 @@ class TestTagsAndCollections:
         _disable_oa_pdf(monkeypatch)
 
         bib = "@article{x, title={T}, author={A, B}, year={2020}}"
-        result = server.add_by_bibtex(
-            bibtex=bib,
+        write.add_item(
+            source=bib,
+            source_type="bibtex",
             collections=["reading list"],
             ctx=dummy_ctx,
         )
@@ -223,8 +210,7 @@ class TestOaPdfAttempt:
         monkeypatch.setattr("zotero_mcp.tools._helpers._try_attach_oa_pdf", stub)
 
         bib = "@article{a, title={T}, author={A, B}, year=2020, doi={10.1234/x}}"
-        result = server.add_by_bibtex(bibtex=bib, ctx=dummy_ctx)
-        _wait_for_task(result)
+        write.add_item(source=bib, source_type="bibtex", ctx=dummy_ctx)
 
         assert called["count"] == 1
         assert called["doi"] == "10.1234/x"
@@ -240,7 +226,7 @@ class TestOaPdfAttempt:
         monkeypatch.setattr("zotero_mcp.tools._helpers._try_attach_oa_pdf", stub)
 
         bib = "@book{b, title={T}, author={A, B}, publisher={P}, year=2020}"
-        server.add_by_bibtex(bibtex=bib, ctx=dummy_ctx)
+        write.add_item(source=bib, source_type="bibtex", ctx=dummy_ctx)
 
         assert called["count"] == 0
 
@@ -264,7 +250,7 @@ class TestFilePath:
             encoding="utf-8",
         )
 
-        result = server.add_by_bibtex(file_path=str(bib_file), ctx=dummy_ctx)
+        result = write.add_item(source=str(bib_file), source_type="bibtex", ctx=dummy_ctx)
 
         assert "started" in result.lower() or "⏳" in result
         assert "get_batch_task_status" in result
@@ -283,8 +269,7 @@ class TestFilePath:
         f = tmp_path / "refs.bibtex"
         f.write_text("@book{b, title={B}, author={P, Q}, publisher={Pub}, year=2020}", encoding="utf-8")
 
-        result = server.add_by_bibtex(file_path=str(f), ctx=dummy_ctx)
-        _wait_for_task(result)
+        write.add_item(source=str(f), source_type="bibtex", ctx=dummy_ctx)
         assert len(fake.created) == 1
 
     def test_rejects_wrong_extension(self, monkeypatch, dummy_ctx, tmp_path):
@@ -292,20 +277,21 @@ class TestFilePath:
         f = tmp_path / "refs.txt"
         f.write_text("@article{a, title={T}, year=2020}", encoding="utf-8")
 
-        result = server.add_by_bibtex(file_path=str(f), ctx=dummy_ctx)
+        result = write.add_item(source=str(f), source_type="bibtex", ctx=dummy_ctx)
         assert "Unsupported file extension" in result
 
     def test_rejects_missing_file(self, monkeypatch, dummy_ctx):
         _patch_hybrid(monkeypatch)
-        result = server.add_by_bibtex(
-            file_path="/absolutely/no/such/file.bib",
+        result = write.add_item(
+            source="/absolutely/no/such/file.bib",
+            source_type="bibtex",
             ctx=dummy_ctx,
         )
         assert "not found" in result.lower()
 
     def test_rejects_relative_path(self, monkeypatch, dummy_ctx):
         _patch_hybrid(monkeypatch)
-        result = server.add_by_bibtex(file_path="refs.bib", ctx=dummy_ctx)
+        result = write.add_item(source="refs.bib", source_type="bibtex", ctx=dummy_ctx)
         assert "absolute" in result.lower()
 
     def test_rejects_symlink(self, monkeypatch, dummy_ctx, tmp_path):
@@ -315,7 +301,7 @@ class TestFilePath:
         link = tmp_path / "linked.bib"
         link.symlink_to(target)
 
-        result = server.add_by_bibtex(file_path=str(link), ctx=dummy_ctx)
+        result = write.add_item(source=str(link), source_type="bibtex", ctx=dummy_ctx)
         assert "symlink" in result.lower()
 
 
@@ -327,9 +313,13 @@ class TestFilePath:
 class TestErrorPaths:
     def test_empty_bibtex(self, monkeypatch, dummy_ctx):
         _patch_hybrid(monkeypatch)
-        result = server.add_by_bibtex(bibtex="", ctx=dummy_ctx)
+        result = write.add_item(source="", source_type="bibtex", ctx=dummy_ctx)
         assert "Must provide" in result
 
+    # The two tests below call the implementation directly: add_item folds
+    # `bibtex` and `file_path` into one `source`, so neither the "neither"
+    # nor the "both" shape is reachable through the merged tool. They still
+    # guard the contract add_item dispatches into.
     def test_neither_bibtex_nor_file_path(self, monkeypatch, dummy_ctx):
         _patch_hybrid(monkeypatch)
         result = server.add_by_bibtex(ctx=dummy_ctx)
@@ -346,34 +336,40 @@ class TestErrorPaths:
 
     def test_no_valid_entries(self, monkeypatch, dummy_ctx):
         _patch_hybrid(monkeypatch)
-        result = server.add_by_bibtex(bibtex="this is not bibtex", ctx=dummy_ctx)
+        result = write.add_item(
+            source="this is not bibtex",
+            source_type="bibtex",
+            ctx=dummy_ctx,
+        )
         assert "No valid @entries" in result
 
     def test_local_only_mode_rejected(self, monkeypatch, dummy_ctx):
         def raise_local(ctx):
             raise ValueError("Cannot perform write operations in local-only mode.")
 
-        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", raise_local)
-        result = server.add_by_bibtex(bibtex="@a{x, title=T}", ctx=dummy_ctx)
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client", raise_local
+        )
+        result = write.add_item(source="@a{x, title=T}", source_type="bibtex", ctx=dummy_ctx)
         assert "local-only" in result.lower()
 
-    def test_partial_failure_continues(self, monkeypatch, dummy_ctx, tmp_path):
-        """If one entry fails conversion, others should still be created."""
-        monkeypatch.setattr(
-            "zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks"
-        )
+    def test_partial_failure_continues(self, monkeypatch, dummy_ctx):
+        """If one entry fails to create, others in the same batch should
+        still be created (#A4: all three entries go through a single
+        create_items() POST, so the failure has to be reported via that
+        POST's per-index "failed" map, not by raising on a later call)."""
         fake = _patch_hybrid(monkeypatch)
         _disable_oa_pdf(monkeypatch)
 
-        # Monkeypatch create_items to fail on the second call
-        call_count = {"n": 0}
-        original_create = fake.create_items
-
         def flaky_create(items, **kwargs):
-            call_count["n"] += 1
-            if call_count["n"] == 2:
-                raise RuntimeError("simulated write failure")
-            return original_create(items, **kwargs)
+            fake.created.extend(items)
+            success, failed = {}, {}
+            for i, _item in enumerate(items):
+                if i == 1:
+                    failed[str(i)] = "simulated write failure"
+                else:
+                    success[str(i)] = f"KEY{i:04d}"
+            return {"success": success, "successful": {}, "failed": failed}
 
         fake.create_items = flaky_create
 
@@ -382,7 +378,7 @@ class TestErrorPaths:
         @article{b, title={B}, author={P, Q}, year={2020}}
         @article{c, title={C}, author={R, S}, year={2020}}
         """
-        result = server.add_by_bibtex(bibtex=bib, ctx=dummy_ctx)
+        result = write.add_item(source=bib, source_type="bibtex", ctx=dummy_ctx)
 
         assert "started" in result.lower() or "⏳" in result
         assert "get_batch_task_status" in result

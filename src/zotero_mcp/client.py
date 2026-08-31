@@ -3,22 +3,40 @@ Zotero client wrapper for MCP server.
 """
 
 import functools
+import logging
 import os
+import re
+import shutil
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import httpx
 from dotenv import load_dotenv
-from markitdown import MarkItDown
 from pyzotero import zotero
 
-from zotero_mcp.utils import format_creators
+from zotero_mcp import schema
+from zotero_mcp.extract import (
+    categorize_attachment,
+    extract_file,
+    normalize_attachment_priority,
+    pick_by_priority,
+)
+from zotero_mcp.utils import (
+    _paginate,
+    format_creators,
+    html_to_text,
+    item_display_date,
+    item_display_title,
+)
 from zotero_mcp.webdav import (
     WebDAVNotConfiguredError,
     download_attachment_from_webdav,
 )
+
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
@@ -60,6 +78,38 @@ class ZoteroApiBusyError(RuntimeError):
     """
 
 
+@contextmanager
+def zotero_api_lock():
+    """Hold the shared Zotero API lock for a block of code.
+
+    The context-manager form of :func:`with_zotero_api_lock`, with identical
+    semantics (bounded acquire, ZoteroApiBusyError for waiters, RLock
+    reentrancy, ZOTERO_MCP_LOCK_TIMEOUT honoured). Use it when only part of a
+    tool touches the Zotero API and the rest is long local work — parsing a
+    downloaded PDF, running a subprocess — that no other tool needs to be
+    blocked behind (#431).
+    """
+    timeout = _lock_timeout()
+    if timeout <= 0:
+        # Opt-out: original unbounded behaviour.
+        with _zotero_api_lock:
+            yield
+        return
+    acquired = _zotero_api_lock.acquire(timeout=timeout)
+    if not acquired:
+        raise ZoteroApiBusyError(
+            f"Another Zotero API operation is still in progress and did not "
+            f"release within {timeout:.0f}s. This usually means a previous "
+            f"call is slow or stuck (e.g. a large PDF upload or an "
+            f"unreachable Zotero cloud). Please retry shortly; if it "
+            f"persists, restart the Zotero MCP server."
+        )
+    try:
+        yield
+    finally:
+        _zotero_api_lock.release()
+
+
 def with_zotero_api_lock(func):
     """Serialize Zotero API access across concurrent MCP tool threads.
 
@@ -71,25 +121,8 @@ def with_zotero_api_lock(func):
 
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
-        timeout = _lock_timeout()
-        if timeout <= 0:
-            # Opt-out: original unbounded behaviour.
-            with _zotero_api_lock:
-                return func(*args, **kwargs)
-        acquired = _zotero_api_lock.acquire(timeout=timeout)
-        if not acquired:
-            raise ZoteroApiBusyError(
-                f"Another Zotero API operation is still in progress and did not "
-                f"release within {timeout:.0f}s. This usually means a previous "
-                f"call is slow or stuck (e.g. a large PDF upload or an "
-                f"unreachable Zotero cloud). Please retry shortly; if it "
-                f"persists, restart the Zotero MCP server."
-            )
-        try:
+        with zotero_api_lock():
             return func(*args, **kwargs)
-        finally:
-            _zotero_api_lock.release()
-
     return wrapper
 
 
@@ -113,6 +146,21 @@ def clear_active_library() -> None:
 def get_active_library() -> dict[str, str]:
     """Return the current active library override (empty dict if using defaults)."""
     return dict(_active_library_override)
+
+
+def get_active_group_id() -> int:
+    """group_id (0 = personal, else Zotero groupID) of the library
+    ``get_zotero_client()`` is currently scoped to."""
+
+    override = _active_library_override
+    library_id = override.get("library_id") or os.getenv("ZOTERO_LIBRARY_ID") or "0"
+    library_type = override.get("library_type") or os.getenv("ZOTERO_LIBRARY_TYPE", "user")
+    if library_type == "group":
+        try:
+            return int(library_id)
+        except (TypeError, ValueError):
+            return 0
+    return 0
 
 
 def _make_local_http_client() -> httpx.Client:
@@ -263,9 +311,15 @@ def format_item_metadata(item: dict[str, Any], include_abstract: bool = True) ->
     data = item.get("data", {})
     item_type = data.get("itemType", "unknown")
 
+    # Type-specific base fields (a statute's title is "nameOfAct"), notes
+    # (whose title is their first line) and standalone attachments (which have
+    # only a filename) all resolve here, so a search result and an item lookup
+    # can never disagree about what something is called (#452, #447).
+    heading = item_display_title(data)
+
     # Basic information
     lines = [
-        f"# {data.get('title', 'Untitled')}",
+        f"# {heading}",
         f"**Type:** {item_type}",
         f"**Item Key:** {data.get('key')}",
     ]
@@ -277,8 +331,9 @@ def format_item_metadata(item: dict[str, Any], include_abstract: bool = True) ->
     if data.get("deleted"):
         lines.append("**Status:** 🗑️ In Trash (recoverable from Zotero Trash view)")
 
-    # Date
-    if date := data.get("date"):
+    # Date. Resolved the same way as the title: a case's date is
+    # `dateDecided`, a statute's `dateEnacted`, a patent's `issueDate` (#452).
+    if date := item_display_date(data):
         lines.append(f"**Date:** {date}")
 
     # Authors/Creators
@@ -320,6 +375,40 @@ def format_item_metadata(item: dict[str, Any], include_abstract: bool = True) ->
     if url := data.get("url"):
         lines.append(f"**URL:** {url}")
 
+    # Whatever the branches above did not cover. The formatter knows about
+    # journalArticle and bookSection by name and renders nothing type-specific
+    # for anything else, so a case lost `court`, `docketNumber` and `reporter`
+    # entirely — the whole reason its record looked empty (#452). Rather than
+    # adding a branch per type forever, ask the schema what fields this type
+    # has and show the populated ones that are not already above.
+    _shown = {
+        "key", "itemType", "title", "date", "creators", "tags", "collections",
+        "relations", "abstractNote", "extra", "note", "deleted", "version",
+        "dateAdded", "dateModified", "parentItem", "filename", "contentType",
+        "publicationTitle", "bookTitle", "volume", "issue", "pages",
+        "publisher", "place", "DOI", "ISBN", "ISSN", "url", "shortTitle",
+        "accessDate", "libraryCatalog", "callNumber", "archive",
+        "archiveLocation", "rights", "language",
+    }
+    # The type's own spellings of title and date are already in the heading
+    # and the Date line; showing them again under their raw names would read
+    # as two different pieces of information.
+    try:
+        _shown.add(schema.resolve_field(item_type, "title"))
+        _shown.add(schema.resolve_field(item_type, "date"))
+        _type_fields = schema.valid_fields(item_type)
+    except Exception:
+        _type_fields = set()
+
+    _extra_lines = []
+    for field in sorted(_type_fields - _shown):
+        value = data.get(field)
+        if value and isinstance(value, str):
+            # camelCase -> "Docket Number"
+            label = re.sub(r"(?<!^)(?=[A-Z])", " ", field).title()
+            _extra_lines.append(f"**{label}:** {value}")
+    lines.extend(_extra_lines)
+
     # Extra field often holds citation key / misc metadata
     if extra := data.get("extra"):
         lines.extend(["", "## Extra", extra])
@@ -340,6 +429,12 @@ def format_item_metadata(item: dict[str, Any], include_abstract: bool = True) ->
     # Abstract
     if include_abstract and (abstract := data.get("abstractNote")):
         lines.extend(["", "## Abstract", abstract])
+
+    # A note's body IS its content -- there is nothing else to show, and
+    # returning the metadata alone told a caller the note existed while
+    # withholding the only thing they asked for (#447).
+    if item_type == "note" and (note_body := data.get("note")):
+        lines.extend(["", "## Note", html_to_text(note_body)])
 
     # Related Items (dc:relation URIs → item keys)
     dc_relations = data.get("relations", {}).get("dc:relation", [])
@@ -375,20 +470,49 @@ def generate_bibtex(item: dict[str, Any]) -> str:
         BibTeX formatted string
     """
     data = item.get("data", {})
-    item_key = data.get("key")
+    # The key lives at ``data.key`` in Zotero API responses but only at the
+    # top level in some locally-assembled items; accept either.
+    item_key = data.get("key") or item.get("key")
 
-    # Try Better BibTeX first
+    # A trashed item exports a perfectly plausible entry, and BibTeX has no
+    # field that would say otherwise — markdown shows a trash status and JSON
+    # carries data.deleted, but a BibTeX consumer sees nothing. That gap is
+    # what made a trashed duplicate look like a healthy record to a caller
+    # reading only this format. A comment line is inert to every BibTeX
+    # parser and visible to every human.
+    trash_marker = "% Status: in trash\n" if data.get("deleted") else ""
+
+    # Try Better BibTeX first — it produces better entries and the user's
+    # real pinned citekeys. Any failure falls through to the local generator
+    # below; BBT is an enhancement, never a prerequisite.
     try:
         from zotero_mcp.better_bibtex_client import ZoteroBetterBibTexAPI
 
-        bibtex = ZoteroBetterBibTexAPI()
+        if item_key:
+            bibtex = ZoteroBetterBibTexAPI()
 
-        if bibtex.is_zotero_running():
-            return bibtex.export_bibtex(item_key)
+            if bibtex.is_zotero_running():
+                exported = bibtex.export_bibtex(item_key)
+                # Guard the result even though export_bibtex now raises on a
+                # blank export: returning "" here is indistinguishable from
+                # "no BibTeX" and from "no such item", which is the whole
+                # defect being fixed.
+                if exported and exported.strip():
+                    return trash_marker + exported
+                logger.warning(
+                    "Better BibTeX returned no entry for %s; "
+                    "falling back to local BibTeX generation", item_key
+                )
 
-    except Exception:
-        # Continue to fallback method if Better BibTeX fails
-        pass
+    except Exception as e:
+        # BBT does not index trashed items and returns a null citekey for
+        # them, so a perfectly readable item can fail here. Fall back rather
+        # than fail: the local generator below works from the item data we
+        # already hold.
+        logger.warning(
+            "Better BibTeX export failed for %s (%s); "
+            "falling back to local BibTeX generation", item_key, e
+        )
 
     # Fallback to basic BibTeX generation
     item_type = data.get("itemType", "misc")
@@ -415,14 +539,35 @@ def generate_bibtex(item: dict[str, Any]) -> str:
         first = creators[0]
         author = first.get("lastName", first.get("name", "").split()[-1] if first.get("name") else "").replace(" ", "")
 
-    year = data.get("date", "")[:4] if data.get("date") else "nodate"
-    cite_key = f"{author}{year}_{item_key}"
+    # Resolved, not read straight off `date` — a case keeps its date in
+    # `dateDecided`, a statute in `dateEnacted` (#452). Take the first
+    # four-digit run rather than the leading four characters: these are
+    # display strings ("8 October 2024"), not ISO dates.
+    _display_date = item_display_date(data)
+    _year_match = re.search(r"\b(\d{4})\b", _display_date) if _display_date else None
+    year = _year_match.group(1) if _year_match else "nodate"
+    # ``item_key`` can be absent on items assembled locally; never render the
+    # literal string "None" into a citekey.
+    cite_key = f"{author}{year}_{item_key}" if item_key else f"{author}{year}"
+    if not cite_key:
+        cite_key = "untitled"
 
     # Build BibTeX entry
     bib_type = type_map.get(item_type, "misc")
     lines = [f"@{bib_type}{{{cite_key},"]
 
-    # Add fields
+    # Add fields. `title` and `date` are resolved through the base-field map
+    # first, so a case or statute exports with its name and year rather than
+    # as an empty `@misc{nodate_KEY}` (#452).
+    resolved = dict(data)
+    if title := item_display_title(data):
+        if title not in ("Untitled", "Untitled Note"):
+            resolved["title"] = title
+
+    # No ("date", "year") entry: the block below already emits `year` from the
+    # resolved four-digit year. Mapping it here as well emitted it twice, the
+    # first time as the raw display string ("8 October 2024"), which is not a
+    # BibTeX year.
     field_mappings = [
         ("title", "title"),
         ("publicationTitle", "journal"),
@@ -433,12 +578,14 @@ def generate_bibtex(item: dict[str, Any]) -> str:
         ("publisher", "publisher"),
         ("place", "address"),
         ("DOI", "doi"),
+        ("ISBN", "isbn"),
+        ("ISSN", "issn"),
         ("url", "url"),
         ("abstractNote", "abstract"),
     ]
 
     for zotero_field, bibtex_field in field_mappings:
-        if value := data.get(zotero_field):
+        if value := resolved.get(zotero_field):
             # Escape special characters
             value = value.replace("{", "\\{").replace("}", "\\}")
             lines.append(f"  {bibtex_field} = {{{value}}},")
@@ -464,23 +611,52 @@ def generate_bibtex(item: dict[str, Any]) -> str:
         lines[-1] = lines[-1][:-1]
     lines.append("}")
 
-    return "\n".join(lines)
+    return trash_marker + "\n".join(lines)
 
 
-def get_attachment_details(zot: zotero.Zotero, item: dict[str, Any]) -> AttachmentDetails | None:
+def configured_attachment_priority() -> tuple[str, ...]:
+    """The user's ``attachment_priority``, or the default if unset/unreadable.
+
+    Imported lazily because ``config`` is not a dependency of this module at
+    import time and a missing config must never break attachment lookup.
+    """
+    try:
+        from zotero_mcp.config import load_config
+
+        configured = load_config().semantic_search.extraction.attachment_priority
+    except Exception:
+        return normalize_attachment_priority(None)
+    return normalize_attachment_priority(configured)
+
+
+def get_attachment_details(
+    zot: zotero.Zotero, item: dict[str, Any], priority=None
+) -> AttachmentDetails | None:
     """
     Get attachment details for a Zotero item, finding the most relevant attachment.
+
+    Passing a key that names an attachment *directly* returns that attachment
+    unchanged, without consulting ``priority``. That short-circuit is
+    supported and deliberate: it is how a caller reads one specific file on
+    an item that has several (#378).
 
     Args:
         zot: A Zotero client instance.
         item: A Zotero item dictionary.
+        priority: Attachment kinds in preference order. ``None`` uses the
+            configured ``attachment_priority``. Callers that need one
+            specific kind should say so — ``zotero_read_pdf_pages`` passes
+            ``("pdf",)`` so a markdown-first configuration cannot hand it a
+            file it has no way to read.
 
     Returns:
         AttachmentDetails if found, None otherwise.
     """
     data = item.get("data", {})
     item_type = data.get("itemType")
-    item_key = data.get("key")
+    # Top-level "key" is the reliable one: some API responses (and the local
+    # Zotero server) omit it from the nested data object (#372).
+    item_key = data.get("key") or item.get("key")
 
     # Direct attachment
     if item_type == "attachment":
@@ -491,47 +667,48 @@ def get_attachment_details(zot: zotero.Zotero, item: dict[str, Any]) -> Attachme
             content_type=data.get("contentType", ""),
         )
 
+    if priority is None:
+        priority = configured_attachment_priority()
+
     # For regular items, look for child attachments
     try:
-        children = zot.children(item_key)
+        children = _paginate(zot.children, item_key)
 
-        # Group attachments by content type
-        pdfs = []
-        htmls = []
-        others = []
-
+        candidates = []
         for child in children:
             child_data = child.get("data", {})
-            if child_data.get("itemType") == "attachment":
-                content_type = child_data.get("contentType", "")
-                filename = child_data.get("filename", "")
-                title = child_data.get("title", "Untitled")
-                key = child.get("key", "")
+            if child_data.get("itemType") != "attachment":
+                continue
+            content_type = child_data.get("contentType", "")
+            filename = child_data.get("filename", "")
+            title = child_data.get("title", "Untitled")
+            key = child.get("key", "")
 
-                # Use MD5 as proxy for size (longer MD5 usually means larger file)
-                size_proxy = len(child_data.get("md5", ""))
+            # Unlike the local path, an attachment we cannot parse ourselves
+            # is still worth returning: the caller tries Zotero's
+            # server-side fulltext index first, which covers formats we have
+            # no reader for (EPUB, DOCX). So an uncategorized attachment
+            # joins the catch-all bucket rather than being dropped.
+            category = categorize_attachment(filename or title, content_type) or "other"
 
-                attachment = (key, title, filename, content_type, size_proxy)
+            # The API exposes no file size, so this only distinguishes a
+            # stored file (32-char md5) from a linked one (no md5) — enough
+            # to prefer a real upload, not a true size ordering.
+            size_proxy = len(child_data.get("md5") or "")
 
-                if content_type == "application/pdf":
-                    pdfs.append(attachment)
-                elif content_type.startswith("text/html"):
-                    htmls.append(attachment)
-                else:
-                    others.append(attachment)
-
-        # Return first match in priority order (PDF > HTML > other)
-        # Sort each category by size (descending) to get largest/most complete file
-        for category in [pdfs, htmls, others]:
-            if category:
-                category.sort(key=lambda x: x[4], reverse=True)
-                key, title, filename, content_type, _ = category[0]
-                return AttachmentDetails(
+            candidates.append((
+                category,
+                size_proxy,
+                AttachmentDetails(
                     key=key,
                     title=title,
                     filename=filename,
                     content_type=content_type,
-                )
+                ),
+            ))
+
+        if (chosen := pick_by_priority(candidates, priority)) is not None:
+            return chosen
     except Exception:
         pass
 
@@ -551,9 +728,18 @@ def download_attachment_file(
     Download an attachment using the best available source.
 
     The fallback order is:
-    1. local Zotero API (works with local storage or desktop-managed WebDAV)
-    2. Direct WebDAV access via environment variables
-    3. Zotero Web API (works with Zotero cloud storage)
+    1. local Zotero storage, resolved straight off the local SQLite DB
+    2. local Zotero API (works with local storage or desktop-managed WebDAV)
+    3. Direct WebDAV access via environment variables
+    4. Zotero Web API (works with Zotero cloud storage)
+
+    Step 1 exists because none of the later steps can serve a *linked* file.
+    The local API answers ``/file`` for a linked attachment with a 302 to a
+    ``file://`` URL, which httpx refuses to follow ("unsupported protocol"),
+    and a linked file is by definition never uploaded to WebDAV or Zotero
+    storage — so all three remaining sources fail on an attachment that is
+    sitting readable on the same disk. Reading the path out of the DB avoids
+    the redirect entirely and is faster for ordinary stored files too.
     """
     destination = Path(destination_dir)
     destination.mkdir(parents=True, exist_ok=True)
@@ -564,6 +750,52 @@ def download_attachment_file(
     def _cleanup_target() -> None:
         if target_path.exists() and target_path.stat().st_size == 0:
             target_path.unlink()
+
+    def _try_local_storage() -> AttachmentDownloadResult | None:
+        """Resolve the attachment off disk via the local Zotero SQLite DB.
+
+        Gated on local mode so a web-API user pointed at a group library never
+        matches an unrelated same-key row in a personal DB that happens to
+        exist on the machine.
+        """
+        try:
+            from zotero_mcp.config import load_config
+            from zotero_mcp.local_db import LocalZoteroReader
+            from zotero_mcp.utils import is_local_mode
+
+            if not is_local_mode():
+                return None
+
+            with LocalZoteroReader(db_path=load_config().resolve_zotero_db_path()) as reader:
+                attachment = reader.get_attachment_by_key(attachment_key)
+                if attachment is None:
+                    return None
+
+                resolved = reader._resolve_attachment_path(
+                    attachment_key, attachment["zotero_path"] or ""
+                )
+                if not (resolved and resolved.exists()):
+                    # Recorded filename drifted on disk — scan the folder (#291)
+                    resolved = reader._scan_storage_for_attachment(
+                        attachment_key, attachment["content_type"]
+                    )
+                if not (resolved and resolved.exists() and resolved.stat().st_size > 0):
+                    return None
+
+                # Copy rather than hand back the library path: callers treat
+                # the returned file as a scratch copy and delete it, which on
+                # a linked file would destroy the user's original (#372).
+                shutil.copyfile(resolved, target_path)
+                return AttachmentDownloadResult(
+                    path=target_path,
+                    source="Local storage",
+                    errors=errors,
+                )
+        except Exception as exc:
+            errors.append(f"Local storage: {exc}")
+            _cleanup_target()
+
+        return None
 
     def _try_dump(label: str, zot_client: zotero.Zotero | None) -> AttachmentDownloadResult | None:
         if zot_client is None:
@@ -584,6 +816,10 @@ def download_attachment_file(
             _cleanup_target()
 
         return None
+
+    storage_result = _try_local_storage()
+    if storage_result:
+        return storage_result
 
     local_result = _try_dump("Local Zotero", local_client)
     if local_result:
@@ -615,19 +851,18 @@ def download_attachment_file(
     return AttachmentDownloadResult(path=None, source=None, errors=errors)
 
 
-def convert_to_markdown(file_path: str | Path) -> str:
+def convert_to_markdown(file_path: str | Path, *, max_pages: int | None = None) -> str:
     """
-    Convert a file to markdown using markitdown library.
+    Convert a downloaded attachment to markdown.
 
     Args:
         file_path: Path to the file to convert.
+        max_pages: For PDFs, extract only the first N pages.
 
     Returns:
-        Markdown text.
+        Markdown text, or a human-readable error string on failure.
     """
-    try:
-        md = MarkItDown()
-        result = md.convert(str(file_path))
-        return result.text_content
-    except Exception as e:
-        return f"Error converting file to markdown: {str(e)}"
+    doc = extract_file(file_path, max_pages=max_pages)
+    if doc is None:
+        return f"Error converting file to markdown: {Path(file_path).name}"
+    return doc.text

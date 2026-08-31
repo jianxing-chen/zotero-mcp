@@ -1,4 +1,4 @@
-"""Tests for zotero_add_by_isbn (#226).
+"""Tests for the ISBN source of zotero_add_item (#226).
 
 Covers ISBN normalization (10→13 conversion, checksum validation), the
 Open Library → Google Books lookup cascade, and the resulting Zotero book
@@ -8,7 +8,6 @@ item shape.
 import requests
 from conftest import DummyContext, FakeZotero
 
-from zotero_mcp import server
 from zotero_mcp.tools import write as _write
 from zotero_mcp.tools._helpers import (
     _isbn10_to_isbn13,
@@ -235,8 +234,9 @@ class TestAddByIsbnEndToEnd:
             ),
         )
 
-        result = server.add_by_isbn(
-            isbn="978-0-19-973581-5",
+        result = _write.add_item(
+            source="978-0-19-973581-5",
+            source_type="isbn",
             ctx=DummyContext(),
         )
 
@@ -276,8 +276,9 @@ class TestAddByIsbnEndToEnd:
             ),
         )
 
-        result = server.add_by_isbn(
-            isbn="9780135957059",
+        result = _write.add_item(
+            source="9780135957059",
+            source_type="isbn",
             ctx=DummyContext(),
         )
 
@@ -308,8 +309,9 @@ class TestAddByIsbnEndToEnd:
             ),
         )
 
-        result = server.add_by_isbn(
-            isbn="9780135957059",
+        result = _write.add_item(
+            source="9780135957059",
+            source_type="isbn",
             ctx=DummyContext(),
         )
 
@@ -323,8 +325,9 @@ class TestAddByIsbnEndToEnd:
             lambda ctx: (fake, fake),
         )
 
-        result = server.add_by_isbn(
-            isbn="not-an-isbn",
+        result = _write.add_item(
+            source="not-an-isbn",
+            source_type="isbn",
             ctx=DummyContext(),
         )
 
@@ -357,8 +360,9 @@ class TestAddByIsbnEndToEnd:
             ),
         )
 
-        server.add_by_isbn(
-            isbn="9780199735815",
+        _write.add_item(
+            source="9780199735815",
+            source_type="isbn",
             tags=["philosophy", "anthology"],
             collections=["COLL0001"],
             ctx=DummyContext(),
@@ -367,3 +371,106 @@ class TestAddByIsbnEndToEnd:
         created = fake.created[0]
         assert {t["tag"] for t in created["tags"]} == {"philosophy", "anthology"}
         assert created["collections"] == ["COLL0001"]
+
+
+# ---------------------------------------------------------------------------
+# Multiple ISBNs in one call
+# ---------------------------------------------------------------------------
+
+MULTI_OL_PAYLOAD = {
+    "ISBN:9780199735815": OL_PAYLOAD["ISBN:9780199735815"],
+    "ISBN:9780135957059": {
+        "title": "The Pragmatic Programmer",
+        "authors": [{"name": "David Thomas"}],
+        "publishers": [{"name": "Addison-Wesley"}],
+        "publish_date": "2019",
+    },
+}
+
+
+class TestMultipleIsbns:
+    def test_creates_multiple_items(self, monkeypatch):
+        fake = FakeZotero()
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client",
+            lambda ctx: (fake, fake),
+        )
+        monkeypatch.setattr(
+            _write, "requests",
+            type("R", (), {
+                "get": _fake_get_factory({
+                    "openlibrary.org": _FakeResponse(200, MULTI_OL_PAYLOAD),
+                }),
+                "RequestException": requests.RequestException,
+            })
+        )
+
+        result = _write.add_item(
+            source="978-0-19-973581-5, 9780135957059",
+            source_type="isbn",
+            ctx=DummyContext(),
+        )
+
+        assert len(fake.created) == 2
+        assert fake.created[0]["title"] == "The Oxford Handbook of Philosophy of Mind"
+        assert fake.created[1]["title"] == "The Pragmatic Programmer"
+        assert "# Added 2 of 2 ISBNs" in result
+
+    def test_partial_failure_reports_both(self, monkeypatch):
+        """One bad-checksum ISBN alongside one good one: the good one is
+        still created and the bad one is reported, not silently dropped."""
+        fake = FakeZotero()
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client",
+            lambda ctx: (fake, fake),
+        )
+        monkeypatch.setattr(
+            _write, "requests",
+            type("R", (), {
+                "get": _fake_get_factory({
+                    "openlibrary.org": _FakeResponse(200, OL_PAYLOAD),
+                }),
+                "RequestException": requests.RequestException,
+            })
+        )
+
+        result = _write.add_item(
+            source="9780199735815, 9780132350885",
+            source_type="isbn",
+            ctx=DummyContext(),
+        )
+
+        assert len(fake.created) == 1
+        assert fake.created[0]["ISBN"] == "9780199735815"
+        assert "Successfully added" in result
+        assert "not appear to be a valid ISBN" in result
+        assert "9780132350885" in result
+
+
+class TestRepeatedIsbns:
+    def test_isbn10_and_isbn13_of_one_book_collapse(self, monkeypatch):
+        """_normalize_isbn canonicalizes to ISBN-13, so both spellings of the
+        same book are one identifier and must not be added twice."""
+        fake = FakeZotero()
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client",
+            lambda ctx: (fake, fake),
+        )
+        monkeypatch.setattr(
+            _write, "requests",
+            type("R", (), {
+                "get": _fake_get_factory({
+                    "openlibrary.org": _FakeResponse(200, OL_PAYLOAD),
+                }),
+                "RequestException": requests.RequestException,
+            })
+        )
+
+        # 0199735816 is the ISBN-10 for 9780199735815.
+        result = _write.add_by_isbn(
+            isbn=["9780199735815", "0199735816"], ctx=DummyContext(),
+        )
+
+        assert len(fake.created) == 1
+        assert "# Added 1 of 2 ISBNs" in result
+        assert "Same ISBN as entry 1 in this request" in result

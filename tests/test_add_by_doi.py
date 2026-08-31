@@ -1,9 +1,10 @@
-"""Tests for Feature 4: Add by DOI (zotero_add_by_doi)."""
+"""Tests for the DOI source of zotero_add_item (formerly zotero_add_by_doi)."""
 
 from unittest.mock import MagicMock
 
-import pytest
-from conftest import DummyContext, FakeZotero
+from zotero_mcp import server
+from zotero_mcp.tools import write
+from conftest import DummyContext, FakeZotero, fake_crossref_get
 
 from zotero_mcp import server
 
@@ -163,12 +164,11 @@ class TestCrossrefTypeMap:
 # ---------------------------------------------------------------------------
 
 
-class TestAddByDoiHappyPath:
-    def test_creates_item_with_mapped_fields(self, monkeypatch, fake_zot, dummy_ctx):
-        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot))
-        monkeypatch.setattr("requests.get", lambda *a, **kw: _make_crossref_response())
-
-        server.add_by_doi(doi="10.1234/test.2024.001", ctx=dummy_ctx)
+        result = write.add_item(
+            source="10.1234/test.2024.001",
+            source_type="doi",
+            ctx=dummy_ctx,
+        )
 
         # Should have created exactly one item
         assert len(fake_zot.created) == 1
@@ -187,7 +187,11 @@ class TestAddByDoiHappyPath:
         monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot))
         monkeypatch.setattr("requests.get", lambda *a, **kw: _make_crossref_response())
 
-        server.add_by_doi(doi="10.1234/test.2024.001", ctx=dummy_ctx)
+        write.add_item(
+            source="10.1234/test.2024.001",
+            source_type="doi",
+            ctx=dummy_ctx,
+        )
         item = fake_zot.created[0]
 
         assert len(item["creators"]) == 2
@@ -201,7 +205,11 @@ class TestAddByDoiHappyPath:
         monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot))
         monkeypatch.setattr("requests.get", lambda *a, **kw: _make_crossref_response())
 
-        server.add_by_doi(doi="10.1234/test.2024.001", ctx=dummy_ctx)
+        write.add_item(
+            source="10.1234/test.2024.001",
+            source_type="doi",
+            ctx=dummy_ctx,
+        )
         item = fake_zot.created[0]
 
         # JATS tags should be stripped
@@ -213,10 +221,73 @@ class TestAddByDoiHappyPath:
         monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot))
         monkeypatch.setattr("requests.get", lambda *a, **kw: _make_crossref_response())
 
-        result = server.add_by_doi(doi="10.1234/test.2024.001", ctx=dummy_ctx)
+        result = write.add_item(
+            source="10.1234/test.2024.001",
+            source_type="doi",
+            ctx=dummy_ctx,
+        )
         # Result should be a string containing the title or DOI
         assert isinstance(result, str)
         assert "10.1234/test.2024.001" in result or "Coral Reefs" in result
+
+
+# ---------------------------------------------------------------------------
+# attach_mode semantics — 'none' skips, 'required' fails the entry
+# ---------------------------------------------------------------------------
+
+class TestAddByDoiAttachMode:
+    """The DOI adder must honor attach_mode via _try_attach_oa_pdf.
+
+    Regression tests for the bug where 'none' was silently ignored by
+    add_by_doi (it always tried to download+upload a PDF) and 'required'
+    was unimplemented (it silently behaved like 'auto').
+    """
+
+    def test_none_mode_creates_item_without_pdf_attempt(
+        self, monkeypatch, fake_zot, dummy_ctx
+    ):
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
+        )
+        monkeypatch.setattr(
+            "requests.get", lambda *a, **kw: _make_crossref_response()
+        )
+
+        result = write.add_item(
+            source="10.1234/test.2024.001",
+            source_type="doi",
+            attach_mode="none",
+            ctx=dummy_ctx,
+        )
+
+        assert len(fake_zot.created) == 1
+        assert "skipped (attach_mode=none)" in result
+
+    def test_required_mode_fails_entry_when_no_pdf_found(
+        self, monkeypatch, fake_zot, dummy_ctx
+    ):
+        # requests.get always returns the CrossRef shape, so every OA-source
+        # lookup inside _try_attach_oa_pdf finds nothing — no PDF available.
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
+        )
+        monkeypatch.setattr(
+            "requests.get", lambda *a, **kw: _make_crossref_response()
+        )
+
+        result = write.add_item(
+            source="10.1234/test.2024.001",
+            source_type="doi",
+            attach_mode="required",
+            ctx=dummy_ctx,
+        )
+
+        # The item is still created (it existed before the PDF lookup ran);
+        # only the reported outcome for this entry is a failure.
+        assert len(fake_zot.created) == 1
+        assert result.startswith("Error:")
+        assert "attach_mode='required'" in result
+        assert "KEY0000" in result
 
 
 # ---------------------------------------------------------------------------
@@ -231,7 +302,11 @@ class TestFieldMapping:
         msg = {"container-title": ["Journal of Testing", "J Test"]}
         monkeypatch.setattr("requests.get", lambda *a, **kw: _make_crossref_response(msg))
 
-        server.add_by_doi(doi="10.1234/test.2024.001", ctx=dummy_ctx)
+        write.add_item(
+            source="10.1234/test.2024.001",
+            source_type="doi",
+            ctx=dummy_ctx,
+        )
         item = fake_zot.created[0]
         assert item.get("publicationTitle") == "Journal of Testing"
 
@@ -240,7 +315,11 @@ class TestFieldMapping:
         msg = {"container-title": []}
         monkeypatch.setattr("requests.get", lambda *a, **kw: _make_crossref_response(msg))
 
-        server.add_by_doi(doi="10.1234/test.2024.001", ctx=dummy_ctx)
+        write.add_item(
+            source="10.1234/test.2024.001",
+            source_type="doi",
+            ctx=dummy_ctx,
+        )
         item = fake_zot.created[0]
         # Should not crash; publicationTitle should be empty or absent
         assert item.get("publicationTitle", "") == ""
@@ -250,7 +329,11 @@ class TestFieldMapping:
         msg = {"ISSN": ["1111-2222", "3333-4444"]}
         monkeypatch.setattr("requests.get", lambda *a, **kw: _make_crossref_response(msg))
 
-        server.add_by_doi(doi="10.1234/test.2024.001", ctx=dummy_ctx)
+        write.add_item(
+            source="10.1234/test.2024.001",
+            source_type="doi",
+            ctx=dummy_ctx,
+        )
         item = fake_zot.created[0]
         assert item.get("ISSN") == "1111-2222"
 
@@ -265,7 +348,11 @@ class TestFieldMapping:
         }
         monkeypatch.setattr("requests.get", lambda *a, **kw: _make_crossref_response(msg))
 
-        server.add_by_doi(doi="10.1234/test.2024.001", ctx=dummy_ctx)
+        write.add_item(
+            source="10.1234/test.2024.001",
+            source_type="doi",
+            ctx=dummy_ctx,
+        )
         item = fake_zot.created[0]
         creators = item["creators"]
 
@@ -292,7 +379,11 @@ class TestFieldMapping:
         }
         monkeypatch.setattr("requests.get", lambda *a, **kw: _make_crossref_response(msg))
 
-        server.add_by_doi(doi="10.1234/test.2024.001", ctx=dummy_ctx)
+        write.add_item(
+            source="10.1234/test.2024.001",
+            source_type="doi",
+            ctx=dummy_ctx,
+        )
         item = fake_zot.created[0]
 
         editors = [c for c in item["creators"] if c["creatorType"] == "editor"]
@@ -316,7 +407,11 @@ class TestFieldValidation:
         }
         monkeypatch.setattr("requests.get", lambda *a, **kw: _make_crossref_response(msg))
 
-        server.add_by_doi(doi="10.1234/test.2024.001", ctx=dummy_ctx)
+        write.add_item(
+            source="10.1234/test.2024.001",
+            source_type="doi",
+            ctx=dummy_ctx,
+        )
         item = fake_zot.created[0]
 
         # These CrossRef fields should not be set on the Zotero item
@@ -329,7 +424,11 @@ class TestFieldValidation:
         msg = {"type": "posted-content"}
         monkeypatch.setattr("requests.get", lambda *a, **kw: _make_crossref_response(msg))
 
-        server.add_by_doi(doi="10.1234/test.2024.001", ctx=dummy_ctx)
+        write.add_item(
+            source="10.1234/test.2024.001",
+            source_type="doi",
+            ctx=dummy_ctx,
+        )
         item = fake_zot.created[0]
         assert item["itemType"] == "preprint"
 
@@ -338,7 +437,11 @@ class TestFieldValidation:
         msg = {"type": "totally-unknown-type"}
         monkeypatch.setattr("requests.get", lambda *a, **kw: _make_crossref_response(msg))
 
-        server.add_by_doi(doi="10.1234/test.2024.001", ctx=dummy_ctx)
+        write.add_item(
+            source="10.1234/test.2024.001",
+            source_type="doi",
+            ctx=dummy_ctx,
+        )
         item = fake_zot.created[0]
         assert item["itemType"] == "document"
 
@@ -353,8 +456,9 @@ class TestTagsAndCollections:
         monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot))
         monkeypatch.setattr("requests.get", lambda *a, **kw: _make_crossref_response())
 
-        server.add_by_doi(
-            doi="10.1234/test.2024.001",
+        write.add_item(
+            source="10.1234/test.2024.001",
+            source_type="doi",
             tags=["climate", "ecology"],
             ctx=dummy_ctx,
         )
@@ -369,8 +473,9 @@ class TestTagsAndCollections:
         monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot))
         monkeypatch.setattr("requests.get", lambda *a, **kw: _make_crossref_response())
 
-        server.add_by_doi(
-            doi="10.1234/test.2024.001",
+        write.add_item(
+            source="10.1234/test.2024.001",
+            source_type="doi",
             tags="climate, ecology",
             ctx=dummy_ctx,
         )
@@ -387,8 +492,9 @@ class TestTagsAndCollections:
         monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot))
         monkeypatch.setattr("requests.get", lambda *a, **kw: _make_crossref_response())
 
-        server.add_by_doi(
-            doi="10.1234/test.2024.001",
+        write.add_item(
+            source="10.1234/test.2024.001",
+            source_type="doi",
             collections=["ABCD1234"],
             ctx=dummy_ctx,
         )
@@ -404,8 +510,9 @@ class TestTagsAndCollections:
         monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot))
         monkeypatch.setattr("requests.get", lambda *a, **kw: _make_crossref_response())
 
-        server.add_by_doi(
-            doi="10.1234/test.2024.001",
+        write.add_item(
+            source="10.1234/test.2024.001",
+            source_type="doi",
             collections=["climate"],
             ctx=dummy_ctx,
         )
@@ -418,8 +525,9 @@ class TestTagsAndCollections:
         monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot))
         monkeypatch.setattr("requests.get", lambda *a, **kw: _make_crossref_response())
 
-        result = server.add_by_doi(
-            doi="10.1234/test.2024.001",
+        result = write.add_item(
+            source="10.1234/test.2024.001",
+            source_type="doi",
             collections=["no-such-collection"],
             ctx=dummy_ctx,
         )
@@ -432,7 +540,11 @@ class TestTagsAndCollections:
         monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot))
         monkeypatch.setattr("requests.get", lambda *a, **kw: _make_crossref_response())
 
-        server.add_by_doi(doi="10.1234/test.2024.001", ctx=dummy_ctx)
+        result = write.add_item(
+            source="10.1234/test.2024.001",
+            source_type="doi",
+            ctx=dummy_ctx,
+        )
         assert len(fake_zot.created) == 1
 
 
@@ -452,7 +564,11 @@ class TestAbstractXmlStripping:
         }
         monkeypatch.setattr("requests.get", lambda *a, **kw: _make_crossref_response(msg))
 
-        server.add_by_doi(doi="10.1234/test.2024.001", ctx=dummy_ctx)
+        write.add_item(
+            source="10.1234/test.2024.001",
+            source_type="doi",
+            ctx=dummy_ctx,
+        )
         item = fake_zot.created[0]
 
         assert "<jats:" not in item["abstractNote"]
@@ -464,7 +580,11 @@ class TestAbstractXmlStripping:
         msg = {"abstract": "<p>Plain <b>HTML</b> abstract.</p>"}
         monkeypatch.setattr("requests.get", lambda *a, **kw: _make_crossref_response(msg))
 
-        server.add_by_doi(doi="10.1234/test.2024.001", ctx=dummy_ctx)
+        write.add_item(
+            source="10.1234/test.2024.001",
+            source_type="doi",
+            ctx=dummy_ctx,
+        )
         item = fake_zot.created[0]
 
         assert "<p>" not in item["abstractNote"]
@@ -479,7 +599,11 @@ class TestAbstractXmlStripping:
         del resp.json.return_value["message"]["abstract"]
         monkeypatch.setattr("requests.get", lambda *a, **kw: resp)
 
-        server.add_by_doi(doi="10.1234/test.2024.001", ctx=dummy_ctx)
+        write.add_item(
+            source="10.1234/test.2024.001",
+            source_type="doi",
+            ctx=dummy_ctx,
+        )
         item = fake_zot.created[0]
 
         # Should not crash; abstract should be empty
@@ -499,7 +623,11 @@ class TestCrossrefNotFound:
         resp_404.raise_for_status.side_effect = Exception("HTTP 404")
         monkeypatch.setattr("requests.get", lambda *a, **kw: resp_404)
 
-        result = server.add_by_doi(doi="10.1234/nonexistent", ctx=dummy_ctx)
+        result = write.add_item(
+            source="10.1234/nonexistent",
+            source_type="doi",
+            ctx=dummy_ctx,
+        )
 
         assert len(fake_zot.created) == 0
         assert isinstance(result, str)
@@ -510,7 +638,7 @@ class TestCrossrefNotFound:
     def test_invalid_doi_format_returns_error(self, monkeypatch, fake_zot, dummy_ctx):
         monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot))
 
-        result = server.add_by_doi(doi="not-a-real-doi", ctx=dummy_ctx)
+        result = write.add_item(source="not-a-real-doi", source_type="doi", ctx=dummy_ctx)
 
         assert len(fake_zot.created) == 0
         assert isinstance(result, str)
@@ -534,7 +662,11 @@ class TestCrossrefTimeout:
 
         monkeypatch.setattr("requests.get", timeout_get)
 
-        result = server.add_by_doi(doi="10.1234/test.2024.001", ctx=dummy_ctx)
+        result = write.add_item(
+            source="10.1234/test.2024.001",
+            source_type="doi",
+            ctx=dummy_ctx,
+        )
 
         assert len(fake_zot.created) == 0
         assert isinstance(result, str)
@@ -551,7 +683,11 @@ class TestCrossrefTimeout:
 
         monkeypatch.setattr("requests.get", conn_error)
 
-        result = server.add_by_doi(doi="10.1234/test.2024.001", ctx=dummy_ctx)
+        result = write.add_item(
+            source="10.1234/test.2024.001",
+            source_type="doi",
+            ctx=dummy_ctx,
+        )
 
         assert len(fake_zot.created) == 0
         assert isinstance(result, str)
@@ -574,7 +710,11 @@ class TestHybridMode:
 
         monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", raise_local_only)
 
-        result = server.add_by_doi(doi="10.1234/test.2024.001", ctx=dummy_ctx)
+        result = write.add_item(
+            source="10.1234/test.2024.001",
+            source_type="doi",
+            ctx=dummy_ctx,
+        )
 
         assert isinstance(result, str)
         assert "local-only" in result.lower() or "write" in result.lower()
@@ -588,7 +728,11 @@ class TestHybridMode:
         monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (read_zot, write_zot))
         monkeypatch.setattr("requests.get", lambda *a, **kw: _make_crossref_response())
 
-        server.add_by_doi(doi="10.1234/test.2024.001", ctx=dummy_ctx)
+        write.add_item(
+            source="10.1234/test.2024.001",
+            source_type="doi",
+            ctx=dummy_ctx,
+        )
 
         # Item should be created via write_zot, not read_zot
         assert len(write_zot.created) == 1
@@ -616,7 +760,11 @@ class TestCrossrefUserAgent:
 
         monkeypatch.setattr("requests.get", capture_get)
 
-        server.add_by_doi(doi="10.1234/test.2024.001", ctx=dummy_ctx)
+        write.add_item(
+            source="10.1234/test.2024.001",
+            source_type="doi",
+            ctx=dummy_ctx,
+        )
 
         headers = captured_kwargs.get("headers", {})
         assert "User-Agent" in headers
@@ -635,7 +783,11 @@ class TestCrossrefUserAgent:
 
         monkeypatch.setattr("requests.get", capture_get)
 
-        server.add_by_doi(doi="10.1234/test.2024.001", ctx=dummy_ctx)
+        write.add_item(
+            source="10.1234/test.2024.001",
+            source_type="doi",
+            ctx=dummy_ctx,
+        )
 
         # Should set a timeout (15s per the plan)
         assert "timeout" in captured_kwargs
@@ -660,7 +812,11 @@ class TestDoiNormalizationInAddByDoi:
 
         monkeypatch.setattr("requests.get", capture_get)
 
-        server.add_by_doi(doi="https://doi.org/10.1234/test.2024.001", ctx=dummy_ctx)
+        write.add_item(
+            source="https://doi.org/10.1234/test.2024.001",
+            source_type="doi",
+            ctx=dummy_ctx,
+        )
 
         # The first request (CrossRef) should use the bare DOI
         assert len(captured_args) >= 1
@@ -678,8 +834,343 @@ class TestDoiNormalizationInAddByDoi:
 
         monkeypatch.setattr("requests.get", capture_get)
 
-        server.add_by_doi(doi="doi:10.1234/test.2024.001", ctx=dummy_ctx)
+        write.add_item(
+            source="doi:10.1234/test.2024.001",
+            source_type="doi",
+            ctx=dummy_ctx,
+        )
 
         assert len(captured_args) >= 1
         assert "doi%3A" not in captured_args[0].lower()
         assert "doi:10" not in captured_args[0]
+
+
+# ---------------------------------------------------------------------------
+# Multiple DOIs in one call
+# ---------------------------------------------------------------------------
+
+class TestMultipleDois:
+    def test_creates_multiple_items(self, monkeypatch, fake_zot, dummy_ctx):
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
+        )
+
+        messages = {
+            "10.1111/a": _make_crossref_message(DOI="10.1111/a", title=["Paper A"]),
+            "10.2222/b": _make_crossref_message(DOI="10.2222/b", title=["Paper B"]),
+        }
+        monkeypatch.setattr("requests.get", fake_crossref_get(messages.get))
+
+        result = write.add_item(
+            source="10.1111/a, 10.2222/b", source_type="doi", ctx=dummy_ctx,
+        )
+
+        assert len(fake_zot.created) == 2
+        assert fake_zot.created[0]["title"] == "Paper A"
+        assert fake_zot.created[1]["title"] == "Paper B"
+        assert "# Added 2 of 2 DOIs" in result
+        assert "Successfully added: **Paper A**" in result
+        assert "Successfully added: **Paper B**" in result
+
+    def test_auto_detected_from_newline_separated_list(
+        self, monkeypatch, fake_zot, dummy_ctx
+    ):
+        """source_type='auto' should route a newline-separated DOI list to
+        the batch path without an explicit source_type='doi' override."""
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
+        )
+        monkeypatch.setattr(
+            "requests.get",
+            fake_crossref_get(lambda doi: _make_crossref_message(DOI=doi)),
+        )
+
+        result = write.add_item(source="10.1111/a\n10.2222/b", ctx=dummy_ctx)
+
+        assert len(fake_zot.created) == 2
+        assert "# Added 2 of 2 DOIs" in result
+
+    def test_partial_failure_reports_both(self, monkeypatch, fake_zot, dummy_ctx):
+        """One 404 alongside one success: the successful DOI is still
+        created and the failure is reported, not silently dropped."""
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
+        )
+
+        messages = {"10.1111/a": _make_crossref_message(DOI="10.1111/a",
+                                                        title=["Paper A"])}
+        monkeypatch.setattr("requests.get", fake_crossref_get(messages.get))
+
+        result = write.add_item(
+            source="10.1111/a, 10.9999/missing", source_type="doi", ctx=dummy_ctx,
+        )
+
+        assert len(fake_zot.created) == 1
+        assert fake_zot.created[0]["title"] == "Paper A"
+        assert "Successfully added: **Paper A**" in result
+        assert "DOI not found on CrossRef: 10.9999/missing" in result
+
+
+# ---------------------------------------------------------------------------
+# CrossRef metadata reaches the OA-PDF cascade
+# ---------------------------------------------------------------------------
+
+_ARXIV_PREPRINT_RELATION = {
+    "relation": {"has-preprint": [{"id-type": "arxiv", "id": "2307.02743"}]}
+}
+
+
+class TestCrossrefMetadataReachesTheCascade:
+    """_try_attach_oa_pdf's four-source cascade includes "arXiv (via
+    CrossRef)", which reads the has-preprint relation out of the CrossRef
+    message the DOI was just fetched with. If that message isn't forwarded,
+    the source is not merely unused — it can never fire, and DOIs whose only
+    open copy is the referenced preprint stop attaching.
+    """
+
+    @pytest.fixture
+    def spy_attach(self, monkeypatch):
+        calls = []
+
+        def _spy(write_zot, item_key, doi, ctx, crossref_metadata=None,
+                 attach_mode="auto"):
+            calls.append({"doi": doi, "crossref_metadata": crossref_metadata})
+            return "no OA PDF found"
+
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._try_attach_oa_pdf", _spy
+        )
+        return calls
+
+    def test_single_doi_forwards_the_fetched_message(
+        self, monkeypatch, fake_zot, dummy_ctx, spy_attach
+    ):
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
+        )
+        msg = _make_crossref_message(DOI="10.1111/a", **_ARXIV_PREPRINT_RELATION)
+        monkeypatch.setattr("requests.get", fake_crossref_get(lambda d: msg))
+
+        write.add_item(source="10.1111/a", source_type="doi", ctx=dummy_ctx)
+
+        assert len(spy_attach) == 1
+        assert spy_attach[0]["crossref_metadata"] == msg
+
+    def test_batch_forwards_each_entrys_own_message(
+        self, monkeypatch, fake_zot, dummy_ctx, spy_attach
+    ):
+        """The batched create pass must pair each created item with its own
+        CrossRef message, not the first one or none at all."""
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
+        )
+        messages = {
+            "10.1111/a": _make_crossref_message(
+                DOI="10.1111/a", title=["Paper A"], **_ARXIV_PREPRINT_RELATION),
+            "10.2222/b": _make_crossref_message(DOI="10.2222/b", title=["Paper B"]),
+        }
+        monkeypatch.setattr("requests.get", fake_crossref_get(messages.get))
+
+        write.add_item(
+            source="10.1111/a, 10.2222/b", source_type="doi", ctx=dummy_ctx,
+        )
+
+        by_doi = {c["doi"]: c["crossref_metadata"] for c in spy_attach}
+        assert by_doi["10.1111/a"] == messages["10.1111/a"]
+        assert by_doi["10.2222/b"] == messages["10.2222/b"]
+
+    def test_arxiv_preprint_is_actually_attached(
+        self, monkeypatch, fake_zot, dummy_ctx
+    ):
+        """End to end: Unpaywall/S2/PMC find nothing, so the arXiv leg is the
+        only source that can produce a PDF."""
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
+        )
+        msg = _make_crossref_message(DOI="10.1111/a", **_ARXIV_PREPRINT_RELATION)
+        monkeypatch.setattr("requests.get", fake_crossref_get(lambda d: msg))
+        for source in ("_try_unpaywall", "_try_semantic_scholar", "_try_pmc"):
+            monkeypatch.setattr(
+                f"zotero_mcp.tools._helpers.{source}", lambda *a, **kw: None
+            )
+        downloaded = []
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._download_and_attach_pdf",
+            lambda zot, key, url, doi, ctx: downloaded.append(url) or "",
+        )
+
+        result = write.add_item(
+            source="10.1111/a", source_type="doi", attach_mode="required",
+            ctx=dummy_ctx,
+        )
+
+        assert downloaded == ["https://arxiv.org/pdf/2307.02743.pdf"]
+        assert "attach_mode='required'" not in result
+
+    def test_bibtex_still_attaches_without_any_crossref_message(
+        self, monkeypatch, fake_zot, dummy_ctx, spy_attach
+    ):
+        """_create_and_attach_batch is shared with the bibtex/CSL-JSON
+        importers, which have no CrossRef message to forward."""
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
+        )
+
+        write.add_item(
+            source="@article{k, title={T}, doi={10.1111/a}, year={2024}}",
+            source_type="bibtex",
+            ctx=dummy_ctx,
+        )
+
+        assert len(spy_attach) == 1
+        assert spy_attach[0]["crossref_metadata"] is None
+
+
+# ---------------------------------------------------------------------------
+# Repeated identifiers within one call
+# ---------------------------------------------------------------------------
+
+class TestRepeatedIdentifiers:
+    """Dedup against the library runs in phase 1, before anything has been
+    created, so it cannot see an item this same call is about to add. Without
+    collapsing repeats up front, the same DOI listed twice was created twice
+    even under if_exists='skip'."""
+
+    def test_same_doi_three_times_creates_one_item(
+        self, monkeypatch, fake_zot, dummy_ctx
+    ):
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
+        )
+        monkeypatch.setattr(
+            "requests.get",
+            fake_crossref_get(lambda doi: _make_crossref_message(DOI=doi)),
+        )
+
+        result = write.add_by_doi(
+            doi=["10.1111/a", "10.1111/a", "10.1111/a"], ctx=dummy_ctx,
+        )
+
+        assert len(fake_zot.created) == 1
+        # Still one line per requested token, so the caller can see what
+        # happened to each thing they asked for.
+        assert result.count("## ") == 3
+        assert result.count("Same DOI as entry 1 in this request") == 2
+        assert "# Added 1 of 3 DOIs" in result
+        assert "2 repeated in this request" in result
+
+    def test_repeats_are_matched_case_insensitively(
+        self, monkeypatch, fake_zot, dummy_ctx
+    ):
+        """DOIs are case-insensitive, and CrossRef echoes canonical case."""
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
+        )
+        monkeypatch.setattr(
+            "requests.get",
+            fake_crossref_get(lambda doi: _make_crossref_message(DOI=doi)),
+        )
+
+        write.add_by_doi(doi=["10.1111/aBc", "10.1111/ABC"], ctx=dummy_ctx)
+
+        assert len(fake_zot.created) == 1
+
+    def test_only_one_crossref_fetch_for_a_repeat(
+        self, monkeypatch, fake_zot, dummy_ctx
+    ):
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
+        )
+        seen = []
+        inner = fake_crossref_get(lambda doi: _make_crossref_message(DOI=doi))
+
+        def _get(url, params=None, **kwargs):
+            if "crossref.org" in url:
+                seen.append(url)
+            return inner(url, params=params, **kwargs)
+
+        monkeypatch.setattr("requests.get", _get)
+
+        write.add_by_doi(doi=["10.1111/a", "10.1111/a"], ctx=dummy_ctx)
+
+        # One DOI of real work, so the single-DOI endpoint is used rather
+        # than a batch filter — the repeat costs no CrossRef round-trip.
+        assert seen == ["https://api.crossref.org/works/10.1111/a"]
+
+    def test_distinct_dois_are_untouched(self, monkeypatch, fake_zot, dummy_ctx):
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
+        )
+        monkeypatch.setattr(
+            "requests.get",
+            fake_crossref_get(lambda doi: _make_crossref_message(DOI=doi)),
+        )
+
+        result = write.add_by_doi(doi=["10.1111/a", "10.2222/b"], ctx=dummy_ctx)
+
+        assert len(fake_zot.created) == 2
+        assert "repeated in this request" not in result
+
+    def test_invalid_tokens_each_get_their_own_error(
+        self, monkeypatch, fake_zot, dummy_ctx
+    ):
+        """Two unnormalizable tokens are not "the same identifier" — there is
+        no identifier to compare. Each keeps its own line."""
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
+        )
+
+        result = write.add_by_doi(doi=["nope", "nope"], ctx=dummy_ctx)
+
+        assert len(fake_zot.created) == 0
+        assert result.count("does not appear to be a valid DOI") == 2
+        assert "# Added 0 of 2 DOIs" in result
+
+
+class TestHonestBatchCount:
+    def test_header_counts_successes_not_inputs(
+        self, monkeypatch, fake_zot, dummy_ctx
+    ):
+        """The header said "Added N" from len(tokens) — the number asked for,
+        not the number added — so a batch where everything failed still
+        claimed to have added them all."""
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
+        )
+        messages = {"10.1111/a": _make_crossref_message(DOI="10.1111/a")}
+        monkeypatch.setattr("requests.get", fake_crossref_get(messages.get))
+
+        result = write.add_by_doi(
+            doi=["10.1111/a", "10.9999/missing"], ctx=dummy_ctx,
+        )
+
+        assert len(fake_zot.created) == 1
+        assert "# Added 1 of 2 DOIs" in result
+        assert "1 failed" in result
+
+    def test_existing_items_count_as_reused_not_added(
+        self, monkeypatch, fake_zot, dummy_ctx
+    ):
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
+        )
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers.find_existing_items",
+            lambda zot, **kw: (
+                [{"key": "OLD1", "version": 1,
+                  "data": {"itemType": "journalArticle", "DOI": "10.1111/a",
+                           "title": "Old", "collections": []}}]
+                if kw.get("doi") == "10.1111/a" else []
+            ),
+        )
+        monkeypatch.setattr(
+            "requests.get",
+            fake_crossref_get(lambda doi: _make_crossref_message(DOI=doi)),
+        )
+
+        result = write.add_by_doi(
+            doi=["10.1111/a", "10.2222/b"], if_exists="skip", ctx=dummy_ctx,
+        )
+
+        assert "# Added 1 of 2 DOIs" in result
+        assert "1 already in library" in result
