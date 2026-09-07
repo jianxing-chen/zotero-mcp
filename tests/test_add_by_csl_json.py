@@ -220,8 +220,11 @@ class TestOaPdfAttempt:
         assert called["count"] == 1
         assert called["doi"] == "10.1234/x"
 
-    def test_no_doi_no_attempt(self, monkeypatch, dummy_ctx):
-        _patch_hybrid(monkeypatch)
+    def test_no_doi_no_attempt(self, monkeypatch, dummy_ctx, tmp_path):
+        monkeypatch.setattr(
+            "zotero_mcp.batch_runner._TASKS_DIR", tmp_path / "batch_tasks"
+        )
+        fake = _patch_hybrid(monkeypatch)
         called = {"count": 0}
 
         def stub(*args, **kwargs):
@@ -230,12 +233,16 @@ class TestOaPdfAttempt:
 
         monkeypatch.setattr("zotero_mcp.tools._helpers._try_attach_oa_pdf", stub)
 
-        server.add_by_csl_json(
+        result = server.add_by_csl_json(
             csl_json={"type": "book", "title": "B", "author": [{"family": "A"}]},
             ctx=dummy_ctx,
         )
+        # Wait for the worker: leaving it running lets a slow thread resolve
+        # the NEXT test's monkeypatched client and create into its fake.
+        _wait_for_task(result)
 
         assert called["count"] == 0
+        assert len(fake.created) == 1
 
 
 # ---------------------------------------------------------------------------
