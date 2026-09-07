@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
@@ -110,13 +112,29 @@ def _status_path(task_id: str) -> Path:
 
 
 def _save_status(status: TaskStatus) -> None:
-    """Atomically write status to a JSON file (tmp + rename)."""
+    """Atomically write status to a JSON file (tmp + rename).
+
+    Two Windows-specific hazards need handling beyond POSIX's plain rename:
+
+    - ``os.replace`` raises ``PermissionError`` (WinError 5) while another
+      thread — typically a status poller's ``read_status`` — holds the
+      destination open, so retry briefly instead of failing the batch task.
+    - A fixed tmp name lets two concurrent saves clobber each other's tmp
+      file, so each save writes its own.
+    """
     _ensure_tasks_dir()
     path = _status_path(status.task_id)
-    tmp = path.with_suffix(".tmp")
+    tmp = path.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
     with open(tmp, "w") as f:
         json.dump(status.to_dict(), f, indent=2, default=str)
-    tmp.replace(path)  # atomic on POSIX
+    for attempt in range(6):
+        try:
+            tmp.replace(path)  # atomic on POSIX
+            return
+        except PermissionError:
+            if attempt == 5:
+                raise
+            time.sleep(0.02 * (attempt + 1))
 
 
 # ---------------------------------------------------------------------------

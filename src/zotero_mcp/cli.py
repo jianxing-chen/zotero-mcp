@@ -434,6 +434,17 @@ def _normalize_help_args(argv: list[str]) -> list[str]:
 
 def main():
     """Main entry point for the CLI."""
+    # Windows consoles default to a legacy code page (cp1252); the help text
+    # carries non-ASCII characters (e.g. the MinerU 精读 notes), which would
+    # crash argparse's output with UnicodeEncodeError. Substituting '?' for
+    # unencodable characters keeps the CLI usable on every console without
+    # changing anything on UTF-8 terminals.
+    for _stream in (sys.stdout, sys.stderr):
+        if hasattr(_stream, "reconfigure"):
+            try:
+                _stream.reconfigure(errors="replace")
+            except (ValueError, OSError):
+                pass
     parser = argparse.ArgumentParser(
         description="Zotero Model Context Protocol server",
         formatter_class=argparse.RawDescriptionHelpFormatter,
