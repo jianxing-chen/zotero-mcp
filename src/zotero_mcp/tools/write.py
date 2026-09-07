@@ -3279,7 +3279,7 @@ def update_item(
     description=(
         "Move a Zotero item to the Trash. Works for any item type (book, "
         "journalArticle, webpage, attachment, etc.). For notes, use "
-        "zotero_delete_note — identical mechanism, constrained to notes "
+        "zotero_manage_note(action='delete') — identical mechanism, "
         "for safety. Trashed items are recoverable from Zotero's Trash — "
         "empty the Trash in the Zotero UI for permanent deletion. "
         "By default refuses to trash notes; set allow_note=True to override. "
@@ -3296,7 +3296,7 @@ def delete_item(item_key: str, allow_note: bool = False, *, ctx: Context) -> str
     Args:
         item_key: Zotero item key/ID to trash
         allow_note: If True, permits trashing note items. Default False
-            directs callers to zotero_delete_note for notes (which has the
+            directs callers to manage_note for notes (which has the
             same mechanism but is explicit about what it affects).
         ctx: MCP context
 
@@ -3321,7 +3321,7 @@ def delete_item(item_key: str, allow_note: bool = False, *, ctx: Context) -> str
 
         if item_type == "note" and not allow_note:
             return (
-                f"Error: Item {item_key} is a note. Use zotero_delete_note "
+                f"Error: Item {item_key} is a note. Use zotero_manage_note(action='delete') "
                 "for notes, or pass allow_note=True to override."
             )
 
@@ -7581,6 +7581,22 @@ def _upgrade_single_preprint(
 
 
 
+@mcp.tool(
+    name="zotero_add_by_bibcode",
+    description=(
+        "Add paper(s) to the library by NASA ADS bibcode — the natural input "
+        "for astronomy literature. Accepts one bibcode or many (list / JSON "
+        "array / comma-separated string); multiple bibcodes import as a "
+        "background task (check zotero_get_batch_task_status). "
+        "Metadata comes from the ADS record; dedup checks the Extra bibcode "
+        "field first, then DOI. "
+        "collections/tags are applied to every created item; if_exists="
+        "'file' (default) reuses an existing item and only attaches a "
+        "missing PDF. "
+        "Requires ADS_API_TOKEN (zotero-mcp setup). "
+        "Example: zotero_add_by_bibcode(bibcode='2023ApJ...948...84C')."
+    ),
+)
 def add_by_bibcode(
     bibcode: str | list[str] | None = None,
     collections: list[str] | str | None = None,
@@ -7666,14 +7682,27 @@ def add_by_bibcode(
 
 
 
+@mcp.tool(
+    name="zotero_enrich_batch",
+    description=(
+        "Batch-fill missing metadata (journal abbreviation, date, bibcode) on "
+        "all eligible items from NASA ADS. Runs as a background task — "
+        "returns a task handle; poll zotero_get_batch_task_status. "
+        "fields: restrict which fields to fill (default: all enrichable); "
+        "limit: cap items per run; force: overwrite non-empty fields. "
+        "Requires ADS_API_TOKEN. "
+        "For a single item use zotero_enrich_item_metadata instead."
+    ),
+)
 def enrich_batch(
-    fields: list[str] | None = None, limit: int | None = None, force: bool = False, *, ctx: Context
+    fields: list[str] | str | None = None, limit: int | None = None, force: bool = False, *, ctx: Context
 ) -> str:
     """Batch-enrich missing metadata on all eligible items from ADS.
 
     Not decorated with @with_zotero_api_lock: spawns a background task that
     acquires the lock per-item. Prevents MCP-client-timeout + lock-wedge.
     """
+    fields = _helpers._normalize_str_list_input(fields, "fields") if isinstance(fields, str) else fields
     try:
         read_zot, write_zot = _helpers._get_write_client(ctx)
     except ValueError as e:
@@ -7753,9 +7782,20 @@ def enrich_batch(
 
 
 
+@mcp.tool(
+    name="zotero_enrich_item_metadata",
+    description=(
+        "Fill one item's missing metadata (journal abbreviation, date, "
+        "bibcode) from its NASA ADS record, matched by bibcode or DOI in "
+        "Extra. fields: restrict which fields (default: all enrichable); "
+        "force: overwrite fields that already have values. "
+        "Requires ADS_API_TOKEN. For many items use zotero_enrich_batch."
+    ),
+)
 @with_zotero_api_lock
-def enrich_item_metadata(item_key: str, fields: list[str] | None = None, force: bool = False, *, ctx: Context) -> str:
+def enrich_item_metadata(item_key: str, fields: list[str] | str | None = None, force: bool = False, *, ctx: Context) -> str:
     """Enrich a single item's missing metadata from ADS."""
+    fields = _helpers._normalize_str_list_input(fields, "fields") if isinstance(fields, str) else fields
     try:
         _read_zot, write_zot = _helpers._get_write_client(ctx)
     except ValueError as e:
@@ -7788,6 +7828,21 @@ def enrich_item_metadata(item_key: str, fields: list[str] | None = None, force: 
 
 
 
+@mcp.tool(
+    name="zotero_upgrade_preprint_pdfs",
+    description=(
+        "Replace arXiv preprint PDFs with published (publisher) versions via "
+        "NASA ADS PUB_PDF links — HTTP-only, no browser. Items must carry a "
+        "bibcode or DOI in Extra. Runs as a background task: returns a task "
+        "handle; poll zotero_get_batch_task_status. "
+        "item_keys: specific items (default: scan eligible items); limit: cap "
+        "the scan; collection: restrict to one collection; require_bibcode: "
+        "only upgrade items with a confirmed bibcode. "
+        "For publisher PDFs blocked by WAF/captcha use "
+        "zotero_upgrade_preprint_pdfs_via_browser instead. "
+        "Requires ADS_API_TOKEN."
+    ),
+)
 def upgrade_preprint_pdfs(
     limit: int | None = None,
     item_keys: list[str] | str | None = None,

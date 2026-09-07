@@ -622,7 +622,8 @@ _get_annotations = get_annotations
         "(default 20). truncate=True (default) shortens long note bodies "
         "for display — pass False for complete content. raw_html=True "
         "returns the note's original HTML instead of stripped text; use "
-        "this when you intend to edit and round-trip via zotero_update_note "
+        "this when you intend to edit and round-trip via "
+        "zotero_manage_note(action='update') "
         "(preserves formatting). Example: zotero_get_notes("
         "item_key='ABC12345', raw_html=True) → every note on that item in "
         "round-trippable HTML."
@@ -949,7 +950,7 @@ def _format_search_results(
         "which returns all notes for that item directly. limit: max results "
         "(default 20). raw_html=True returns matched notes as raw HTML while "
         "matching still runs on stripped text — use for round-tripping via "
-        "zotero_update_note. Scope: active library only (use "
+        "zotero_manage_note(action='update'). Scope: active library only (use "
         "zotero_switch_library to change). Example: zotero_search_notes("
         "query='mindfulness') → notes anywhere in the library whose text "
         "contains that word."
@@ -1184,22 +1185,6 @@ def manage_note(
     )
 
 
-@mcp.tool(
-    name="zotero_create_note",
-    description=(
-        "Create a new child note attached to a Zotero item. "
-        "item_key: parent item key (the note becomes a child of this item). "
-        "note_title: title displayed in Zotero's note pane. "
-        "note_text: note body; simple HTML is preserved (p, strong, em, "
-        "ul/ol/li, a, blockquote, code). "
-        "tags: optional list of tag strings to attach to the note. "
-        "Requires a writable library (web API key or hybrid mode) — fails "
-        "in local-only mode. To edit an existing note instead, use "
-        "zotero_update_note. Example: zotero_create_note("
-        "item_key='ABC12345', note_title='Reading notes', "
-        "note_text='<p>Key claim: ...</p>', tags=['to-cite'])."
-    ),
-)
 @with_zotero_api_lock
 def create_note(
     item_key: str, note_title: str, note_text: str, tags: list[str] | str | None = None, *, ctx: Context
@@ -1327,24 +1312,6 @@ def create_note(
         return f"Error creating note: {str(e)}"
 
 
-@mcp.tool(
-    name="zotero_update_note",
-    description=(
-        "Update the HTML body of an existing Zotero note. "
-        "item_key: the NOTE's own key (NOT the parent item's key) — use "
-        "zotero_get_notes or zotero_search_notes to find it. "
-        "note_text: new HTML content. "
-        "append=False (default) REPLACES the entire note body; append=True "
-        "concatenates note_text after the existing body. "
-        "To preserve existing formatting when editing, first fetch the note "
-        "with zotero_get_notes(raw_html=True), modify the HTML, then pass "
-        "the full HTML back. "
-        "Requires a writable library (web API key or hybrid mode) — fails "
-        "in local-only mode. "
-        "Example: zotero_update_note(item_key='NOTE1234', "
-        "note_text='<p>Revised summary</p>', append=False)."
-    ),
-)
 def update_note(item_key: str, note_text: str, append: bool = False, *, ctx: Context) -> str:
     """
     Update an existing Zotero note.
@@ -1390,28 +1357,6 @@ def update_note(item_key: str, note_text: str, append: bool = False, *, ctx: Con
         return f"Error updating note: {str(e)}"
 
 
-@mcp.tool(
-    name="zotero_delete_note",
-    description=(
-        "Move a SINGLE Zotero note to the Trash. For deleting MULTIPLE "
-        "notes at once (e.g. 'delete all notes', 'clean up empty notes'), "
-        "use zotero_batch_cleanup_notes instead — it handles bulk deletion "
-        "in one call. "
-        "This tool is for targeted single-note deletion. "
-        "Non-destructive: trashed notes remain recoverable from the Trash "
-        "view in Zotero desktop. "
-        "item_key: the NOTE's own key — use zotero_get_notes or "
-        "zotero_search_notes to find it (passing a parent item's key will "
-        "fail or trash the wrong thing). "
-        "To permanently delete, the user must empty the Trash in the Zotero "
-        "UI — no API exists for that step. "
-        "Scope: notes only; this tool cannot trash items, collections, or "
-        "attachments. "
-        "Requires a writable library (web API key or hybrid mode) — fails "
-        "in local-only mode. "
-        "Example: zotero_delete_note(item_key='NOTE1234')."
-    ),
-)
 def delete_note(item_key: str, *, ctx: Context) -> str:
     """
     Move a Zotero note to the Trash.
@@ -1466,7 +1411,7 @@ def delete_note(item_key: str, *, ctx: Context) -> str:
     name="zotero_batch_cleanup_notes",
     description=(
         "Batch-delete (trash) notes from your Zotero library — use this "
-        "INSTEAD of calling zotero_delete_note repeatedly. By default "
+        "INSTEAD of deleting notes one by one via manage_note. By default "
         "targets only standalone empty notes (the 'Untitled' notes with "
         "no parent and no content), but can be configured to match ANY "
         "subset of notes. "
@@ -2156,30 +2101,6 @@ def _create_highlight_annotation(
         return f"Error creating annotation: {str(e)}"
 
 
-@mcp.tool(
-    name="zotero_create_area_annotation",
-    description=(
-        "Create a PDF AREA/IMAGE annotation — a rectangle drawn on an "
-        "arbitrary page region (figures, diagrams, tables, non-text "
-        "content). For highlighting selectable text, use "
-        "zotero_create_annotation instead. "
-        "attachment_key: PDF attachment key — NOT the parent item key (use "
-        "zotero_get_item_children to find attachments). "
-        "page: 1-indexed page number (page 1 is the first page). "
-        "x, y: top-left corner in NORMALIZED page coordinates in [0, 1] — "
-        "(0, 0) is the page's top-left, (1, 1) is the bottom-right. "
-        "width, height: rectangle size, also normalized to [0, 1] and "
-        "relative to the page (not to x, y). "
-        "comment: optional note attached to the annotation. "
-        "color: hex color (default '#ffd400' yellow). "
-        "Scope: PDFs only — EPUB attachments are NOT supported. "
-        "Requires a writable library (web API key or hybrid mode) — fails "
-        "in local-only mode. "
-        "Example: zotero_create_area_annotation("
-        "attachment_key='NHZFE5A7', page=7, x=0.15, y=0.22, width=0.6, "
-        "height=0.35, comment='Figure 3 — mean completion rates')."
-    ),
-)
 def create_area_annotation(
     attachment_key: str,
     page: int,

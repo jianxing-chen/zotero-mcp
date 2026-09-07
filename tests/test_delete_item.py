@@ -115,7 +115,7 @@ class TestDeleteItemNotesSafety:
         result = server.delete_item(item_key="NOTE0001", ctx=DummyContext())
 
         assert "is a note" in result
-        assert "zotero_delete_note" in result
+        assert "zotero_manage_note" in result
         assert fake.client.calls == []
 
     def test_allow_note_override(self, monkeypatch):
