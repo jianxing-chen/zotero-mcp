@@ -105,6 +105,8 @@ def test_dimension_probe_triggers_reset_on_dimension_change(tmp_path, monkeypatc
     raising ValueError inside a bare ``except Exception`` that swallowed it.
     """
     pytest.importorskip("chromadb")
+    # OpenAIEmbeddingFunction.__init__ constructs an openai.OpenAI client.
+    pytest.importorskip("openai")
     monkeypatch.setenv("OPENAI_API_KEY", "test-key-no-network")
 
     from zotero_mcp.chroma_client import ChromaClient, OpenAIEmbeddingFunction
