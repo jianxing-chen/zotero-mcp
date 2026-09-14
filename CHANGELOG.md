@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Semantic search no longer fails outright after documents are deleted while the server is running (#545).** A server kept open while another process (a CLI update, or the deletion pass) removed documents could get hits back whose document text was `None`; the cross-encoder reranker accepts only strings, so every search failed with `Unsupported input type: NoneType` until restart. Those hits are now dropped before reranking and enrichment, with a warning, and the search returns the rest. Reported by @Aboottogo in #457.
+
+- **`update-db` could sit silent for hours in the rate limiter (#548).** The token bucket's capacity was fixed from the initial tokens-per-minute while every 429 halved the rate, and the wait is the deficit divided by the rate, so with Gemini's default budget against a free-tier account a single request waited about 34 hours, indistinguishable from a hang; running out of API credit mid-run did the same. Capacity now follows the current rate, so a wait is at most a quarter-minute of budget, and a wait of 30 seconds or more is logged. Found and fixed by @ArneBouten.
+
 ## [0.11.0] - 2026-08-25
 
 **Upgrading:** `zotero_semantic_search` now defaults to the active library instead of every indexed library. If you relied on the old implicit behaviour, pass `search_all_libraries=True`.
