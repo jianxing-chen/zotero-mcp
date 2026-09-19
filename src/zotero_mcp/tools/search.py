@@ -1439,7 +1439,8 @@ def update_search_database(
             re-embedding from their latest local full-text source
         reindex_cached_mineru: Reindex every item with a MinerU cache on
             disk (all 精读'd papers). Idempotent. Mutually exclusive with
-            reindex_keys.
+            reindex_keys. CURRENTLY DISABLED (uniform-dim build path) —
+            passing True returns an explanation; use reindex_keys per paper.
         force_reindex: With reindex_keys/reindex_cached_mineru, bypass the
             MinerU idempotency guard and re-embed already-indexed items.
         ctx: MCP context
@@ -1468,9 +1469,18 @@ def update_search_database(
             if force_reindex:
                 cmd += " --force"
         elif reindex_cached_mineru:
-            cmd = "zotero-mcp update-db --reindex-cached-mineru"
-            if force_reindex:
-                cmd += " --force"
+            # Batch MinerU reindex is disabled at the semantic_search level
+            # (uniform-dim build path): the CLI flag prints a note and runs a
+            # plain update, so don't send the user down that path.
+            return (
+                "⚠️ Batch MinerU reindex (--reindex-cached-mineru) is currently "
+                "disabled — running it would perform a plain database update "
+                "instead. To refresh specific papers, call this tool with "
+                "reindex_keys=[\"<ITEM_KEY>\"] (one paper per run), or in your "
+                "terminal:\n\n"
+                "    zotero-mcp update-db --reindex-keys <KEY>\n\n"
+                "Check which papers have a MinerU cache with: zotero-mcp db-status"
+            )
         else:
             cmd += " --fulltext"
         return (

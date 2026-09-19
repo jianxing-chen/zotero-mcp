@@ -704,7 +704,9 @@ def main():
         help="Reindex every item that has a MinerU cache on disk (the set "
         "of papers 精读'd via zotero_read_pdf_pages). Idempotent: skips "
         "items already indexed from MinerU cache. Requires local mode. "
-        "Mutually exclusive with --reindex-keys.",
+        "Mutually exclusive with --reindex-keys. CURRENTLY DISABLED "
+        "(uniform-dim build path): downgraded to a plain update with a "
+        "notice; refresh papers individually with --reindex-keys.",
     )
     update_db_parser.add_argument(
         "--force",
@@ -1269,9 +1271,12 @@ def main():
                 print(f"- Indexed from MinerU: {mineru_cache.get('indexed_from_mineru', 0)}")
                 pending = mineru_cache.get("pending")
                 if pending is not None:
-                    print(f"- Pending reindex: {pending}")
+                    print(f"- Not yet indexed from MinerU: {pending}")
                     if pending > 0:
-                        print("  → run 'zotero-mcp update-db --reindex-cached-mineru' to index them")
+                        print(
+                            "  → batch reindex (--reindex-cached-mineru) is currently disabled; "
+                            "refresh per paper with 'zotero-mcp update-db --reindex-keys <KEY>'"
+                        )
 
             if collection_info.get("error"):
                 print(f"\nError: {collection_info['error']}")

@@ -85,15 +85,19 @@ class TestGuardAllModes:
         assert "--reindex-keys ABC12345" in result
         assert "--force" in result
 
-    def test_reindex_cached_mineru_returns_command(self, dummy_ctx, monkeypatch, env_value, mode):
+    def test_reindex_cached_mineru_reports_disabled(self, dummy_ctx, monkeypatch, env_value, mode):
         if env_value:
             monkeypatch.setenv("ZOTERO_LOCAL", env_value)
         else:
             monkeypatch.delenv("ZOTERO_LOCAL", raising=False)
         result = _call_update(dummy_ctx, reindex_cached_mineru=True)
-        assert "--reindex-cached-mineru" in result
+        # Batch MinerU reindex is disabled (uniform-dim build path): the tool
+        # explains and points at the per-paper flag instead of printing a
+        # dead command that would run a plain update.
+        assert "disabled" in result
+        assert "--reindex-keys" in result
 
-    def test_reindex_cached_mineru_with_force(self, dummy_ctx, monkeypatch, env_value, mode):
+    def test_reindex_cached_mineru_with_force_reports_disabled(self, dummy_ctx, monkeypatch, env_value, mode):
         if env_value:
             monkeypatch.setenv("ZOTERO_LOCAL", env_value)
         else:
@@ -101,8 +105,8 @@ class TestGuardAllModes:
         result = _call_update(
             dummy_ctx, reindex_cached_mineru=True, force_reindex=True
         )
-        assert "--reindex-cached-mineru" in result
-        assert "--force" in result
+        assert "disabled" in result
+        assert "--reindex-keys" in result
 
     def test_message_mentions_db_status(self, dummy_ctx, monkeypatch, env_value, mode):
         if env_value:
