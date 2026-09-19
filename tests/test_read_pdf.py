@@ -7,10 +7,44 @@ import pytest
 from conftest import DummyContext, FakeZotero
 
 from zotero_mcp import server
+from zotero_mcp.extract import PAGE_SEPARATOR, ExtractedDoc
+from zotero_mcp.tools import read_pdf as read_pdf_tools
+from zotero_mcp.tools.read_pdf import PdfReadError
 
 # ---------------------------------------------------------------------------
 # Helpers: fake fitz module and document
 # ---------------------------------------------------------------------------
+
+
+def _patch_extract(monkeypatch, page_texts, total=None, needs_ocr=()):
+    """Stand in for ``extract_pdf``/``pdf_page_count`` with known page text.
+
+    Mirrors the real contract the tool depends on: out-of-range indices are
+    dropped, and ``page_numbers`` reports the absolute source page for each
+    returned page.
+    """
+    total_pages = total if total is not None else len(page_texts)
+
+    def _fake_page_count(_path):
+        return total_pages
+
+    def _fake_extract_pdf(_path, *, pages=None, max_pages=None):
+        wanted = [
+            p for p in (range(total_pages) if pages is None else pages)
+            if 0 <= p < total_pages
+        ]
+        texts = [page_texts[p % len(page_texts)] for p in wanted]
+        return ExtractedDoc(
+            text=PAGE_SEPARATOR.join(texts),
+            pages=tuple(texts),
+            page_numbers=tuple(wanted),
+            page_count=total_pages,
+            source="pdf",
+            needs_ocr=tuple(needs_ocr),
+        )
+
+    monkeypatch.setattr("zotero_mcp.tools.read_pdf.pdf_page_count", _fake_page_count)
+    monkeypatch.setattr("zotero_mcp.tools.read_pdf.extract_pdf", _fake_extract_pdf)
 
 
 class FakePage:
@@ -43,8 +77,13 @@ def _make_fake_fitz(pages, total=None):
 
 
 def _patch_fitz(monkeypatch, pages, total=None):
-    fake_fitz = _make_fake_fitz(pages, total)
-    monkeypatch.setitem(sys.modules, "fitz", fake_fitz)
+    """Compat shim over the extract layer (the tool no longer opens fitz here).
+
+    Accepts the historical FakePage list and feeds each page's text through
+    the patched ``extract_pdf``/``pdf_page_count`` the tool actually calls.
+    """
+    texts = [pg.get_text() if hasattr(pg, "get_text") else str(pg) for pg in pages]
+    _patch_extract(monkeypatch, texts, total=total)
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +127,7 @@ class TestHappyPath:
         _patch_fitz(monkeypatch, [FakePage("Page 1 content.")] * 10, total=10)
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/tmp/test.pdf", "Test Paper", "ATTKEY"),
+            lambda _k, _c: ("/tmp/test.pdf", "Test Paper", "ATTKEY", False),
         )
 
         result = server.read_pdf_pages(item_key="ITEM01", start_page=3, ctx=dummy_ctx)
@@ -107,7 +146,7 @@ class TestHappyPath:
         _patch_fitz(monkeypatch, pages)
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/tmp/test.pdf", "Test Paper", "ATTKEY"),
+            lambda _k, _c: ("/tmp/test.pdf", "Test Paper", "ATTKEY", False),
         )
 
         result = server.read_pdf_pages(item_key="ITEM01", start_page=2, end_page=4, ctx=dummy_ctx)
@@ -125,7 +164,7 @@ class TestHappyPath:
         _patch_fitz(monkeypatch, [FakePage("hello")])
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/tmp/test.pdf", "My Paper Title", "ATTKEY"),
+            lambda _k, _c: ("/tmp/test.pdf", "My Paper Title", "ATTKEY", False),
         )
 
         result = server.read_pdf_pages(item_key="KEY123", start_page=1, ctx=dummy_ctx)
@@ -133,24 +172,34 @@ class TestHappyPath:
         assert "# PDF Pages 1-1 of My Paper Title" in result
         assert "**Item Key:** KEY123" in result
         assert "**Total pages in PDF:** 1" in result
-        assert "**Coverage:** p.1-1/1" in result
-        assert "**Cache:** 不适用" in result
 
 
 class TestErrors:
-    """Input validation and error cases."""
+    """Input validation and error cases.
+
+    Each of these used to be *returned* as a string, which made a failed read
+    indistinguishable from a successful one: `zotero-cli --json read` wrapped
+    it in an ``ok: true`` envelope and exited 0. They are raised now, and each
+    carries the code the envelope reports, so the assertions check both.
+    """
 
     def test_empty_item_key(self, dummy_ctx):
-        result = server.read_pdf_pages(item_key="", start_page=1, ctx=dummy_ctx)
-        assert "item_key cannot be empty" in result
+        with pytest.raises(PdfReadError) as exc:
+            server.read_pdf_pages(item_key="", start_page=1, ctx=dummy_ctx)
+        assert "item_key cannot be empty" in str(exc.value)
+        assert exc.value.code == "empty_item_key"
 
     def test_whitespace_item_key(self, dummy_ctx):
-        result = server.read_pdf_pages(item_key="   ", start_page=1, ctx=dummy_ctx)
-        assert "item_key cannot be empty" in result
+        with pytest.raises(PdfReadError) as exc:
+            server.read_pdf_pages(item_key="   ", start_page=1, ctx=dummy_ctx)
+        assert "item_key cannot be empty" in str(exc.value)
+        assert exc.value.code == "empty_item_key"
 
     def test_end_page_less_than_start_page(self, dummy_ctx):
-        result = server.read_pdf_pages(item_key="ITEM01", start_page=5, end_page=3, ctx=dummy_ctx)
-        assert "end_page must be greater than or equal to start_page" in result
+        with pytest.raises(PdfReadError) as exc:
+            server.read_pdf_pages(item_key="ITEM01", start_page=5, end_page=3, ctx=dummy_ctx)
+        assert "end_page must be greater than or equal to start_page" in str(exc.value)
+        assert exc.value.code == "invalid_page_range"
 
     def test_no_pdf_attachment(self, monkeypatch, dummy_ctx, fake_zot):
         monkeypatch.setattr(
@@ -158,61 +207,104 @@ class TestErrors:
             lambda _k, _c: None,
         )
 
-        result = server.read_pdf_pages(item_key="ITEM01", start_page=1, ctx=dummy_ctx)
+        with pytest.raises(PdfReadError) as exc:
+            server.read_pdf_pages(item_key="ITEM01", start_page=1, ctx=dummy_ctx)
 
-        assert "No PDF attachment found" in result
+        assert "No PDF attachment found" in str(exc.value)
+        assert exc.value.code == "no_pdf_attachment"
 
     def test_start_page_out_of_range(self, monkeypatch, dummy_ctx, fake_zot):
         _patch_fitz(monkeypatch, [FakePage("p1")], total=1)
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/tmp/test.pdf", "Paper", "ATTKEY"),
+            lambda _k, _c: ("/tmp/test.pdf", "Paper", "ATTKEY", False),
         )
 
-        result = server.read_pdf_pages(item_key="ITEM01", start_page=5, ctx=dummy_ctx)
+        with pytest.raises(PdfReadError) as exc:
+            server.read_pdf_pages(item_key="ITEM01", start_page=5, ctx=dummy_ctx)
 
-        assert "out of range" in result
-        assert "1-1" in result
+        assert "out of range" in str(exc.value)
+        assert "1-1" in str(exc.value)
+        assert exc.value.code == "page_out_of_range"
 
-    def test_end_page_out_of_range(self, monkeypatch, dummy_ctx, fake_zot):
-        _patch_fitz(monkeypatch, [FakePage("p1")] * 3, total=3)
+    def test_end_page_past_the_last_page_is_clamped(self, monkeypatch, dummy_ctx, fake_zot):
+        """A caller rarely knows the page count before its first read, and an
+        end page that is too large means "to the end". Failing the whole read
+        over it cost a retry for nothing."""
+        _patch_extract(monkeypatch, ["p1", "p2", "p3"], total=3)
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/tmp/test.pdf", "Paper", "ATTKEY"),
+            lambda _k, _c: ("/tmp/test.pdf", "Paper", "ATTKEY", False),
         )
 
-        result = server.read_pdf_pages(item_key="ITEM01", start_page=1, end_page=10, ctx=dummy_ctx)
+        result = server.read_pdf_pages(item_key="ITEM01", start_page=2, end_page=10, ctx=dummy_ctx)
 
-        assert "out of range" in result
-        assert "1-3" in result
+        assert "# PDF Pages 2-3" in result
+        assert "End page 10 is past the last page; read through page 3." in result
+        assert "## Page 3" in result
+        assert "## Page 4" not in result
 
     def test_large_page_range_no_cap(self, monkeypatch, dummy_ctx, fake_zot):
-        """The 50-page-per-call cap has been removed; requesting 55 pages of a
-        100-page PDF should succeed (PyMuPDF fallback), not error."""
-        _patch_fitz(monkeypatch, [FakePage("p")] * 100, total=100)
+        """Fork behaviour: text reads carry no page cap. Requesting 55 pages
+        of a 100-page PDF succeeds — MinerU serves whole-document slices and
+        oversized output is warned about, not refused."""
+        _patch_extract(monkeypatch, [f"p{i}" for i in range(1, 101)], total=100)
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/tmp/test.pdf", "Paper", "ATTKEY"),
+            lambda _k, _c: ("/tmp/test.pdf", "Paper", "ATTKEY", False),
         )
 
         result = server.read_pdf_pages(item_key="ITEM01", start_page=1, end_page=55, ctx=dummy_ctx)
 
-        # No error; PyMuPDF fallback returned content for all 55 pages.
-        assert "max 50" not in result
-        assert "PyMuPDF (fallback)" in result
         assert "## Page 1" in result
         assert "## Page 55" in result
+        assert "max" not in result
 
-    def test_missing_fitz_module(self, monkeypatch, dummy_ctx, fake_zot):
+    def test_missing_fitz_module(self, monkeypatch, dummy_ctx, fake_zot, tmp_path):
+        bad = tmp_path / "not-a-pdf.bin"
+        bad.write_bytes(b"plain text, no PDF header")
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/tmp/test.pdf", "Paper", "ATTKEY"),
+            lambda _k, _c: (str(bad), "Paper", "ATTKEY", False),
         )
-        monkeypatch.setitem(sys.modules, "fitz", None)
 
-        result = server.read_pdf_pages(item_key="ITEM01", start_page=1, ctx=dummy_ctx)
+        with pytest.raises(PdfReadError) as exc:
+            server.read_pdf_pages(item_key="ITEM01", start_page=1, ctx=dummy_ctx)
 
-        assert "PyMuPDF" in result
+        assert "Could not read PDF" in str(exc.value)
+        assert "Not a PDF" in str(exc.value)
+        assert exc.value.code == "pdf_unreadable"
+
+    def test_a_failed_read_is_never_a_successful_return(self, monkeypatch, dummy_ctx, fake_zot):
+        """The regression guard for the whole class: every failure path above
+        has to raise, so a caller can never receive prose where it expected
+        pages. Enumerated rather than sampled, because the bug was that one
+        path at a time drifted back to returning a string."""
+        monkeypatch.setattr(
+            "zotero_mcp.tools.read_pdf._get_pdf_path",
+            lambda _k, _c: ("/tmp/test.pdf", "Paper", True),
+        )
+        _patch_extract(monkeypatch, ["p1"] * 3, total=3)
+
+        failures = [
+            dict(item_key="", start_page=1),
+            dict(item_key="ITEM01", start_page=5, end_page=3),
+            dict(item_key="ITEM01", start_page=9),
+        ]
+        for kwargs in failures:
+            with pytest.raises(PdfReadError):
+                server.read_pdf_pages(ctx=dummy_ctx, **kwargs)
+
+    def test_validation_precedes_any_lookup(self, monkeypatch, dummy_ctx):
+        """The repro in #528 needs no library, key or running Zotero: an
+        invalid range is rejected before anything is resolved."""
+        def _explode(*_a, **_k):
+            raise AssertionError("a rejected range must not reach the client")
+
+        monkeypatch.setattr("zotero_mcp.tools.read_pdf._get_pdf_path", _explode)
+
+        with pytest.raises(PdfReadError):
+            server.read_pdf_pages(item_key="TESTKEY1", start_page=2, end_page=1, ctx=dummy_ctx)
 
 
 class TestEdgeCases:
@@ -223,7 +315,7 @@ class TestEdgeCases:
         _patch_fitz(monkeypatch, [FakePage("p1"), FakePage("p2"), FakePage("p3")])
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/tmp/test.pdf", "Test Paper", "ATTKEY"),
+            lambda _k, _c: ("/tmp/test.pdf", "Test Paper", "ATTKEY", False),
         )
 
         result = server.read_pdf_pages(item_key="ITEM01", start_page=2, end_page=2, ctx=dummy_ctx)
@@ -236,7 +328,7 @@ class TestEdgeCases:
         _patch_fitz(monkeypatch, [FakePage("first"), FakePage("last")])
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/tmp/test.pdf", "Paper", "ATTKEY"),
+            lambda _k, _c: ("/tmp/test.pdf", "Paper", "ATTKEY", False),
         )
 
         result = server.read_pdf_pages(item_key="ITEM01", start_page=2, ctx=dummy_ctx)
@@ -249,7 +341,7 @@ class TestEdgeCases:
         _patch_fitz(monkeypatch, [FakePage(f"p{i}") for i in range(10)], total=10)
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/tmp/test.pdf", "Paper", "ATTKEY"),
+            lambda _k, _c: ("/tmp/test.pdf", "Paper", "ATTKEY", False),
         )
 
         result = server.read_pdf_pages(item_key="ITEM01", start_page=1, end_page=3, ctx=dummy_ctx)
@@ -263,7 +355,7 @@ class TestEdgeCases:
         _patch_fitz(monkeypatch, [FakePage(f"p{i}") for i in range(5)], total=5)
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/tmp/test.pdf", "Paper", "ATTKEY"),
+            lambda _k, _c: ("/tmp/test.pdf", "Paper", "ATTKEY", False),
         )
 
         result = server.read_pdf_pages(item_key="ITEM01", start_page=1, end_page=5, ctx=dummy_ctx)
@@ -275,7 +367,7 @@ class TestEdgeCases:
         _patch_fitz(monkeypatch, [FakePage(""), FakePage("has text"), FakePage("")])
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/tmp/test.pdf", "Paper", "ATTKEY"),
+            lambda _k, _c: ("/tmp/test.pdf", "Paper", "ATTKEY", False),
         )
 
         result = server.read_pdf_pages(item_key="ITEM01", start_page=1, end_page=3, ctx=dummy_ctx)

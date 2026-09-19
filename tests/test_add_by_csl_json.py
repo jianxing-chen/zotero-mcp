@@ -7,6 +7,7 @@ import time
 from conftest import FakeZotero
 
 from zotero_mcp import server
+from zotero_mcp.tools import write  # noqa: E402
 from zotero_mcp.batch_runner import read_status
 
 
@@ -35,7 +36,11 @@ class FakeZoteroWithAttach(FakeZotero):
 
     def attachment_both(self, files, parentid=None, **kwargs):
         self.attachments.append({"files": files, "parentid": parentid})
-        return {"success": {"0": "ATCH0001"}, "successful": {}, "failed": {}}
+        # Shape matches pyzotero's Zupload.upload(): each status maps to a
+        # list of payload dicts carrying the registered attachment key. A
+        # create_items-shaped dict here reads as an upload that landed no
+        # file, which sends the caller down the two-step retry.
+        return {"success": [{"key": "ATCH0001"}], "unchanged": [], "failure": []}
 
 
 def _patch_hybrid(monkeypatch):
@@ -292,10 +297,15 @@ class TestFilePath:
         result = server.add_by_csl_json(file_path=str(f), ctx=dummy_ctx)
         assert "Unsupported file extension" in result
 
-    def test_rejects_missing_file(self, monkeypatch, dummy_ctx):
+    def test_rejects_missing_file(self, monkeypatch, dummy_ctx, tmp_path):
         _patch_hybrid(monkeypatch)
-        result = server.add_by_csl_json(
-            file_path="/absolutely/no/such/file.json",
+        # Absolute on whichever platform is running: a POSIX literal is not
+        # absolute on Windows, so the reader rejected it for its shape and
+        # the missing-file branch under test never ran.
+        missing = tmp_path / "no-such-file.json"
+        result = write.add_item(
+            source=str(missing),
+            source_type="csl_json",
             ctx=dummy_ctx,
         )
         assert "not found" in result.lower()

@@ -522,7 +522,8 @@ def save_semantic_search_config(
     try:
         # Ensure config directory exists
         semantic_config_dir = semantic_config_path.parent
-        semantic_config_dir.mkdir(parents=True, exist_ok=True)
+        from zotero_mcp.utils import ensure_private_dir
+        ensure_private_dir(semantic_config_dir)
 
         # Load existing config or create new one
         full_semantic_config = {}
@@ -828,7 +829,8 @@ def _write_standalone_config(
 ) -> Path:
     """Write a central config file used by semantic search and provide client env."""
     cfg_dir = Path.home() / ".config" / "zotero-mcp"
-    cfg_dir.mkdir(parents=True, exist_ok=True)
+    from zotero_mcp.utils import ensure_private_dir
+    ensure_private_dir(cfg_dir)
     cfg_path = cfg_dir / "config.json"
 
     # Load or initialize

@@ -65,6 +65,7 @@ zotero-cli --json search "diffusion models" --limit 5 --detail keys_only \
 | `tag` | items you filed under a tag | `search --mode tag "to-read,important"` |
 | `advanced` | structured field conditions | `search --mode advanced --conditions '[...]'` |
 | `citekey` | a BibTeX citation key | `search --mode citekey smith2020` |
+| `notes` | text inside your notes, not item fields | `search --mode notes "research question"` |
 
 `semantic` needs the search index built (`zotero-cli db status` to check,
 `zotero-cli db update` to build). If it is empty, fall back to `items` and
@@ -78,8 +79,8 @@ a group library, add `--all-libraries`:
 zotero-cli search "Cladder-Micus" --all-libraries
 ```
 
-Each result is then labelled `**Library:** <name>`. It needs the server running
-with `ZOTERO_SEARCH_BACKEND=sqlite` and errors clearly if it is not, so try it
+Each result is then labelled `**Library:** <name>`. It needs the SQLite backend,
+the default in local mode, and errors clearly if it is not in use, so try it
 once and fall back to per-library searches if it is refused. Tag filters work
 with it; `--collection` does not, because a collection lives inside one library.
 
@@ -125,6 +126,45 @@ never touch an existing item.
 Before a destructive change (`delete`, `duplicates merge`, a `batch` over
 many items), confirm with the user and show what will be affected. `delete
 item` refuses notes unless `--allow-note` is passed.
+
+## Reading and annotating a paper
+
+```bash
+zotero-cli get children ITEM_KEY                          # the PDF's attachment key
+zotero-cli read ITEM_KEY --start-page 1 --end-page 99     # end page clamps to the last page
+zotero-cli path ATTACHMENT_KEY                            # the PDF file on disk
+```
+
+Extracted text is reliable for prose and unreliable for math, figures and
+tables: symbols drop out and table cells run together. `read` flags each
+page where that happens ("Garbled in this text: Equation (1), Table 2").
+For those pages, look at the page itself if you can view images:
+
+```bash
+zotero-cli read ITEM_KEY --start-page 4 --format image                         # PNG per page, up to 10
+zotero-cli read ITEM_KEY --start-page 4 --format image --rect 0.35,0.49,0.3,0.05   # zoom into one region
+```
+
+To annotate, plan everything, check it, then write it in one run:
+
+1. `zotero-cli --json layout ATTACHMENT_KEY` lists figure, table and
+   equation boxes with their captions and a paste-ready `rect_arg`.
+2. Write one JSON object per line: `{"page": 4, "text": "exact words",
+   "comment": "...", "color": "yellow"}` for a highlight, or
+   `{"page": 3, "rect": "x,y,w,h", "comment": "..."}` for a box. Copy
+   highlight text exactly from `read`; it is searched for on that page and
+   two pages either side.
+3. `zotero-cli annotations batch --attachment-key ATTACHMENT_KEY --file plan.jsonl --dry-run`
+   shows the words each highlight would cover. Fix every miss.
+4. Run it again without `--dry-run`. Anything that did not land is listed
+   under `data.results` with `ok: false`, and the exit code is 1.
+
+Colors take Zotero's names: yellow, red, green, blue, purple, magenta,
+orange, gray. Three or four colors with fixed meanings read better than
+eight; say what they mean in a note on the item.
+
+Writes in local mode need a one-time `zotero-mcp authorize-local` (Zotero 10
+or newer) or web API credentials. A write refused for that reason says so.
 
 ## When something looks wrong
 

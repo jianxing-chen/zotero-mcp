@@ -32,7 +32,7 @@ from zotero_mcp import semantic_search
 from zotero_mcp.semantic_search import ZoteroSemanticSearch
 
 
-def make_zotero_db(path, keys):
+def make_zotero_db(path, keys, with_attachment=False):
     """Create a minimal zotero.sqlite with the given item keys.
 
     Includes the empty side tables referenced by get_items_with_text and
@@ -72,6 +72,23 @@ def make_zotero_db(path, keys):
             contentType TEXT, charsetID INT
         )"""
     )
+    if with_attachment:
+        # One PDF attachment per key, as a sibling items row + attachment
+        # row. The skip logic compares the stored text against the local
+        # attachment set (#428): with no attachment present, an
+        # indexed-with-fulltext item reads as "attachments gone" and is
+        # re-indexed rather than skipped.
+        conn.execute("INSERT INTO itemTypes VALUES (2, 'attachment')")
+        for i, key in enumerate(keys, start=101):
+            conn.execute(
+                "INSERT INTO items VALUES (?, 2, '2026-01-01 00:00:00', "
+                "'2026-01-01 00:00:00', '2026-01-01 00:00:00', 1, ?, 1, 0)",
+                (i, f"{key}ATT"),
+            )
+            conn.execute(
+                "INSERT INTO itemAttachments VALUES (?, ?, ?, 'application/pdf', 1)",
+                (i, i - 100, f"storage:{key}ATT/paper.pdf"),
+            )
     conn.commit()
     conn.close()
     # _get_storage_dir() infers the storage dir as db_path.parent/"storage";
@@ -163,13 +180,14 @@ class TestChunkedFulltextSkipLookup:
         re-extraction. Pre-fix it probed the bare ``KEY`` (always None) and
         re-extracted every time."""
         db = tmp_path / "zotero.sqlite"
-        make_zotero_db(db, ["ABCD1234"])
+        make_zotero_db(db, ["ABCD1234"], with_attachment=True)
         # Pre-populate ChromaDB as if the item was already indexed with fulltext.
         chunk0_meta = {
             "item_key": "ABCD1234",
             "group_id": 0,
             "has_fulltext": True,
             "date_modified": "2026-01-01 00:00:00",
+            "attachment_keys": "ABCD1234ATT",
         }
         chroma = RecordingChroma(
             meta_by_id={"ABCD1234#0": chunk0_meta},
@@ -215,9 +233,10 @@ class TestChunkedFulltextSkipLookup:
         bare key (regression guard so the fix doesn't break the non-chunking
         path)."""
         db = tmp_path / "zotero.sqlite"
-        make_zotero_db(db, ["BBBB1111"])
+        make_zotero_db(db, ["BBBB1111"], with_attachment=True)
         meta = {"item_key": "BBBB1111", "group_id": 0, "has_fulltext": True,
-                "date_modified": "2026-01-01 00:00:00"}
+                "date_modified": "2026-01-01 00:00:00",
+                "attachment_keys": "BBBB1111ATT"}
         chroma = RecordingChroma(meta_by_id={"BBBB1111": meta}, chunking=False)
         s = _make_search(db, chroma, chunking_enabled=False)
 
@@ -297,14 +316,16 @@ class TestUpdateDatabaseChunkedIncrementalSkip:
         everything (a hidden full rebuild burning embedding tokens)."""
         monkeypatch.setattr(semantic_search, "is_local_mode", lambda: True)
         db = tmp_path / "zotero.sqlite"
-        make_zotero_db(db, ["AAAA1111", "BBBB2222"])
+        make_zotero_db(db, ["AAAA1111", "BBBB2222"], with_attachment=True)
 
         # After the first run, both items have chunk-0 metadata with has_fulltext.
         meta = {
             "AAAA1111#0": {"item_key": "AAAA1111", "group_id": 0, "has_fulltext": True,
-                            "date_modified": "2026-01-01 00:00:00"},
+                            "date_modified": "2026-01-01 00:00:00",
+                            "attachment_keys": "AAAA1111ATT"},
             "BBBB2222#0": {"item_key": "BBBB2222", "group_id": 0, "has_fulltext": True,
-                            "date_modified": "2026-01-01 00:00:00"},
+                            "date_modified": "2026-01-01 00:00:00",
+                            "attachment_keys": "BBBB2222ATT"},
         }
         chroma = RecordingChroma(meta_by_id=meta)
         s = _make_search(db, chroma, chunking_enabled=True)

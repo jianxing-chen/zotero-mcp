@@ -5,7 +5,7 @@ import os
 import uuid
 from pathlib import Path
 
-from zotero_mcp import client as _client
+from zotero_mcp import library as _library
 from zotero_mcp import utils as _utils
 from zotero_mcp._app import mcp
 from zotero_mcp._context import Context
@@ -120,13 +120,8 @@ def connector_fetch(id: str, *, ctx: Context) -> str:
             )
 
         # Fetch item metadata for title and context
-        zot = _client.get_zotero_client()
-        try:
-            item = zot.item(item_key)
-            data = item.get("data", {}) if item else {}
-        except Exception:
-            item = None
-            data = {}
+        item = _library.get_library_backend().get_item(item_key)
+        data = item.get("data", {}) if item else {}
 
         title = data.get("title", f"Zotero Item {item_key}")
         zotero_url = f"zotero://select/items/{item_key}"

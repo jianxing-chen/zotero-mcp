@@ -59,7 +59,7 @@ def _patch_path(monkeypatch, pdf_path, title, att_key):
     monkeypatch.setattr(
         read_pdf,
         "_get_pdf_path",
-        lambda item_key, _ctx: (str(pdf_path), title, att_key),
+        lambda item_key, _ctx: (str(pdf_path), title, att_key, False),
     )
 
 
@@ -71,10 +71,34 @@ def _patch_pymupdf(monkeypatch, pages_text):
         def open(_path):
             return _FakeFitzDoc(pages_text)
 
-    monkeypatch.setattr(read_pdf, "_probe_total_pages", lambda _p: len(pages_text))
+    monkeypatch.setattr(read_pdf, "pdf_page_count", lambda _p: len(pages_text))
     # _extract_with_pymupdf imports fitz locally; inject our fake module.
     monkeypatch.setitem(sys.modules, "fitz", _FakeFitzModule)
 
+
+
+def _patch_fallback_extract(monkeypatch, pages_text, total=None):
+    """Patch the text-layer fallback (extract.pdf_page_count/extract_pdf)."""
+    from zotero_mcp.extract import ExtractedDoc
+
+    n = total if total is not None else len(pages_text)
+
+    def _count(_p):
+        return n
+
+    def _extract(_p, *, pages=None, max_pages=None):
+        wanted = [p for p in (range(n) if pages is None else pages) if 0 <= p < n]
+        texts = [pages_text[i % len(pages_text)] for i in wanted]
+        return ExtractedDoc(
+            text="\n\n".join(texts),
+            pages=tuple(texts),
+            page_numbers=tuple(wanted),
+            page_count=n,
+            source="pdf",
+        )
+
+    monkeypatch.setattr(read_pdf, "pdf_page_count", _count)
+    monkeypatch.setattr(read_pdf, "extract_pdf", _extract)
 
 class TestMineruPreferred:
     def test_mineru_cache_hit_returns_structured_content(self, tmp_path, monkeypatch, ctx):
@@ -84,7 +108,7 @@ class TestMineruPreferred:
         _patch_path(monkeypatch, pdf, "Test Paper", "ATTKEY")
         # PyMuPDF fallback must NOT run; report 3 pages so requesting page 2
         # passes range validation, then MinerU serves it from its own pages list.
-        monkeypatch.setattr(read_pdf, "_probe_total_pages", lambda _p: 3)
+        monkeypatch.setattr(read_pdf, "pdf_page_count", lambda _p: 3)
         monkeypatch.setitem(
             sys.modules, "fitz", type("F", (), {"open": staticmethod(lambda _p: _FakeFitzDoc(["MUST NOT RUN"]))})
         )
@@ -123,7 +147,7 @@ class TestMineruPreferred:
         pdf = tmp_path / "paper.pdf"
         pdf.write_bytes(b"%PDF-1.4 fake")
         _patch_path(monkeypatch, pdf, "Test Paper", "ATTKEY")
-        monkeypatch.setattr(read_pdf, "_probe_total_pages", lambda _p: 5)
+        monkeypatch.setattr(read_pdf, "pdf_page_count", lambda _p: 5)
         monkeypatch.setitem(
             sys.modules, "fitz", type("F", (), {"open": staticmethod(lambda _p: _FakeFitzDoc(["X"]))})
         )
@@ -146,13 +170,12 @@ class TestMineruPreferred:
         pdf = tmp_path / "paper.pdf"
         pdf.write_bytes(b"%PDF-1.4 fake")
         _patch_path(monkeypatch, pdf, "Paper", "ATTKEY")
-        _patch_pymupdf(monkeypatch, ["page1", "page2 text"])
+        _patch_fallback_extract(monkeypatch, ["page1", "page2 text"])
 
         monkeypatch.setattr(mineru_client, "load_mineru_config", lambda: {})
         monkeypatch.setattr(mineru_client, "is_mineru_enabled", lambda _c: False)
 
         out = read_pdf.read_pdf_pages("ITEM1", 2, 2, ctx=ctx)
-        assert "PyMuPDF (fallback)" in out
         assert "page2 text" in out
         assert "MinerU" not in out
 
@@ -160,14 +183,13 @@ class TestMineruPreferred:
         pdf = tmp_path / "paper.pdf"
         pdf.write_bytes(b"%PDF-1.4 fake")
         _patch_path(monkeypatch, pdf, "Paper", "ATTKEY")
-        _patch_pymupdf(monkeypatch, ["fallback page"])
+        _patch_fallback_extract(monkeypatch, ["fallback page"])
 
         monkeypatch.setattr(mineru_client, "load_mineru_config", lambda: {"enabled": True})
         monkeypatch.setattr(mineru_client, "is_mineru_enabled", lambda _c: True)
         monkeypatch.setattr(mineru_client, "is_mineru_available", lambda _c: False)
 
         out = read_pdf.read_pdf_pages("ITEM1", 1, 1, ctx=ctx)
-        assert "PyMuPDF (fallback)" in out
         assert "fallback page" in out
 
     def test_mineru_cache_miss_returns_task_id(self, tmp_path, monkeypatch, ctx):
@@ -234,7 +256,7 @@ class TestMineruPreferred:
         pdf = tmp_path / "paper.pdf"
         pdf.write_bytes(b"%PDF-1.4 fake")
         _patch_path(monkeypatch, pdf, "Paper", "ATTKEY")
-        monkeypatch.setattr(read_pdf, "_probe_total_pages", lambda _p: 3)
+        monkeypatch.setattr(read_pdf, "pdf_page_count", lambda _p: 3)
         monkeypatch.setitem(
             sys.modules, "fitz", type("F", (), {"open": staticmethod(lambda _p: _FakeFitzDoc(["X"]))})
         )
@@ -263,8 +285,8 @@ class TestMineruPreferred:
         pdf = tmp_path / "paper.pdf"
         pdf.write_bytes(b"%PDF-1.4 fake")
         # att_key is None
-        monkeypatch.setattr(read_pdf, "_get_pdf_path", lambda item_key, _ctx: (str(pdf), "Paper", None))
-        _patch_pymupdf(monkeypatch, ["fallback without key"])
+        monkeypatch.setattr(read_pdf, "_get_pdf_path", lambda item_key, _ctx: (str(pdf), "Paper", None, False))
+        _patch_fallback_extract(monkeypatch, ["fallback without key"])
 
         monkeypatch.setattr(mineru_client, "load_mineru_config", lambda: {"enabled": True})
         monkeypatch.setattr(mineru_client, "is_mineru_enabled", lambda _c: True)
@@ -276,7 +298,7 @@ class TestMineruPreferred:
         )
 
         out = read_pdf.read_pdf_pages("ITEM1", 1, 1, ctx=ctx)
-        assert "PyMuPDF (fallback)" in out
+        assert "fallback without key" in out
         assert parse_called["n"] == 0  # MinerU not invoked without a cache key
 
     def test_backend_param_recorded_in_work_items(self, tmp_path, monkeypatch, ctx):
@@ -284,7 +306,7 @@ class TestMineruPreferred:
         pdf = tmp_path / "paper.pdf"
         pdf.write_bytes(b"%PDF-1.4 fake")
         _patch_path(monkeypatch, pdf, "Paper", "ATTKEY")
-        monkeypatch.setattr(read_pdf, "_probe_total_pages", lambda _p: 3)
+        monkeypatch.setattr(read_pdf, "pdf_page_count", lambda _p: 3)
         monkeypatch.setitem(sys.modules, "fitz", type("F", (), {"open": staticmethod(lambda _p: _FakeFitzDoc(["X"]))}))
 
         monkeypatch.setattr(mineru_client, "load_mineru_config", lambda: {"enabled": True, "backend": "cloud", "cloud_token": "tok"})
@@ -316,7 +338,7 @@ class TestMineruPreferred:
         pdf = tmp_path / "paper.pdf"
         pdf.write_bytes(b"%PDF-1.4 fake")
         _patch_path(monkeypatch, pdf, "Paper", "ATTKEY")
-        monkeypatch.setattr(read_pdf, "_probe_total_pages", lambda _p: 3)
+        monkeypatch.setattr(read_pdf, "pdf_page_count", lambda _p: 3)
         monkeypatch.setitem(sys.modules, "fitz", type("F", (), {"open": staticmethod(lambda _p: _FakeFitzDoc(["X"]))}))
 
         monkeypatch.setattr(mineru_client, "load_mineru_config", lambda: {"enabled": True, "backend": "cloud", "cloud_token": "tok"})
@@ -347,12 +369,13 @@ class TestRangeValidation:
         pdf = tmp_path / "paper.pdf"
         pdf.write_bytes(b"%PDF-1.4 fake")
         _patch_path(monkeypatch, pdf, "Paper", "ATTKEY")
-        monkeypatch.setattr(read_pdf, "_probe_total_pages", lambda _p: 3)
+        monkeypatch.setattr(read_pdf, "pdf_page_count", lambda _p: 3)
         monkeypatch.setattr(mineru_client, "load_mineru_config", lambda: {})
 
-        out = read_pdf.read_pdf_pages("ITEM1", 10, 12, ctx=ctx)
-        assert "out of range" in out
-        assert "3 pages" in out
+        with pytest.raises(read_pdf.PdfReadError) as exc:
+            read_pdf.read_pdf_pages("ITEM1", 10, 12, ctx=ctx)
+        assert "out of range" in str(exc.value)
+        assert "3 pages" in str(exc.value)
 
     def test_no_50_page_limit(self, tmp_path, monkeypatch, ctx):
         """The 50-page-per-call cap has been removed; requesting 60 pages of a
@@ -360,23 +383,29 @@ class TestRangeValidation:
         pdf = tmp_path / "paper.pdf"
         pdf.write_bytes(b"%PDF-1.4 fake")
         _patch_path(monkeypatch, pdf, "Paper", "ATTKEY")
-        monkeypatch.setattr(read_pdf, "_probe_total_pages", lambda _p: 100)
+        _patch_fallback_extract(monkeypatch, [f"p{i}" for i in range(1, 101)])
         monkeypatch.setattr(mineru_client, "load_mineru_config", lambda: {})
         monkeypatch.setattr(mineru_client, "is_mineru_enabled", lambda _c: False)
 
         out = read_pdf.read_pdf_pages("ITEM1", 1, 60, ctx=ctx)
         assert "max 50" not in out
+        assert "## Page 60" in out
 
     def test_pymupdf_unavailable_blocks_with_clear_message(self, tmp_path, monkeypatch, ctx):
         pdf = tmp_path / "paper.pdf"
         pdf.write_bytes(b"%PDF-1.4 fake")
         _patch_path(monkeypatch, pdf, "Paper", "ATTKEY")
         # PyMuPDF unavailable → cannot validate ranges.
-        monkeypatch.setattr(read_pdf, "_probe_total_pages", lambda _p: None)
+        monkeypatch.setattr(read_pdf, "pdf_page_count", lambda _p: None)
         monkeypatch.setattr(mineru_client, "load_mineru_config", lambda: {})
 
-        out = read_pdf.read_pdf_pages("ITEM1", 1, 1, ctx=ctx)
-        assert "PyMuPDF is required" in out
+        def _no_fitz(_p):
+            raise ImportError("No module named 'fitz'")
+
+        monkeypatch.setattr(read_pdf, "pdf_page_count", _no_fitz)
+        with pytest.raises(read_pdf.PdfReadError) as exc:
+            read_pdf.read_pdf_pages("ITEM1", 1, 1, ctx=ctx)
+        assert "fitz" in str(exc.value)
 
 
 class TestMineruParseWorker:

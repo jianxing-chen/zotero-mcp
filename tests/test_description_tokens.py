@@ -16,14 +16,56 @@ import pytest
 tiktoken = pytest.importorskip("tiktoken")
 
 
-# Loose global bounds. The floor (30 tokens) catches smelly one-liners;
-# the ceiling (450 tokens) catches runaway growth. Between them, anything
-# goes — small wording changes never trip the test. A rubric-complete
-# description (purpose + guidelines + limitations + params + example)
-# almost always lands well inside this range, so raising the floor or
-# lowering the ceiling is rarely warranted.
+# Per-tool token budgets (min, max). Measured on the post-rubric-rewrite
+# descriptions; min ≈ 0.67×, max ≈ 1.5× of the current value.
+# If you legitimately need to exceed a max, update the budget and mention
+# why in the PR — that's an active choice, not an accident.
+# Fork's global bounds, kept for the coarse floor/ceiling tests below;
+# TOOL_BUDGETS above carries the per-tool budgets.
 DESC_FLOOR = 30
 DESC_CEILING = 450
+
+TOOL_BUDGETS = {
+    # tools/annotations.py
+    "zotero_get_annotations":          (110, 245),
+    "zotero_get_notes":                (119, 267),
+    "zotero_manage_note":              (139, 312),
+    "zotero_create_annotation":        (196, 439),
+    # tools/local_auth.py
+    "zotero_authorize_local_writes":   (115, 260),
+    "zotero_write_capabilities":       ( 70, 165),
+    # tools/retrieval.py
+    "zotero_get_tags":                 ( 85, 195),
+    "zotero_get_item_children":        (138, 310),
+    # tools/write.py
+    "zotero_add_item":                 (277, 450),  # max clamped to the hard cap
+    "zotero_update_item":              (190, 426),
+    "zotero_batch_update":             (131, 294),
+    "zotero_set_item_collections":     ( 98, 220),
+    "zotero_update_collection":        ( 84, 188),
+    # Both rewritten for the paging/auto-merge work (#394, #395): the auto
+    # mode's two-call confirmation and keeper heuristic are things a model has
+    # to know before it calls, so they belong in the description. merge's max
+    # is clamped to the hard cap.
+    "zotero_find_duplicates":          (234, 450),
+    "zotero_merge_duplicates":         (295, 450),
+    "zotero_attach_file":              (190, 430),
+    # tools/search.py
+    "zotero_search_items":             (175, 400),
+    "zotero_search_by_tag":            (115, 265),
+    "zotero_search_by_citation_key":   (125, 280),
+    "zotero_advanced_search":          (175, 400),
+    # filters guidance widened (single-key example, $and, no year key);
+    # new baseline ~319 tokens, max clamped to the hard cap.
+    "zotero_semantic_search":          (214, 450),
+    "zotero_update_search_database":   (130, 295),
+    "zotero_get_search_database_status": ( 75, 170),
+}
+
+# Global ceiling: even rubric-rich descriptions shouldn't exceed this.
+# The paper's RQ-2 data shows diminishing returns (and AS inflation) past
+# this range for compact variants.
+PER_TOOL_HARD_MAX = 450
 
 
 def _collect_tool_descriptions():

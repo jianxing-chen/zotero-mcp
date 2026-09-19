@@ -6,6 +6,8 @@ used across the test suite (patch module-level functions in zotero_mcp.*).
 """
 
 import json
+
+import pytest
 import subprocess
 import sys
 from pathlib import Path
@@ -16,6 +18,9 @@ from zotero_mcp import mineru_client as M
 # --------------------------------------------------------------------------- #
 # Config loading & availability
 # --------------------------------------------------------------------------- #
+pytestmark = pytest.mark.mineru_real_config
+
+
 class TestConfig:
     def test_load_missing_config_returns_empty(self, tmp_path):
         assert M.load_mineru_config(tmp_path / "nope.json") == {}

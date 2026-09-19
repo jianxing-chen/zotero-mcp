@@ -2,6 +2,7 @@
 
 import contextlib
 import difflib
+import functools
 import hashlib
 import json
 import logging
@@ -12,13 +13,15 @@ import tempfile
 import time as _time
 import xml.etree.ElementTree as ET
 from typing import Literal, NamedTuple
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 
 import requests
+from unidecode import unidecode
 
 from zotero_mcp import ads_client as _ads_client
 from zotero_mcp import citation_import as _citation_import
 from zotero_mcp import client as _client
+from zotero_mcp import library as _library
 from zotero_mcp import schema as _schema
 from zotero_mcp import utils as _utils
 from zotero_mcp._app import mcp
@@ -468,11 +471,14 @@ def batch_update_tags(
             return "Error: After parsing, no valid tags were provided to add or remove"
 
         ctx.info(f"Batch updating tags for items matching '{query}'")
-        zot = _client.get_zotero_client()
 
-        # Use shared hybrid-mode helper for correct library override propagation
+        # One resolution for both roles. Taking the read client from here
+        # rather than building a separate one is what makes the
+        # `write_zot is not zot` check below mean "the backends differ" —
+        # otherwise it is always true and every item pays for a re-fetch it
+        # doesn't need.
         try:
-            _, write_zot = _helpers._get_write_client(ctx)
+            zot, write_zot = _helpers._get_write_client(ctx)
         except ValueError as e:
             return str(e)
 
@@ -560,8 +566,9 @@ def batch_update_tags(
                 try:
                     item_key = item.get("key", "unknown")
 
-                    # If writing via web API, re-fetch the item from web to get
-                    # the correct version number for the update
+                    # When reads and writes go to different backends, the
+                    # version numbers are unrelated — re-fetch from the write
+                    # side so the update carries a version it recognizes.
                     if write_zot is not zot:
                         def _set_tags(it):
                             it["data"]["tags"] = current_tags
@@ -613,7 +620,7 @@ def batch_update_tags(
 
     except Exception as e:
         ctx.error(f"Error in batch tag update: {str(e)}")
-        return f"Error in batch tag update: {str(e)}"
+        return f"Error in batch tag update: {_helpers.format_zotero_error(e)}"
 
 
 def _batch_update_tags_worker(status, items, add_tags, remove_tags) -> None:
@@ -1052,7 +1059,7 @@ def create_collection(name: str, parent_collection: str | None = None, *, ctx: C
                 keys = _helpers._resolve_collection_names(read_zot, [parent_collection], ctx=ctx)
                 parent_key = keys[0] if keys else None
             except ValueError as e:
-                return f"Error resolving parent collection: {e}"
+                return f"Error resolving parent collection: {_helpers.format_zotero_error(e)}"
 
         coll_data = {"name": name}
         if parent_key:
@@ -1070,7 +1077,7 @@ def create_collection(name: str, parent_collection: str | None = None, *, ctx: C
 
     except Exception as e:
         ctx.error(f"Error creating collection: {e}")
-        return f"Error creating collection: {e}"
+        return f"Error creating collection: {_helpers.format_zotero_error(e)}"
 
 
 @mcp.tool(
@@ -1109,118 +1116,99 @@ def delete_collection(collection_key: str, *, ctx: Context) -> str:
 
     except Exception as e:
         ctx.error(f"Error deleting collection: {e}")
-        return f"Error deleting collection: {e}"
+        return f"Error deleting collection: {_helpers.format_zotero_error(e)}"
 
 
 @mcp.tool(
     name="zotero_update_collection",
     description=(
-        "Rename and/or move a collection (folder) in your Zotero library. "
-        "Pass collection_key plus any of new_name, new_parent you wish to "
-        "change; omitted parameters keep the existing value. "
-        "new_parent is the target parent collection — a collection key "
-        "(8 chars), a collection name, or '/'-separated path. Pass "
-        "'root' or empty string to move the collection to the top level "
-        "(no parent). "
-        "Items inside the collection are unaffected — only the folder's "
-        "name and/or position in the hierarchy change. "
-        "Use zotero_search_collections to find the key first. "
-        "Example: zotero_update_collection(collection_key='KMMQDFQ4', "
-        "new_name='Renamed Folder', new_parent='parent-name'). "
-        "Example (move to top level): zotero_update_collection("
-        "collection_key='KMMQDFQ4', new_parent='root')."
-    ),
+        "Rename a collection or move it under a different parent, keeping its "
+        "key, subcollections and item membership (#517). collection_key: the "
+        "8-character key of the collection to change. name: the new name, or "
+        "omit to keep it. parent_collection: key or name of the new parent; "
+        "a collection cannot be moved under itself or one of its own "
+        "subcollections. to_top_level=True moves it out of any parent. Pass "
+        "at least one change. Use zotero_search_collections to find keys. "
+        'Example: zotero_update_collection(collection_key="KMMQDFQ4", '
+        'name="AI & ML").'
+    )
 )
 @with_zotero_api_lock
 def update_collection(
-    collection_key: str, new_name: str | None = None, new_parent: str | None = None, *, ctx: Context
+    collection_key: str,
+    name: str | None = None,
+    parent_collection: str | None = None,
+    to_top_level: bool = False,
+    *,
+    ctx: Context
 ) -> str:
-    """
-    Rename and/or move a collection.
-
-    Args:
-        collection_key: The 8-character key of the collection to modify.
-        new_name: New name for the collection. None keeps the existing name.
-        new_parent: New parent collection (key, name, or path). 'root' or
-            '' moves to top level. None keeps the existing parent.
-        ctx: MCP context
-
-    Returns:
-        Markdown confirmation of what changed.
-    """
     try:
         read_zot, write_zot = _helpers._get_write_client(ctx)
     except ValueError as e:
         return str(e)
 
     try:
-        if not new_name and new_parent is None:
-            return "Error: Nothing to update. Pass new_name and/or new_parent to change the collection."
+        if name is not None and not name.strip():
+            return "Error: name cannot be empty."
+        if parent_collection and to_top_level:
+            return "Error: pass parent_collection or to_top_level=True, not both."
+        if name is None and not parent_collection and not to_top_level:
+            return "Error: nothing to change. Pass name, parent_collection or to_top_level=True."
 
-        # Fetch the current collection. We need the full dict (with key +
-        # version) to feed back into update_collection.
         try:
             coll = write_zot.collection(collection_key)
         except Exception as e:
-            return f"Collection not found or not accessible: `{collection_key}` ({e})"
+            return f"Collection not found: `{collection_key}` ({_helpers.format_zotero_error(e)})"
 
-        coll_data = coll.get("data", {})
-        old_name = coll_data.get("name", collection_key)
-        old_parent = coll_data.get("parentCollection") or False
-
+        data = dict(coll.get("data", {}))
+        data.setdefault("key", coll.get("key", collection_key))
+        if "version" not in data and "version" in coll:
+            data["version"] = coll["version"]
+        old_name = data.get("name", collection_key)
         changes = []
 
-        # --- Rename ---
-        if new_name:
-            coll_data["name"] = new_name
-            changes.append(f'name: "{old_name}" → "{new_name}"')
+        if name is not None and name != old_name:
+            data["name"] = name
+            changes.append(f"renamed to \"{name}\"")
 
-        # --- Move (change parent) ---
-        if new_parent is not None:
-            if new_parent.strip().lower() == "root" or new_parent.strip() == "":
-                coll_data["parentCollection"] = False
-                if old_parent:
-                    changes.append("parent: moved to top level (no parent)")
-                else:
-                    # Already at top level — no-op but not an error.
-                    pass
-            else:
-                # Resolve parent: key as-is, name/path via _resolve_collection_names.
-                parent_value = new_parent.strip()
-                if re.match(r"^[A-Z0-9]{8}$", parent_value):
-                    parent_key = parent_value
-                else:
-                    try:
-                        keys = _helpers._resolve_collection_names(read_zot, [parent_value], ctx=ctx)
-                        parent_key = keys[0] if keys else None
-                    except ValueError as e:
-                        return f"Error resolving parent collection: {e}"
-
+        if parent_collection:
+            parent_key = parent_collection
+            if not re.match(r"^[A-Z0-9]{8}$", parent_collection):
+                try:
+                    keys = _helpers._resolve_collection_names(read_zot, [parent_collection], ctx=ctx)
+                except ValueError as e:
+                    return f"Error resolving parent collection: {_helpers.format_zotero_error(e)}"
+                parent_key = keys[0] if keys else None
                 if not parent_key:
-                    return f"Error: Could not resolve parent collection '{new_parent}'"
-
-                # Guard against making a collection its own parent (Zotero
-                # would reject this server-side, but fail early with a
-                # clear message).
-                if parent_key == collection_key:
-                    return "Error: A collection cannot be its own parent."
-
-                coll_data["parentCollection"] = parent_key
-                changes.append(f'parent: "{old_parent or "top level"}" → "{new_parent}"')
+                    return f"Error: parent collection not found: {parent_collection}"
+            # Zotero accepts a parent that is the collection itself or one of
+            # its descendants and the tree then disappears from the desktop
+            # client, so refuse the cycle here.
+            own_subtree = set(_helpers.expand_collection_scope(read_zot, collection_key, True))
+            own_subtree.add(collection_key)
+            if parent_key in own_subtree:
+                return (
+                    f"Error: cannot move `{collection_key}` under `{parent_key}`, "
+                    "which is the collection itself or one of its subcollections."
+                )
+            if data.get("parentCollection") != parent_key:
+                data["parentCollection"] = parent_key
+                changes.append(f"moved under `{parent_key}`")
+        elif to_top_level and data.get("parentCollection"):
+            data["parentCollection"] = False
+            changes.append("moved to the top level")
 
         if not changes:
-            return "No changes needed — the values already match."
+            return f"No change: collection \"{old_name}\" (`{collection_key}`) already matches."
 
-        # update_collection expects the full payload dict (with key + version).
-        resp = write_zot.update_collection(coll)
+        resp = write_zot.update_collection(data)
         if _helpers._handle_write_response(resp, ctx):
-            summary = "; ".join(changes)
-            return f"Updated collection `{collection_key}`: {summary}\n\nCollection key: `{collection_key}`"
+            return f"Updated collection \"{old_name}\" (`{collection_key}`): " + "; ".join(changes)
         return f"Failed to update collection `{collection_key}`: {resp}"
 
     except Exception as e:
         ctx.error(f"Error updating collection: {e}")
-        return f"Error updating collection: {e}"
+        return f"Error updating collection: {_helpers.format_zotero_error(e)}"
 
 
 @mcp.tool(
@@ -1249,19 +1237,14 @@ def update_collection(
 @with_zotero_api_lock
 def search_collections(query: str, include_trashed: bool = False, *, ctx: Context) -> str:
     try:
-        zot = _client.get_zotero_client()
+        backend = _library.get_library_backend()
         ctx.info(f"Searching collections for '{query}'")
 
-        collections = _helpers._paginate(zot.collections)
-        trashed_keys: set[str] = set()
-        if include_trashed:
-            trashed = _helpers.fetch_trashed_collections(zot)
-            existing_keys = {c.get("key") for c in collections}
-            for coll in trashed:
-                key = coll.get("key")
-                if key and key not in existing_keys:
-                    trashed_keys.add(key)
-                    collections.append(coll)
+        collections = backend.list_collections(include_trashed=include_trashed)
+        trashed_keys = {
+            c["key"] for c in collections
+            if c.get("key") and c.get("data", {}).get("deleted")
+        }
         if not collections:
             return "No collections found in your Zotero library."
 
@@ -1270,6 +1253,13 @@ def search_collections(query: str, include_trashed: bool = False, *, ctx: Contex
 
         if not matching:
             return f"No collections found matching '{query}'"
+
+        # The whole listing is already here, so a parent's name is a dict
+        # lookup rather than one API call per matching collection.
+        names_by_key = {
+            c["key"]: c.get("data", {}).get("name", "")
+            for c in collections if c.get("key")
+        }
 
         lines = [f"# Collections matching '{query}'", ""]
         for i, coll in enumerate(matching, 1):
@@ -1280,10 +1270,10 @@ def search_collections(query: str, include_trashed: bool = False, *, ctx: Contex
             lines.append(f"## {i}. {name}{trash_marker}")
             lines.append(f"**Key:** `{key}`")
             if parent_key:
-                try:
-                    parent = zot.collection(parent_key)
-                    lines.append(f"**Parent:** {parent['data'].get('name', parent_key)}")
-                except Exception:
+                parent = names_by_key.get(parent_key)
+                if parent:
+                    lines.append(f"**Parent:** {parent}")
+                else:
                     lines.append(f"**Parent key:** {parent_key}")
             lines.append("")
 
@@ -1291,7 +1281,7 @@ def search_collections(query: str, include_trashed: bool = False, *, ctx: Contex
 
     except Exception as e:
         ctx.error(f"Error searching collections: {e}")
-        return f"Error searching collections: {e}"
+        return f"Error searching collections: {_helpers.format_zotero_error(e)}"
 
 
 @mcp.tool(
@@ -1381,13 +1371,91 @@ def manage_collections(
         return f"Input error: {e}"
     except Exception as e:
         ctx.error(f"Error managing collections: {e}")
-        return f"Error managing collections: {e}"
+        return f"Error managing collections: {_helpers.format_zotero_error(e)}"
 
 
 # Source-specific add implementations. These are no longer registered as
 # individual MCP tools — ``zotero_add_item`` is the single public facade that
 # detects the source shape and dispatches here. They stay importable (and
 # individually callable) for the CLI and for direct use.
+def _surname_key(name: str) -> str:
+    """Fold a surname so two sources' spellings of one person compare equal.
+
+    Accent-folded, because the disagreement is routinely exactly that: the
+    CrossRef record for 10.1006/bulm.1999.0141 deposits "SOLE" where the
+    article and its landing page both say "Sole".
+    """
+    return unidecode(name or "").casefold().strip()
+
+
+def _merge_page_authors(cr_creators: list[dict],
+                        page_authors: list[tuple[str, str]]) -> list[dict] | None:
+    """Reconcile CrossRef's creators with the ones the landing page lists.
+
+    Returns a replacement creator list, or ``None`` to leave CrossRef's
+    alone. Authorship is the one place a publisher's page can outrank the
+    registry: CrossRef serves what was deposited, and older deposits are
+    routinely truncated -- 10.1006/bulm.1999.0141 deposits one author for a
+    paper with four.
+
+    The rule is that the page names people CrossRef is *missing*, tested on
+    surnames rather than list length. Length alone is too easily inflated:
+    a page emitting both ``citation_author`` and ``dc.creator`` for the same
+    people yields two entries each whenever the two families punctuate a
+    name differently, and that would silently double an item's authors.
+
+    Where both sources know a person, CrossRef's entry is kept. Its
+    ``given``/``family`` split is authoritative; the page's is guessed from
+    whitespace by ``_split_name``, and is often initials-only. Recovering a
+    missing fourth author should not cost the other three their forenames.
+
+    Two shapes are declined outright:
+
+    * CrossRef holding a single-field creator -- a collaboration, whose
+      members the page will list individually. That is a different claim
+      about authorship, not a fuller one.
+    * CrossRef holding editors or translators. ``EmbeddedMetadata.authors``
+      folds ``citation_editor`` and ``dc.contributor`` in with the authors,
+      so on a book chapter the page's flat list cannot be reconciled with
+      CrossRef's typed one without promoting editors to authors. Teaching
+      the reader to keep those apart would lift this restriction and is a
+      change for its own commit.
+    """
+    if not page_authors:
+        return None
+    if any("name" in c for c in cr_creators):
+        return None
+    if any(c.get("creatorType") != "author" for c in cr_creators):
+        return None
+
+    cr_surnames = {_surname_key(c.get("lastName", "")) for c in cr_creators}
+    page_surnames = {_surname_key(last) for _, last in page_authors}
+    if not page_surnames > cr_surnames:
+        return None
+
+    # Keep CrossRef's entry for each person it already knew, in the page's
+    # order -- which is authorship order, and the thing a truncated record
+    # has lost. A surname held twice is popped in order rather than reused.
+    pool: dict[str, list[dict]] = {}
+    for creator in cr_creators:
+        pool.setdefault(_surname_key(creator.get("lastName", "")), []).append(creator)
+
+    merged = []
+    for first, last in page_authors:
+        known = pool.get(_surname_key(last))
+        if known:
+            merged.append(known.pop(0))
+        else:
+            # Same repair #523 gives CrossRef's creators; a page that shouts
+            # a name should not bring the shouting in with it.
+            merged.append({
+                "creatorType": "author",
+                "firstName": _utils.capitalize_name(first),
+                "lastName": _utils.capitalize_name(last),
+            })
+    return merged
+
+
 def _crossref_to_item_data(cr: dict, normalized: str, template_fn,
                            supplemental: EmbeddedMetadata | None = None,
                            ) -> tuple[dict, str, str]:
@@ -1400,8 +1468,9 @@ def _crossref_to_item_data(cr: dict, normalized: str, template_fn,
     ``type_note`` to warn about an unmapped CrossRef type.
 
     ``supplemental`` carries metadata read from the page the DOI was found
-    on, and fills *only* fields CrossRef left empty. CrossRef stays
-    authoritative where it says anything at all.
+    on. It fills fields CrossRef left empty, and -- only where the page
+    names people CrossRef is missing -- supplies the creator list. See
+    ``_merge_page_authors``.
     """
     # Determine Zotero item type. An unmapped type still becomes a
     # document, but the caller is told so — the fields a document has no
@@ -1414,36 +1483,39 @@ def _crossref_to_item_data(cr: dict, normalized: str, template_fn,
     item_data = dict(template)
 
     # Map fields
+    #
+    # CrossRef splits a title at its colon, registering the halves as
+    # "title" and "subtitle"; taking title[0] alone silently truncates.
+    # It also serves JATS/MathML markup inside both halves. Zotero's own
+    # "Crossref REST" translator rejoins and sanitises, in that order.
     title_list = cr.get("title", [])
-    if title_list and "title" in item_data:
-        item_data["title"] = title_list[0]
+    # ``title_list[0]`` and not just a non-empty list: CrossRef does deposit
+    # ``"title": [""]``. Merging a subtitle onto that produced ": A Review",
+    # which is truthy, which then blocked the landing-page title from filling
+    # the gap below -- turning an empty title into a wrong one.
+    if title_list and title_list[0] and "title" in item_data:
+        title = title_list[0]
+        subtitle = (cr.get("subtitle") or [""])[0]
+        if subtitle and subtitle.lower() not in title.lower():
+            if not title.endswith(":"):
+                title += ":"
+            title += " " + subtitle
+        item_data["title"] = _utils.strip_unsupported_markup(title)
 
-    # Creators
+    # Creators. A single-field name (``name``, no ``family``) is a corporate
+    # or otherwise unsplittable creator; Zotero passes those through as
+    # deposited, and so do we -- "NASA" is not a shouted "Nasa".
     creators = []
-    for author in cr.get("author", []):
-        if "family" in author:
-            creators.append({
-                "creatorType": "author",
-                "firstName": author.get("given", ""),
-                "lastName": author["family"],
-            })
-        elif "name" in author:
-            creators.append({
-                "creatorType": "author",
-                "name": author["name"],
-            })
-    for editor in cr.get("editor", []):
-        if "family" in editor:
-            creators.append({
-                "creatorType": "editor",
-                "firstName": editor.get("given", ""),
-                "lastName": editor["family"],
-            })
-        elif "name" in editor:
-            creators.append({
-                "creatorType": "editor",
-                "name": editor["name"],
-            })
+    for role in ("author", "editor"):
+        for person in cr.get(role, []):
+            if "family" in person:
+                creators.append({
+                    "creatorType": role,
+                    "firstName": _utils.capitalize_name(person.get("given", "")),
+                    "lastName": _utils.capitalize_name(person["family"]),
+                })
+            elif "name" in person:
+                creators.append({"creatorType": role, "name": person["name"]})
     if creators:
         item_data["creators"] = creators
 
@@ -1476,10 +1548,28 @@ def _crossref_to_item_data(cr: dict, normalized: str, template_fn,
         if field in item_data and value:
             item_data[field] = value
 
+    # Finally, the repairs that apply to every deposited string: mojibake
+    # and XML entities. Zotero's translator runs this as a per-field pass
+    # over the finished item, and it runs here before the page metadata is
+    # merged in, because a publisher's own page is not CrossRef and does
+    # not carry CrossRef's deposit damage.
+    #
+    # ``abstractNote`` is excluded and keeps its ``clean_html`` treatment
+    # below. Zotero renders an abstract's inline markup; here it is fed to
+    # the embedding model in semantic_search, which reads "<i>" as tokens
+    # rather than as emphasis, so plain text is the more useful form.
+    for field, value in item_data.items():
+        if field != "abstractNote":
+            item_data[field] = _utils.repair_crossref_string(value)
+
     # Fill the gaps CrossRef left, from the page the DOI came from.
-    # Never overwrite: a value CrossRef supplied wins.
+    # CrossRef stays authoritative for every field it populated -- it is the
+    # registry of record for where a paper was published. Authorship is the
+    # single exception; see _merge_page_authors.
     if supplemental is not None:
         page_fields = {
+            "abstractNote": _utils.clean_html(supplemental.abstract,
+                                              collapse_whitespace=True),
             "title": supplemental.title,
             "publicationTitle": supplemental.publication,
             "bookTitle": supplemental.book_title,
@@ -1495,11 +1585,10 @@ def _crossref_to_item_data(cr: dict, normalized: str, template_fn,
         for field, value in page_fields.items():
             if value and field in item_data and not item_data[field]:
                 item_data[field] = value
-        if supplemental.authors and not item_data.get("creators"):
-            item_data["creators"] = [
-                {"creatorType": "author", "firstName": first, "lastName": last}
-                for first, last in supplemental.authors
-            ]
+        merged = _merge_page_authors(item_data.get("creators") or [],
+                                     supplemental.authors)
+        if merged is not None and "creators" in item_data:
+            item_data["creators"] = merged
 
     return item_data, zot_type, type_note
 
@@ -1518,32 +1607,44 @@ def _memoized_item_template_fn(write_zot):
     def template_fn(zot_type: str) -> dict:
         if zot_type not in cache:
             with zotero_api_lock():
-                cache[zot_type] = write_zot.item_template(zot_type)
+                cache[zot_type] = _helpers.item_template_for(write_zot, zot_type)
         return cache[zot_type]
 
     return template_fn
 
 
-def _resolve_thin_crossref_record(cr: dict, normalized: str, ctx: Context):
-    """Read the DOI's landing page when CrossRef's answer can't stand alone.
+#: What ``page_check`` may be. ``"always"`` reads the DOI's landing page
+#: whatever CrossRef returned; ``"thin_only"`` reads it just for records
+#: that cannot stand alone.
+_PAGE_CHECK_VALUES = ("always", "thin_only")
+
+
+def _resolve_page_metadata(cr: dict, normalized: str, ctx: Context,
+                           *, policy: str):
+    """Read the DOI's landing page to check CrossRef's answer against it.
 
     A publisher can register an article's DOI as a ``journal-issue``, whose
-    CrossRef record legitimately carries no title, authors, volume, issue or
-    pages — while the article's own landing page advertises all of them.
-    The url route hands its tags down as ``supplemental``; a caller passing a
-    bare DOI has no page to hand over, so we resolve the DOI ourselves.
+    record legitimately carries no title, authors, volume, issue or pages,
+    while the article's own page advertises all of them. More often the
+    record is merely stale: 10.1006/bulm.1999.0141 names one of the paper's
+    four authors and has no abstract, and nothing about it says so.
     Registry silence is not evidence of absence.
+
+    ``policy`` is the caller's, because only the caller knows how many
+    times it is about to ask. One bounded GET against a much better item is
+    the trade a user adding a single paper wants made; the same GET
+    repeated per DOI across an import is not. See ``add_by_doi``.
 
     Outbound HTTP: call it outside the Zotero API lock.
     """
     cr_type = cr.get("type", "")
-    if not _crossref_record_is_thin(cr, cr_type):
+    thin = _crossref_record_is_thin(cr, cr_type)
+    if policy == "thin_only" and not thin:
         return None
     landing = cr.get("URL") or f"https://doi.org/{normalized}"
-    ctx.info(
-        f"CrossRef record for {normalized} is {cr_type or 'untitled'} "
-        f"and carries no usable title; reading {landing}"
-    )
+    why = (f" (CrossRef record is {cr_type or 'untitled'} and carries no "
+           "usable title)") if thin else ""
+    ctx.info(f"Reading {landing} for {normalized}{why}")
     supplemental, _ = _fetch_embedded_metadata(landing, ctx)
     return supplemental
 
@@ -1564,7 +1665,7 @@ _CROSSREF_FILTER_CHUNK = 50
 _CROSSREF_MAX_ATTEMPTS = 3
 
 _CROSSREF_HEADERS = {
-    "User-Agent": "zotero-mcp/1.0 (https://github.com/54yyyu/zotero-mcp)",
+    "User-Agent": _utils.USER_AGENT,
     "Accept": "application/json",
 }
 
@@ -1635,7 +1736,7 @@ def _dedup_check_one_doi(read_zot, write_zot, doi, coll_keys, tags, if_exists, c
 
     except Exception as e:
         ctx.error(f"Error adding by DOI: {e}")
-        return ("final", f"Error adding by DOI: {e}")
+        return ("final", f"Error adding by DOI: {_helpers.format_zotero_error(e)}")
 
 
 def _fetch_one_doi_metadata(normalized: str, ctx) -> tuple[str, dict | str]:
@@ -1665,7 +1766,7 @@ def _fetch_one_doi_metadata(normalized: str, ctx) -> tuple[str, dict | str]:
     except requests.RequestException as e:
         return ("final", f"Error fetching from CrossRef: {e}")
     except Exception as e:
-        return ("final", f"Error adding by DOI: {e}")
+        return ("final", f"Error adding by DOI: {_helpers.format_zotero_error(e)}")
 
 
 def _fetch_doi_metadata_batch(normalized_dois: list[str], ctx) -> dict[str, tuple[str, dict | str]]:
@@ -1755,8 +1856,8 @@ def _build_one_doi_item_data(cr: dict, normalized: str, template_fn, tags, coll_
     Calling-thread only: ``template_fn`` may fetch (and cache) an item
     template under the Zotero API lock on a cache miss (#A3).
 
-    ``supplemental`` fills only the fields CrossRef left empty; see
-    ``_crossref_to_item_data``.
+    ``supplemental`` fills the fields CrossRef left empty, and can supply
+    the creator list; see ``_crossref_to_item_data``.
 
     ``cr`` is carried through in the payload as well as consumed here: the
     OA-PDF cascade's "arXiv (via CrossRef)" source reads the has-preprint
@@ -1768,7 +1869,8 @@ def _build_one_doi_item_data(cr: dict, normalized: str, template_fn, tags, coll_
     )
     _apply_caller_tags_and_collections(item_data, tags, coll_keys)
     return {"item_data": item_data, "zot_type": zot_type, "doi": normalized,
-            "type_note": type_note, "cr": cr}
+            "type_note": type_note, "cr": cr,
+            "page_pdf_url": supplemental.pdf_url if supplemental else ""}
 
 
 def _render_doi_create_result(cr_result: dict, zot_type: str, normalized: str,
@@ -1805,13 +1907,25 @@ def add_by_doi(
     create_missing_collections: bool = False,
     *,
     supplemental: EmbeddedMetadata | None = None,
+    page_check: Literal["always", "thin_only"] = "always",
     ctx: Context
 ) -> str:
     """Add an item by DOI, from CrossRef.
 
     ``supplemental`` carries metadata read from the page the DOI was found
-    on, and fills *only* fields CrossRef left empty (see
+    on. It fills fields CrossRef left empty, and where the page names
+    authors CrossRef is missing it supplies the creator list (see
     ``_crossref_to_item_data``).
+
+    ``page_check`` decides whether to go and read that page when the caller
+    has not supplied one. ``"always"`` -- the default, and what a single
+    interactive add wants -- costs one bounded GET and catches a record
+    that looks complete but is not. ``"thin_only"`` restricts it to records
+    that cannot stand alone, and is what a caller adding many items should
+    pass: a 200-item import must not make 200 publisher requests. Passing
+    several DOIs to one call forces ``"thin_only"`` for that reason, but a
+    caller looping over single DOIs has to say so itself -- ``add_by_url``'s
+    multi-URL recursion and ``add_from_file`` both do.
     """
     # NOT decorated with @with_zotero_api_lock: the lock only needs to
     # cover the Zotero API calls, taken in short scoped blocks below and by
@@ -1849,6 +1963,8 @@ def add_by_doi(
 
         if if_exists not in _IF_EXISTS_VALUES:
             return f"Error: if_exists must be one of {_IF_EXISTS_VALUES}."
+        if page_check not in _PAGE_CHECK_VALUES:
+            return f"Error: page_check must be one of {_PAGE_CHECK_VALUES}."
 
         # Resolve collection specs (keys/names/paths) BEFORE any network or
         # write work — a bad spec must not produce an unfiled item.
@@ -1903,11 +2019,15 @@ def add_by_doi(
                 work_results[i] = fetch_payload
                 continue
             # ``supplemental`` describes one specific page, so it cannot be
-            # handed to a batch. A thin CrossRef record still gets its own
-            # landing page read, per DOI, on either path.
+            # handed to a batch. Failing that the page is read here, under
+            # the caller's policy -- except that several DOIs in one call
+            # are a batch by definition and take "thin_only" regardless.
             page_meta = None if is_batch else supplemental
             if page_meta is None:
-                page_meta = _resolve_thin_crossref_record(fetch_payload, normalized, ctx)
+                page_meta = _resolve_page_metadata(
+                    fetch_payload, normalized, ctx,
+                    policy="thin_only" if is_batch else page_check,
+                )
             built = _build_one_doi_item_data(fetch_payload, normalized, template_fn,
                                              tags, coll_keys, page_meta)
             pending.append((i, built))
@@ -1940,8 +2060,13 @@ def add_by_doi(
             if if_exists != "duplicate" and pending:
                 still_pending: list[tuple[int, dict]] = []
                 for i, payload in pending:
+                    # CrossRef metadata is in hand here, so pass the title: a
+                    # DOI is not server-side searchable, and the identifier
+                    # query alone misses items already in the library.
                     existing = _helpers.find_existing_items(
-                        read_zot, doi=payload["doi"], ctx=ctx
+                        read_zot, doi=payload["doi"],
+                        title=payload["item_data"].get("title"),
+                        ctx=ctx,
                     )
                     if existing:
                         work_results[i] = _handle_existing_item(
@@ -1958,6 +2083,9 @@ def add_by_doi(
                     attach_mode, ctx,
                     crossref_by_doi={payload["doi"]: payload["cr"]
                                      for _, payload in pending},
+                    page_pdf_by_doi={payload["doi"]: payload["page_pdf_url"]
+                                     for _, payload in pending
+                                     if payload["page_pdf_url"]},
                 )
                 if pending else []
             )
@@ -1980,7 +2108,7 @@ def add_by_doi(
 
     except Exception as e:
         ctx.error(f"Error adding by DOI: {e}")
-        return f"Error adding by DOI: {e}"
+        return f"Error adding by DOI: {_helpers.format_zotero_error(e)}"
 
 
 # CrossRef types that describe a *container* rather than a work. A DOI
@@ -2029,10 +2157,7 @@ def _fetch_embedded_metadata(
         resp = requests.get(
             url,
             headers={
-                "User-Agent": (
-                    "Mozilla/5.0 (compatible; zotero-mcp/1.0; "
-                    "+https://github.com/54yyyu/zotero-mcp)"
-                ),
+                "User-Agent": _utils.USER_AGENT,
                 "Accept": "text/html,application/xhtml+xml",
             },
             timeout=_EMBEDDED_METADATA_TIMEOUT,
@@ -2063,7 +2188,13 @@ def _fetch_embedded_metadata(
         except LookupError:
             html = raw.decode("utf-8", errors="replace")
 
-        return extract_embedded_metadata(html), ""
+        meta = extract_embedded_metadata(html)
+        # citation_pdf_url is stored as deposited, and OJS/DSpace/EPrints
+        # all deposit it relative. Resolved against the post-redirect URL,
+        # which is the page it was actually read from.
+        if meta.pdf_url:
+            meta.pdf_url = urljoin(resp.url, meta.pdf_url)
+        return meta, ""
 
     except requests.exceptions.SSLError as e:
         # Seen in the wild on a university OJS host whose chain validates in
@@ -2090,8 +2221,46 @@ def _add_from_embedded_metadata(
     tags,
     write_zot,
     ctx: Context,
+    *,
+    read_zot=None,
+    if_exists: str = "duplicate",
 ) -> str:
-    """Create an item from a page's own citation meta tags."""
+    """Create an item from a page's own citation meta tags.
+
+    With ``if_exists`` other than ``"duplicate"``, an existing item is looked
+    for first: by the ISBN the page declares, then by the page URL. The URL
+    was already checked before the page was fetched, but a parallel add can
+    create the item during the fetch; the caller holds the URL's identifier
+    lock and this function holds the API lock, so this re-check and the
+    create below are atomic (#486, #515). A page that declares a DOI never
+    reaches here, it goes through add_by_doi and its DOI check.
+    """
+    if if_exists != "duplicate":
+        lookup_zot = read_zot or write_zot
+        # The page's title is in hand, so pass it: neither an ISBN nor a URL
+        # is server-side searchable, and the identifier query alone misses
+        # items already in the library.
+        for token in re.split(r"[,;\s]+", meta.isbn or ""):
+            isbn = _helpers._normalize_isbn(token) if token else None
+            if not isbn:
+                continue
+            existing = _helpers.find_existing_items(
+                lookup_zot, isbn=isbn, title=meta.title, ctx=ctx
+            )
+            if existing:
+                return _handle_existing_item(
+                    write_zot, existing, coll_keys, tags, if_exists,
+                    matched_by=f"ISBN {isbn}", ctx=ctx,
+                )
+        existing = _helpers.find_existing_items(
+            lookup_zot, url=url, title=meta.title, ctx=ctx
+        )
+        if existing:
+            return _handle_existing_item(
+                write_zot, existing, coll_keys, tags, if_exists,
+                matched_by=f"URL {url}", ctx=ctx,
+            )
+
     if meta.looks_like_article():
         zot_type = "journalArticle"
     elif meta.looks_like_chapter():
@@ -2099,7 +2268,7 @@ def _add_from_embedded_metadata(
     else:
         zot_type = "webpage"
 
-    template = dict(write_zot.item_template(zot_type))
+    template = dict(_helpers.item_template_for(write_zot, zot_type))
     _set = _citation_import._set_if_in_template
 
     _set(template, "title", meta.title or url)
@@ -2160,7 +2329,8 @@ def add_by_url(
     if_exists: Literal["duplicate", "file", "skip"] = "duplicate",
     create_missing_collections: bool = False,
     *,
-    ctx: Context,
+    page_check: Literal["always", "thin_only"] = "always",
+    ctx: Context
 ) -> str:
     # NOT decorated with @with_zotero_api_lock: the DOI/arXiv branches
     # below delegate to add_by_doi/_add_by_arxiv, which manage their own
@@ -2181,11 +2351,13 @@ def add_by_url(
         canonical, duplicate_of = _dedupe_multi_tokens(tokens, _url_dedup_key)
         results: list[str] = [None] * len(tokens)
         for i in canonical:
+            # A URL batch is a batch even though it recurses one at a time:
+            # 200 doi.org links must not become 200 publisher requests.
             results[i] = add_by_url(
                 url=tokens[i], collections=collections, tags=tags,
                 attach_mode=attach_mode, if_exists=if_exists,
                 create_missing_collections=create_missing_collections,
-                ctx=ctx)
+                page_check="thin_only", ctx=ctx)
         for i, canon_i in duplicate_of.items():
             results[i] = _duplicate_of_message("URL", canon_i + 1)
         return _format_multi_result("URL", tokens, results)
@@ -2207,15 +2379,10 @@ def add_by_url(
         # DOI URL routing
         doi = _helpers._normalize_doi(url)
         if doi:
-            return add_by_doi(
-                doi=doi,
-                collections=collections,
-                tags=tags,
-                attach_mode=attach_mode,
-                if_exists=if_exists,
-                create_missing_collections=create_missing_collections,
-                ctx=ctx,
-            )
+            return add_by_doi(doi=url, collections=collections, tags=tags,
+                              attach_mode=attach_mode, if_exists=if_exists,
+                              create_missing_collections=create_missing_collections,
+                              page_check=page_check, ctx=ctx)
 
         # arXiv URL routing
         arxiv_id = _helpers._normalize_arxiv_id(url)
@@ -2281,9 +2448,13 @@ def add_by_url(
             )
 
         if embedded is not None and embedded.is_usable():
-            return _add_from_embedded_metadata(
-                url, embedded, coll_keys, tags, write_zot, ctx,
-            )
+            # Identifier lock outside, API lock inside (the callee is
+            # decorated), the same order as the webpage branch below.
+            with _helpers.identifier_lock("url", url):
+                return _add_from_embedded_metadata(
+                    url, embedded, coll_keys, tags, write_zot, ctx,
+                    read_zot=read_zot, if_exists=if_exists,
+                )
 
         if embedded is not None and not embedded.is_usable():
             embed_problem = "the page carries no citation metadata"
@@ -2303,7 +2474,7 @@ def add_by_url(
                     )
 
             ctx.info(f"Creating webpage item for: {url}")
-            template = write_zot.item_template("webpage")
+            template = _helpers.item_template_for(write_zot, "webpage")
             template["url"] = url
             template["title"] = url
             template["accessDate"] = ""
@@ -2340,7 +2511,7 @@ def add_by_url(
 
     except Exception as e:
         ctx.error(f"Error adding by URL: {e}")
-        return f"Error adding by URL: {e}"
+        return f"Error adding by URL: {_helpers.format_zotero_error(e)}"
 
 
 def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto",
@@ -2487,8 +2658,11 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto
     # note; the metadata fetch above sits between the first check and here.
     with _helpers.identifier_lock("arxiv", arxiv_id), zotero_api_lock():
         if if_exists != "duplicate":
+            # The title is known by now (fetched above), so pass it: the arXiv
+            # ID is not server-side searchable, and the identifier query alone
+            # misses items that are already in the library.
             existing = _helpers.find_existing_items(
-                read_zot or write_zot, arxiv_id=arxiv_id, ctx=ctx
+                read_zot or write_zot, arxiv_id=arxiv_id, title=title, ctx=ctx
             )
             if existing:
                 return _handle_existing_item(
@@ -2496,7 +2670,7 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto
                     matched_by=f"arXiv ID {arxiv_id}", ctx=ctx,
                 )
 
-        template = write_zot.item_template("preprint")
+        template = _helpers.item_template_for(write_zot, "preprint")
         template["title"] = title
         if authors:
             template["creators"] = authors
@@ -2622,7 +2796,7 @@ def _lookup_isbn_openlibrary(isbn, ctx):
         url = f"https://openlibrary.org/api/books?bibkeys=ISBN:{isbn}&format=json&jscmd=data"
         resp = requests.get(
             url,
-            headers={"User-Agent": "zotero-mcp/1.0 (https://github.com/54yyyu/zotero-mcp)"},
+            headers={"User-Agent": _utils.USER_AGENT},
             timeout=15,
         )
         if resp.status_code != 200:
@@ -2688,7 +2862,7 @@ def _lookup_isbn_google_books(isbn, ctx):
         url = f"https://www.googleapis.com/books/v1/volumes?q=isbn:{isbn}"
         resp = requests.get(
             url,
-            headers={"User-Agent": "zotero-mcp/1.0 (https://github.com/54yyyu/zotero-mcp)"},
+            headers={"User-Agent": _utils.USER_AGENT},
             timeout=15,
         )
         if resp.status_code != 200:
@@ -2815,7 +2989,7 @@ def add_by_isbn(
             return f"ISBN not found on Open Library or Google Books: {normalized}"
 
         # Build Zotero book item
-        template = write_zot.item_template("book")
+        template = _helpers.item_template_for(write_zot, "book")
         item_data = dict(template)
         if meta.get("title"):
             item_data["title"] = meta["title"]
@@ -2847,8 +3021,12 @@ def add_by_isbn(
         # stay outside the lock — that is the whole point of the narrowing.
         with _helpers.identifier_lock("isbn", normalized):
             if if_exists != "duplicate":
+                # Open Library / Google Books metadata is in hand by now, so
+                # pass the title: an ISBN is not server-side searchable, and
+                # the identifier query alone misses books already shelved.
                 existing = _helpers.find_existing_items(
-                    read_zot, isbn=normalized, ctx=ctx
+                    read_zot, isbn=normalized,
+                    title=item_data.get("title"), ctx=ctx,
                 )
                 if existing:
                     return _handle_existing_item(
@@ -2876,7 +3054,7 @@ def add_by_isbn(
 
     except Exception as e:
         ctx.error(f"Error adding by ISBN: {e}")
-        return f"Error adding by ISBN: {e}"
+        return f"Error adding by ISBN: {_helpers.format_zotero_error(e)}"
 
 
 # Maps Zotero API field names to tool parameter names for user-facing messages
@@ -3122,7 +3300,7 @@ def update_item(
             old_item_type = data.get("itemType", "")
             if old_item_type != item_type:
                 try:
-                    new_template = write_zot.item_template(item_type)
+                    new_template = _helpers.item_template_for(write_zot, item_type)
                 except Exception as e:
                     return f"Error: invalid item_type '{item_type}': {e}"
 
@@ -3271,7 +3449,7 @@ def update_item(
         return f"Input error: {e}"
     except Exception as e:
         ctx.error(f"Error updating item: {e}")
-        return f"Error updating item: {e}"
+        return f"Error updating item: {_helpers.format_zotero_error(e)}"
 
 
 @mcp.tool(
@@ -3280,13 +3458,11 @@ def update_item(
         "Move a Zotero item to the Trash. Works for any item type (book, "
         "journalArticle, webpage, attachment, etc.). For notes, use "
         "zotero_manage_note(action='delete') — identical mechanism, "
-        "for safety. Trashed items are recoverable from Zotero's Trash — "
-        "empty the Trash in the Zotero UI for permanent deletion. "
-        "By default refuses to trash notes; set allow_note=True to override. "
-        "NOTE: trashing a paper does NOT remove it from the semantic search "
-        "index — call zotero_update_search_database() afterward to prune "
-        "deleted items from the embedding database."
-    ),
+        "constrained to notes for safety. Trashed items are recoverable "
+        "from Zotero's Trash — empty the Trash in the Zotero UI for "
+        "permanent deletion. By default refuses to trash notes; set "
+        "allow_note=True to override."
+    )
 )
 @with_zotero_api_lock
 def delete_item(item_key: str, allow_note: bool = False, *, ctx: Context) -> str:
@@ -3296,8 +3472,8 @@ def delete_item(item_key: str, allow_note: bool = False, *, ctx: Context) -> str
     Args:
         item_key: Zotero item key/ID to trash
         allow_note: If True, permits trashing note items. Default False
-            directs callers to manage_note for notes (which has the
-            same mechanism but is explicit about what it affects).
+            directs callers to zotero_manage_note(action='delete') for
+            notes (same mechanism, explicit about what it affects).
         ctx: MCP context
 
     Returns:
@@ -3321,31 +3497,25 @@ def delete_item(item_key: str, allow_note: bool = False, *, ctx: Context) -> str
 
         if item_type == "note" and not allow_note:
             return (
-                f"Error: Item {item_key} is a note. Use zotero_manage_note(action='delete') "
-                "for notes, or pass allow_note=True to override."
+                f"Error: Item {item_key} is a note. Use "
+                "zotero_manage_note(action='delete') for notes, or pass "
+                "allow_note=True to override."
             )
 
         # pyzotero's delete_item() permanently destroys items, and update_item()
-        # strips the "deleted" field. Send a direct PATCH with {"deleted": 1}
-        # to move the item to Zotero's Trash (recoverable by the user).
-        from pyzotero.zotero import build_url
-
-        url = build_url(
-            write_zot.endpoint,
-            f"/{write_zot.library_type}/{write_zot.library_id}/items/{item_key}",
-        )
-        resp = write_zot.client.patch(
-            url=url,
-            headers={"If-Unmodified-Since-Version": str(item["version"])},
-            content=json.dumps({"deleted": 1}),
-        )
-        if resp.status_code in (200, 204):
-            return f"Successfully trashed item {item_key} (type={item_type}, recoverable from Zotero's Trash)"
-        return f"Failed to trash item {item_key} (HTTP {resp.status_code}): {resp.text[:200]}"
+        # strips the "deleted" field, so trashing is a direct PATCH with
+        # {"deleted": 1} — recoverable by the user.
+        ok, detail = _helpers.trash_item(write_zot, item)
+        if ok:
+            return (
+                f"Successfully trashed item {item_key} "
+                f"(type={item_type}, recoverable from Zotero's Trash)"
+            )
+        return f"Failed to trash item {item_key}: {detail}"
 
     except Exception as e:
         ctx.error(f"Error trashing item: {str(e)}")
-        return f"Error trashing item: {str(e)}"
+        return f"Error trashing item: {_helpers.format_zotero_error(e)}"
 
 
 # ---------------------------------------------------------------------------
@@ -3549,7 +3719,7 @@ def find_duplicates(
         return f"Input error: {e}"
     except Exception as e:
         ctx.error(f"Error finding duplicates: {e}")
-        return f"Error finding duplicates: {e}"
+        return f"Error finding duplicates: {_helpers.format_zotero_error(e)}"
 
 
 # ---------------------------------------------------------------------------
@@ -3683,24 +3853,12 @@ def _merge_plan(write_zot, keeper_key: str, dup_keys: list[str]) -> dict:
 def _trash_item(write_zot, item_key: str) -> tuple[bool, str]:
     """Move one item to Zotero's Trash (recoverable), not a permanent delete.
 
-    pyzotero's update_item() strips "deleted" and delete_item() destroys the
-    item, so this is a direct version-conditioned PATCH of {"deleted": 1}.
+    Thin key-taking wrapper over ``_helpers.trash_item``, which owns the
+    version-conditioned PATCH and routes it through pyzotero's write
+    dispatcher — the local API rejects a PATCH sent any other way.
     """
     try:
-        item = write_zot.item(item_key)
-        from pyzotero.zotero import build_url
-        url = build_url(
-            write_zot.endpoint,
-            f"/{write_zot.library_type}/{write_zot.library_id}/items/{item_key}",
-        )
-        resp = write_zot.client.patch(
-            url=url,
-            headers={"If-Unmodified-Since-Version": str(item["version"])},
-            content=json.dumps({"deleted": 1}),
-        )
-        if resp.status_code in (200, 204):
-            return True, ""
-        return False, f"HTTP {resp.status_code}"
+        return _helpers.trash_item(write_zot, write_zot.item(item_key))
     except Exception as e:
         return False, str(e)
 
@@ -3955,7 +4113,8 @@ def _render_auto_plan(qualifying, skipped, clipped, token, method, max_groups) -
         "AUTO NEEDS TWO CALLS: auto=True alone returns a plan plus a "
         "plan_token; executing needs confirm=True AND that token. "
         "confirm=True alone is refused, as is a stale token. "
-        "Needs a writable library (web API key/hybrid); fails local-only. "
+        "Needs a writable library: local writes (Zotero 10+) or a web "
+        "API key. "
         "Example: zotero_merge_duplicates(keeper_key='ABC12345', "
         "duplicate_keys=['XYZ98765']), then again with confirm=True. "
         "Auto: zotero_merge_duplicates(auto=True), then the same plus "
@@ -4054,7 +4213,7 @@ def merge_duplicates(
         return f"Input error: {e}"
     except Exception as e:
         ctx.error(f"Error merging duplicates: {e}")
-        return f"Error merging duplicates: {e}"
+        return f"Error merging duplicates: {_helpers.format_zotero_error(e)}"
 
 
 def _merge_duplicates_auto(
@@ -4448,51 +4607,82 @@ def get_pdf_outline(item_key: str, *, ctx: Context) -> str:
         # resolve (e.g. transient desktop client state); the multi-source
         # path falls back to WebDAV / Web API instead.
         with tempfile.TemporaryDirectory() as tmpdir:
+            # The multi-source downloader reads a file already in Zotero's own
+            # storage in place (the only option with Zotero closed) and
+            # otherwise fetches it, so WebDAV- and cloud-backed attachments
+            # still work. The outline is only read, never modified.
+            zot = _client.get_zotero_client()
+            local_mode = _utils.is_local_mode()
             download = _client.download_attachment_file(
                 attachment_key,
                 tmpdir,
-                filename,
-                local_client=(zot if _utils.is_local_mode() else _client.get_local_zotero_client()),
-                web_client=None if _utils.is_local_mode() else zot,
+                os.path.basename(filename),
+                local_client=(
+                    zot if local_mode else _client.get_local_zotero_client()
+                ),
+                web_client=None if local_mode else zot,
+                in_place=True,
             )
-            if not (download.path and download.path.exists() and download.path.stat().st_size > 0):
-                errors = "\n".join(f"  - {e}" for e in download.errors) if download.errors else "  - unknown"
-                return (
-                    f"Could not download PDF for attachment `{attachment_key}`.\n"
-                    f"Attempted sources:\n{errors}"
+            pdf_path = download.path
+            download_errors = download.errors
+            if (
+                not pdf_path
+                or not pdf_path.exists()
+                or pdf_path.stat().st_size == 0
+            ):
+                detail = (
+                    f" ({'; '.join(download_errors)})" if download_errors else ""
                 )
-            # Out-of-process TOC read (#372/#431): a crash or hang in fitz
-            # cannot wedge the server, and the child strips API keys.
-            outcome = _extract_pdf_toc(str(download.path))
-            if outcome.status != "ok":
-                if outcome.status == "no_pymupdf":
-                    return "Error: PyMuPDF (fitz) is required for PDF outline extraction."
-                if outcome.status == "timeout":
-                    return (
-                        f"Error extracting PDF outline for attachment `{attachment_key}`: "
-                        f"TOC extraction timed out ({outcome.detail})"
-                    )
-                if outcome.status in ("crash", "crashed"):
-                    return (
-                        f"Error extracting PDF outline for attachment `{attachment_key}`: "
-                        f"TOC extraction crashed ({outcome.detail})"
-                    )
-                return f"Error extracting PDF outline: {outcome.detail}"
-            toc = outcome.toc
+                return (
+                    f"Could not download PDF for attachment "
+                    f"`{attachment_key}`.{detail}"
+                )
 
-        if not toc:
+            # Lock released: parsing a file we already have on disk needs no
+            # Zotero API access, and it is the slow part.
+            outcome = _extract_pdf_toc(str(pdf_path))
+
+        if outcome.status == "no_pymupdf":
+            return (
+                "Error: PyMuPDF (fitz) is required for PDF outline extraction. "
+                f"{_utils.install_hint('pdf')}"
+            )
+        if outcome.status == "crashed":
+            return (
+                f"Could not read the outline of attachment `{attachment_key}`: "
+                f"the PDF reader crashed on this file ({outcome.detail}). The "
+                "crash was contained in a separate process, so the server is "
+                "unaffected. Try zotero_read_pdf_pages or "
+                "zotero_get_item_fulltext for this item instead."
+            )
+        if outcome.status == "timeout":
+            return (
+                f"Timed out reading the outline of attachment "
+                f"`{attachment_key}` ({outcome.detail})."
+            )
+        if outcome.status != "ok":
+            return (
+                f"Error extracting PDF outline for attachment "
+                f"`{attachment_key}`: {outcome.detail}"
+            )
+
+        if not outcome.toc:
             return "This PDF does not contain a table of contents/outline."
 
         lines = [f"# PDF Outline for item `{item_key}`", ""]
-        for level, title, page in toc:
+        for level, title, page in outcome.toc:
             indent = "  " * (level - 1)
             lines.append(f"{indent}- {title} (p. {page})")
 
         return "\n".join(lines)
 
+    except ZoteroApiBusyError:
+        # Same as every lock-decorated tool: surface "busy" to the caller
+        # rather than reporting it as a PDF failure.
+        raise
     except Exception as e:
         ctx.error(f"Error extracting PDF outline: {e}")
-        return f"Error extracting PDF outline: {e}"
+        return f"Error extracting PDF outline: {_helpers.format_zotero_error(e)}"
 
 
 def add_from_file(
@@ -4578,7 +4768,13 @@ def add_from_file(
         # lands on it instead of on a fresh duplicate.
         if extracted_doi:
             ctx.info(f"Found DOI: {extracted_doi}")
-            result_msg = add_by_doi(doi=extracted_doi, collections=coll_keys, tags=tags, if_exists=if_exists, ctx=ctx)
+            # Directory imports are loops of this, so the file source takes
+            # the batch policy: the PDF in hand is already the thing being
+            # filed, and a second landing-page fetch would repeat per file.
+            result_msg = add_by_doi(
+                doi=extracted_doi, collections=coll_keys, tags=tags,
+                if_exists=if_exists, page_check="thin_only", ctx=ctx,
+            )
             # Extract item key from result
             key_match = re.search(r"Item key: `([^`]+)`", result_msg)
             if key_match:
@@ -4587,7 +4783,7 @@ def add_from_file(
                 return f"DOI lookup succeeded but couldn't extract item key.\n\n{result_msg}"
         else:
             # Create a basic item
-            template = write_zot.item_template(item_type)
+            template = _helpers.item_template_for(write_zot, item_type)
             template["title"] = title or os.path.basename(file_path)
 
             tag_list = _helpers._normalize_str_list_input(tags, "tags")
@@ -4661,7 +4857,7 @@ def add_from_file(
 
     except Exception as e:
         ctx.error(f"Error adding from file: {e}")
-        return f"Error adding from file: {e}"
+        return f"Error adding from file: {_helpers.format_zotero_error(e)}"
 
 
 def _upload_attachment(write_zot, item_key, display_name, filepath, ctx):
@@ -4725,7 +4921,7 @@ def _upload_attachment(write_zot, item_key, display_name, filepath, ctx):
         "attachment (uploads the file bytes). Use when the item is already "
         "in the library and you have its key — e.g. attaching a PDF you "
         "found for a reference. To create a NEW item from a file, use "
-        "zotero_add_from_file instead. "
+        "zotero_add_item(source=<file path>) instead. "
         "item_key: key of the existing REGULAR item. Passing an "
         "attachment/note key fails with a hint to use its parent. "
         "file_path: ABSOLUTE local path (.pdf, .epub, .djvu, .doc, .docx, "
@@ -5037,7 +5233,7 @@ def add_item_relation(item_key: str, related_item_key: str, relation_type: str =
 
     except Exception as e:
         ctx.error(f"Error adding item relation: {e}")
-        return f"Error adding item relation: {e}"
+        return f"Error adding item relation: {_helpers.format_zotero_error(e)}"
 
 
 @mcp.tool(
@@ -5161,7 +5357,7 @@ def remove_item_relation(
 
     except Exception as e:
         ctx.error(f"Error removing item relation: {e}")
-        return f"Error removing item relation: {e}"
+        return f"Error removing item relation: {_helpers.format_zotero_error(e)}"
 
 
 # ---------------------------------------------------------------------------
@@ -5232,6 +5428,7 @@ def _create_and_attach_batch(
     attach_mode: str,
     ctx: Context,
     crossref_by_doi: dict[str, dict] | None = None,
+    page_pdf_by_doi: dict[str, str] | None = None,
 ) -> list[dict]:
     """Create many Zotero items in POSTs of up to 50 and, for each with a
     DOI, try to attach an OA PDF (#A4).
@@ -5245,11 +5442,13 @@ def _create_and_attach_batch(
 
     ``crossref_by_doi`` maps normalized DOI to the CrossRef message that
     entry was built from, for the cascade's "arXiv (via CrossRef)" source.
-    Keyed by DOI rather than passed as a list parallel to ``item_datas``
+    ``page_pdf_by_doi`` maps it to the ``citation_pdf_url`` the article's
+    landing page advertised, for the cascade's publisher source. Both are
+    keyed by DOI rather than passed as lists parallel to ``item_datas``
     because the DOI is re-derived below anyway, and a parallel list is one
-    more thing that has to stay aligned across chunking. Optional: the
-    bibtex and CSL-JSON importers share this function and have no CrossRef
-    message, in which case that source simply finds nothing.
+    more thing that has to stay aligned across chunking. Both are optional:
+    the bibtex and CSL-JSON importers share this function and supply
+    neither, in which case those sources simply find nothing.
 
     Returns per-entry result dicts — ``{"ok": bool, "key": str|None, "doi":
     str|None, "pdf_status": str|None, "error": str|None, "title": str,
@@ -5338,6 +5537,7 @@ def _create_and_attach_batch(
                         write_zot, item_key, doi, ctx,
                         crossref_metadata=(crossref_by_doi or {}).get(doi),
                         attach_mode=attach_mode,
+                        page_pdf_url=(page_pdf_by_doi or {}).get(doi),
                     )
                 except _helpers.OaPdfRequiredError as e:
                     error = (
@@ -5370,7 +5570,14 @@ def _maybe_reuse_existing(read_zot, write_zot, item_data, coll_keys, tags, if_ex
     doi = _helpers._normalize_doi(doi_raw) if doi_raw else None
     if not doi:
         return None
-    existing = _helpers.find_existing_items(read_zot, doi=doi, ctx=ctx)
+    # The entry's title comes along as a search key, not as a match rule:
+    # a DOI is not server-side searchable, so without it the lookup misses
+    # items that are already here and the batch re-creates every one of
+    # them. The DOI still decides (see find_existing_items), so "entries
+    # without a DOI always create" above is unaffected.
+    existing = _helpers.find_existing_items(
+        read_zot, doi=doi, title=item_data.get("title"), ctx=ctx
+    )
     if not existing:
         return None
 
@@ -5495,7 +5702,7 @@ def add_by_bibtex(
         try:
             entries = _citation_import.parse_bibtex(bibtex)
         except Exception as e:
-            return f"Error parsing BibTeX: {e}"
+            return f"Error parsing BibTeX: {_helpers.format_zotero_error(e)}"
 
         if not entries:
             return "Error: No valid @entries found in the BibTeX input."
@@ -5531,7 +5738,7 @@ def add_by_bibtex(
 
     except Exception as e:
         ctx.error(f"Error adding by BibTeX: {e}")
-        return f"Error adding by BibTeX: {e}"
+        return f"Error adding by BibTeX: {_helpers.format_zotero_error(e)}"
 
 
 def add_by_csl_json(
@@ -5610,7 +5817,7 @@ def add_by_csl_json(
 
     except Exception as e:
         ctx.error(f"Error adding by CSL JSON: {e}")
-        return f"Error adding by CSL JSON: {e}"
+        return f"Error adding by CSL JSON: {_helpers.format_zotero_error(e)}"
 
 
 _ADD_SOURCE_TYPES = ("doi", "url", "isbn", "bibtex", "csl_json", "file")
@@ -5671,9 +5878,16 @@ def _looks_like_url(s: str) -> bool:
 
 
 def _looks_like_path(s: str) -> bool:
-    """True when *s* has the shape of a filesystem path (POSIX or Windows)."""
+    """True when *s* has the shape of a filesystem path (POSIX or Windows).
+
+    The leading-slash test is explicit rather than left to ``os.path.isabs``:
+    since Python 3.13 ``ntpath.isabs`` calls "/Users/me/paper.pdf" relative,
+    so on Windows a POSIX path would fall through to the "could not tell what
+    kind of source this is" error instead of being recognised as a file.
+    """
     return (
-        os.path.isabs(s)
+        s.startswith("/")
+        or os.path.isabs(s)
         or bool(re.match(r"^[A-Za-z]:[\\/]", s))
         or s.startswith(("~", "./", "../", ".\\", "..\\"))
     )
