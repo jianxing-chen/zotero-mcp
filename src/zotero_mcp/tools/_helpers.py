@@ -2537,9 +2537,9 @@ def _try_attach_oa_pdf(write_zot, item_key, doi, ctx, crossref_metadata=None,
        PDF is usually blocked by a WAF/captcha, so ADS effectively returns the
        arXiv preprint (EPRINT_PDF) — the same version the arXiv source below
        would find.
-    2. **Unpaywall**.
-    3. **The publisher's page** (``page_pdf_url``, when given).
-    4. **arXiv** (via CrossRef relations — always open access).
+    2. **arXiv** (via CrossRef relations — always open access).
+    3. **Unpaywall**.
+    4. **The publisher's page** (``page_pdf_url``, when given).
     5. **Semantic Scholar**.
     6. **PubMed Central**.
 
@@ -2587,11 +2587,16 @@ def _try_attach_oa_pdf(write_zot, item_key, doi, ctx, crossref_metadata=None,
         #
         # Behind Unpaywall it still does the thing it was added for: for a
         # paper no aggregator has indexed, it is the only source there is.
+        # Fork order: arXiv (via CrossRef relations) comes before Unpaywall —
+        # it is always open access and never serves a paywall stub, so when a
+        # relation exists it is the cheapest reliable hit (pinned by
+        # test_pdf_cascade_order). The publisher's page stays behind Unpaywall
+        # for upstream's stub-risk reason.
+        sources.append(("arXiv (via CrossRef)", lambda: _try_arxiv_from_crossref(crossref_metadata, ctx)))
         sources.append(("Unpaywall", lambda: _try_unpaywall(doi, ctx)))
         if page_pdf_url:
             sources.append(("the publisher's page", lambda: page_pdf_url))
         sources += [
-            ("arXiv (via CrossRef)", lambda: _try_arxiv_from_crossref(crossref_metadata, ctx)),
             ("Semantic Scholar", lambda: _try_semantic_scholar(doi, ctx)),
             ("PubMed Central", lambda: _try_pmc(doi, ctx)),
         ]
