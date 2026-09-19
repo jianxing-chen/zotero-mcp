@@ -382,17 +382,24 @@ class TestErrorPaths:
         fake = _patch_hybrid(monkeypatch)
         _disable_oa_pdf(monkeypatch)
 
-        # Monkeypatch create_items to fail on the second call
-        call_count = {"n": 0}
+        # Entries are created in one create_items POST, so per-entry
+        # failure isolation comes from Zotero's per-index success/failed
+        # report — make index 1 the failing one, as the real API would.
         original_create = fake.create_items
 
-        def flaky_create(items, **kwargs):
-            call_count["n"] += 1
-            if call_count["n"] == 2:
-                raise RuntimeError("simulated write failure")
-            return original_create(items, **kwargs)
+        def partial_failure_create(items, **kwargs):
+            result = original_create(items, **kwargs)
+            if len(items) > 1:
+                kept = dict(result.get("success") or {})
+                failed = dict(result.get("failed") or {})
+                second_key = kept.pop("1", None)
+                if second_key is not None:
+                    failed["1"] = "simulated write failure"
+                result["success"] = kept
+                result["failed"] = failed
+            return result
 
-        fake.create_items = flaky_create
+        fake.create_items = partial_failure_create
 
         bib = """
         @article{a, title={A}, author={X, Y}, year={2020}}
@@ -406,7 +413,7 @@ class TestErrorPaths:
         s = _wait_for_task(result)
         assert s is not None
 
-        # 2 succeeded, 1 failed (simulated write failure on the second create).
+        # 2 succeeded, 1 failed (Zotero reported index 1 as failed).
         assert s.succeeded == 2
         assert s.failed == 1
         assert s.result_summary is not None

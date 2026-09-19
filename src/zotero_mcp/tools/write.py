@@ -5429,6 +5429,7 @@ def _create_and_attach_batch(
     ctx: Context,
     crossref_by_doi: dict[str, dict] | None = None,
     page_pdf_by_doi: dict[str, str] | None = None,
+    prefer_pub_pdf: bool = False,
 ) -> list[dict]:
     """Create many Zotero items in POSTs of up to 50 and, for each with a
     DOI, try to attach an OA PDF (#A4).
@@ -5447,8 +5448,11 @@ def _create_and_attach_batch(
     keyed by DOI rather than passed as lists parallel to ``item_datas``
     because the DOI is re-derived below anyway, and a parallel list is one
     more thing that has to stay aligned across chunking. Both are optional:
-    the bibtex and CSL-JSON importers share this function and supply
-    neither, in which case those sources simply find nothing.
+    the background bibtex and CSL-JSON importers share this function and
+    supply neither, in which case those sources simply find nothing.
+    ``prefer_pub_pdf`` is passed through to the OA cascade's ADS source (the
+    importers set it: a DOI-bearing citation usually describes the
+    published version).
 
     Returns per-entry result dicts — ``{"ok": bool, "key": str|None, "doi":
     str|None, "pdf_status": str|None, "error": str|None, "title": str,
@@ -5538,6 +5542,7 @@ def _create_and_attach_batch(
                         crossref_metadata=(crossref_by_doi or {}).get(doi),
                         attach_mode=attach_mode,
                         page_pdf_url=(page_pdf_by_doi or {}).get(doi),
+                        prefer_pub_pdf=prefer_pub_pdf,
                     )
                 except _helpers.OaPdfRequiredError as e:
                     error = (
@@ -6274,8 +6279,19 @@ def _add_by_bibcode_worker(status, bibcodes, coll_keys, tags, attach_mode, if_ex
 
 
 
-def _add_by_bibtex_worker(status, entries, coll_keys, tags, attach_mode, if_exists) -> None:
-    """Background worker for add_by_bibtex."""
+def _batch_import_worker(
+    status, entries, convert, entry_label, coll_keys, tags, attach_mode, if_exists
+) -> None:
+    """Shared background core for the add_by_bibtex/add_by_csl_json workers.
+
+    Two phases. First each entry is converted and deduplicated per entry
+    (conversion is local; the dedup is one API search per DOI-bearing
+    entry when if_exists asks for one). Everything not reused is then
+    created through _create_and_attach_batch — one ``create_items`` POST
+    and one collection-membership read per 50 entries, instead of one POST
+    and one GET per entry. PDF attachment stays per item, outside the API
+    lock, inside the batch helper.
+    """
     from zotero_mcp.batch_runner import update_status
 
     try:
@@ -6286,79 +6302,101 @@ def _add_by_bibtex_worker(status, entries, coll_keys, tags, attach_mode, if_exis
     total = len(entries)
     succeeded = 0
     failed = 0
+    finalized = 0  # entries with a final outcome: reused, failed, or created
     succeeded_items: list[dict] = []
     failed_items: list[dict] = []
+    pending: list[tuple[str, dict]] = []  # (entry label, item_data) to create
 
-    for idx, entry in enumerate(entries, 1):
+    def _maybe_report() -> None:
+        if finalized and finalized % 5 == 0:
+            update_status(
+                status.task_id,
+                processed=finalized,
+                succeeded=succeeded,
+                failed=failed,
+                succeeded_items=succeeded_items,
+                failed_items=failed_items,
+            )
+
+    # Phase 1: convert + dedup, one entry at a time.
+    for entry in entries:
+        label = entry_label(entry)
         try:
-            item_data = _citation_import.bibtex_entry_to_zotero(entry, write_zot.item_template)
+            item_data = convert(entry, write_zot.item_template)
         except Exception as e:
             failed += 1
             failed_items.append(
-                {"key": entry.get("citekey") or "(unknown)", "detail": f"conversion failed: {e}"}
+                {"key": label, "detail": f"conversion failed: {e}"}
             )
-            if idx % 5 == 0 or idx == total:
-                update_status(
-                    status.task_id,
-                    processed=idx,
-                    succeeded=succeeded,
-                    failed=failed,
-                    succeeded_items=succeeded_items,
-                    failed_items=failed_items,
-                )
-            _time.sleep(0.3)
+            finalized += 1
+            _maybe_report()
             continue
 
+        # Whether the dedup search runs for this entry — mirrors the early
+        # returns in _maybe_reuse_existing (no DOI, or if_exists=duplicate,
+        # means no API call and no courtesy pause either).
+        searched = if_exists != "duplicate" and bool(item_data.get("DOI") or "")
         try:
             reused = _with_api_lock(
-                lambda: _maybe_reuse_existing(read_zot, write_zot, item_data, coll_keys, tags, if_exists, DummyCtx())
+                lambda: _maybe_reuse_existing(
+                    read_zot, write_zot, item_data, coll_keys, tags, if_exists, DummyCtx()
+                )
             )
             if reused is not None:
                 succeeded += 1
                 succeeded_items.append(
                     {"key": reused.get("key") or "", "detail": reused.get("existed") or "reused"}
                 )
+                finalized += 1
             else:
                 _apply_caller_tags_and_collections(item_data, tags, coll_keys)
-                # prefer_pub_pdf=True: entries with a DOI usually describe the
-                # published version; prefer the publisher PDF (institutional access).
-                result = _with_api_lock(
-                    lambda: _create_and_attach(
-                        write_zot,
-                        item_data,
-                        attach_mode,
-                        DummyCtx(),
-                        prefer_pub_pdf=True,
-                    )
-                )
-                if result.get("ok"):
-                    succeeded += 1
-                    succeeded_items.append(
-                        {"key": result.get("key") or "", "detail": result.get("title") or ""}
-                    )
-                else:
-                    failed += 1
-                    failed_items.append(
-                        {"key": result.get("key") or "", "detail": result.get("error") or "create failed"}
-                    )
+                pending.append((label, item_data))
         except Exception as e:
-            logger.warning(f"Failed to import BibTeX entry: {e}")
+            logger.warning(f"Failed to import entry {label}: {e}")
             failed += 1
-            failed_items.append(
-                {"key": entry.get("citekey") or "(unknown)", "detail": str(e)}
-            )
+            failed_items.append({"key": label, "detail": str(e)})
+            finalized += 1
 
-        _time.sleep(0.3)
+        if searched:
+            _time.sleep(0.3)
+        _maybe_report()
 
-        if idx % 5 == 0 or idx == total:
-            update_status(
-                status.task_id,
-                processed=idx,
-                succeeded=succeeded,
-                failed=failed,
-                succeeded_items=succeeded_items,
-                failed_items=failed_items,
+    # Phase 2: create everything that survived dedup, in POSTs of 50.
+    if pending:
+        try:
+            # prefer_pub_pdf=True: entries with a DOI usually describe the
+            # published version; prefer the publisher PDF (institutional
+            # access) — the same choice the per-item importer made.
+            batch_results = _create_and_attach_batch(
+                write_zot,
+                [item_data for _label, item_data in pending],
+                attach_mode,
+                DummyCtx(),
+                prefer_pub_pdf=True,
             )
+        except Exception as e:
+            logger.warning(f"Batch create failed: {e}")
+            batch_results = [
+                {"ok": False, "key": None, "title": label, "error": str(e)}
+                for label, _item_data in pending
+            ]
+
+        for (label, _item_data), result in zip(pending, batch_results):
+            if result.get("ok"):
+                succeeded += 1
+                succeeded_items.append(
+                    {"key": result.get("key") or "", "detail": result.get("title") or ""}
+                )
+            else:
+                failed += 1
+                failed_items.append(
+                    {
+                        "key": result.get("key") or label,
+                        "detail": result.get("error") or "create failed",
+                    }
+                )
+            finalized += 1
+            _maybe_report()
 
     update_status(
         status.task_id,
@@ -6370,104 +6408,33 @@ def _add_by_bibtex_worker(status, entries, coll_keys, tags, attach_mode, if_exis
         result_summary=f"Imported {succeeded} entries, {failed} failed.",
     )
 
+
+def _add_by_bibtex_worker(status, entries, coll_keys, tags, attach_mode, if_exists) -> None:
+    """Background worker for add_by_bibtex."""
+    _batch_import_worker(
+        status,
+        entries,
+        convert=_citation_import.bibtex_entry_to_zotero,
+        entry_label=lambda entry: entry.get("citekey") or "(unknown)",
+        coll_keys=coll_keys,
+        tags=tags,
+        attach_mode=attach_mode,
+        if_exists=if_exists,
+    )
 
 
 def _add_by_csl_json_worker(status, entries, coll_keys, tags, attach_mode, if_exists) -> None:
     """Background worker for add_by_csl_json."""
-    from zotero_mcp.batch_runner import update_status
-
-    try:
-        read_zot, write_zot = _helpers._get_write_client(None)
-    except ValueError as e:
-        raise RuntimeError(str(e))
-
-    total = len(entries)
-    succeeded = 0
-    failed = 0
-    succeeded_items: list[dict] = []
-    failed_items: list[dict] = []
-
-    for idx, entry in enumerate(entries, 1):
-        try:
-            item_data = _citation_import.csl_json_to_zotero(entry, write_zot.item_template)
-        except Exception as e:
-            failed += 1
-            failed_items.append(
-                {"key": str(entry.get("id") or entry.get("title") or "(unknown)"), "detail": f"conversion failed: {e}"}
-            )
-            if idx % 5 == 0 or idx == total:
-                update_status(
-                    status.task_id,
-                    processed=idx,
-                    succeeded=succeeded,
-                    failed=failed,
-                    succeeded_items=succeeded_items,
-                    failed_items=failed_items,
-                )
-            _time.sleep(0.3)
-            continue
-
-        try:
-            reused = _with_api_lock(
-                lambda: _maybe_reuse_existing(read_zot, write_zot, item_data, coll_keys, tags, if_exists, DummyCtx())
-            )
-            if reused is not None:
-                succeeded += 1
-                succeeded_items.append(
-                    {"key": reused.get("key") or "", "detail": reused.get("existed") or "reused"}
-                )
-            else:
-                _apply_caller_tags_and_collections(item_data, tags, coll_keys)
-                # prefer_pub_pdf=True: entries with a DOI usually describe the
-                # published version; prefer the publisher PDF (institutional access).
-                result = _with_api_lock(
-                    lambda: _create_and_attach(
-                        write_zot,
-                        item_data,
-                        attach_mode,
-                        DummyCtx(),
-                        prefer_pub_pdf=True,
-                    )
-                )
-                if result.get("ok"):
-                    succeeded += 1
-                    succeeded_items.append(
-                        {"key": result.get("key") or "", "detail": result.get("title") or ""}
-                    )
-                else:
-                    failed += 1
-                    failed_items.append(
-                        {"key": result.get("key") or "", "detail": result.get("error") or "create failed"}
-                    )
-        except Exception as e:
-            logger.warning(f"Failed to import CSL JSON entry: {e}")
-            failed += 1
-            failed_items.append(
-                {"key": str(entry.get("id") or entry.get("title") or "(unknown)"), "detail": str(e)}
-            )
-
-        _time.sleep(0.3)
-
-        if idx % 5 == 0 or idx == total:
-            update_status(
-                status.task_id,
-                processed=idx,
-                succeeded=succeeded,
-                failed=failed,
-                succeeded_items=succeeded_items,
-                failed_items=failed_items,
-            )
-
-    update_status(
-        status.task_id,
-        processed=total,
-        succeeded=succeeded,
-        failed=failed,
-        succeeded_items=succeeded_items,
-        failed_items=failed_items,
-        result_summary=f"Imported {succeeded} entries, {failed} failed.",
+    _batch_import_worker(
+        status,
+        entries,
+        convert=_citation_import.csl_json_to_zotero,
+        entry_label=lambda entry: str(entry.get("id") or entry.get("title") or "(unknown)"),
+        coll_keys=coll_keys,
+        tags=tags,
+        attach_mode=attach_mode,
+        if_exists=if_exists,
     )
-
 
 
 def _ads_doc_to_enrich_fields(doc: dict, wanted: set[str]) -> dict[str, str]:

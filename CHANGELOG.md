@@ -7,13 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`add_by_bibtex`/`add_by_csl_json` background imports now create items in batches of 50.** One `create_items` request and one collection-membership read per 50 entries, instead of one POST and one item GET per entry; the inter-entry pause applies only when an entry's dedup search actually ran. A 50-entry `.bib` that spent ~15 s just sleeping now finishes its creates in a couple of round-trips. Dedup, per-item PDF attachment, and per-entry failure isolation are unchanged — Zotero's per-index success/failed report keeps one bad entry from sinking its batch.
+
 ### Fixed
+
+- **`update-db` progress no longer garbles on narrow or CJK terminals.** The indexing progress line had no width clipping and the extraction line clipped by character count — a 57-character Chinese title is ~114 columns and wrapped an 80-column terminal, after which every later single-line redraw repainted only the last physical row and everything above turned to overlapping residue. Progress lines are now clipped by display width (wide characters count as 2), and the clear-writes use the measured terminal width instead of a fixed 120 columns.
+
+- **`db-status` and the `update_search_database` tool no longer recommend the disabled `--reindex-cached-mineru`.** The flag is intentionally off (uniform-dim build path — it downgrades to a plain update with a note), but both places still told users to run it. They now say it is disabled and point at per-paper `--reindex-keys`; the flag's `--help` text says so too.
 
 - **Semantic search no longer fails outright after documents are deleted while the server is running (#545).** A server kept open while another process (a CLI update, or the deletion pass) removed documents could get hits back whose document text was `None`; the cross-encoder reranker accepts only strings, so every search failed with `Unsupported input type: NoneType` until restart. Those hits are now dropped before reranking and enrichment, with a warning, and the search returns the rest. Reported by @Aboottogo in #457.
 
 - **`update-db` could sit silent for hours in the rate limiter (#548).** The token bucket's capacity was fixed from the initial tokens-per-minute while every 429 halved the rate, and the wait is the deficit divided by the rate, so with Gemini's default budget against a free-tier account a single request waited about 34 hours, indistinguishable from a hang; running out of API credit mid-run did the same. Capacity now follows the current rate, so a wait is at most a quarter-minute of budget, and a wait of 30 seconds or more is logged. Found and fixed by @ArneBouten.
-
-## [Unreleased]
 
 ## [0.12.4] - 2026-09-14
 
