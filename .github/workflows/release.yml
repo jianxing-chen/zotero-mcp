@@ -36,12 +36,7 @@ jobs:
       - name: Install package and test dependencies
         run: |
           python -m pip install --upgrade pip
-          # pyzotero 1.15.2 (released 2026-09-1x, after upstream's last green
-          # run) breaks two upstream tests — the local endpoint host changed
-          # (localhost -> 127.0.0.1) and 429 handling regressed. Reproduces on
-          # pristine upstream/main; cap here until upstream adapts. pyproject
-          # stays open (>=1.14.0).
-          python -m pip install pytest pytest-timeout "fastmcp<4" "pyzotero>=1.14,<1.15.2" python-dotenv "pdf-inspector==0.2.6" markdownify chromadb unidecode bibtexparser tiktoken pymupdf
+          python -m pip install pytest pytest-timeout "fastmcp<4" "pyzotero>=1.14.0" python-dotenv "pdf-inspector==0.2.6" markdownify chromadb unidecode bibtexparser tiktoken pymupdf
           python -m pip install -e . --no-deps
       - name: Run tests
         run: pytest --ignore=tests/test_lifespan.py
