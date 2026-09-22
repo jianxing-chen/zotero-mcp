@@ -1,4 +1,3 @@
-import pytest
 """Tests for how a rate-limited Zotero read reaches our callers.
 
 pyzotero >=1.13.5 retries a 429 internally — waiting out the server-supplied
@@ -20,12 +19,6 @@ from pyzotero.zotero import Zotero
 from pyzotero.zotero_errors import TooManyRetriesError
 
 from zotero_mcp.tools import _helpers
-
-
-def _zotero():
-    """A web-API Zotero. Constructing one opens no socket."""
-    return Zotero(library_id="1", library_type="user", api_key="x" * 24)
-
 
 # Fixtures must come from the HTTP library pyzotero speaks (httpx2 on
 # >=1.15, httpx below it), or its error handling never sees them (#511).
@@ -59,22 +52,23 @@ def _200(items=None):
 
 
 def _client(responses):
-    """A client whose transport replays `responses` in order.
+    """A web-API Zotero whose transport replays `responses` in order.
 
-    pyzotero >=1.15.2 routes every request through ``client.request()``,
-    attaching the default headers per request (its "Send the default headers
-    with each request" change); earlier versions called ``client.get()``
-    directly. Mock whichever the installed version speaks — only one of the
-    two is ever called, and both replay the same sequence.
+    Replaced rather than stubbed on the client: pyzotero dispatches a read
+    through ``client.get`` below 1.15.2 and through ``client.request`` from
+    1.15.2 on, so patching either method pins one version and lets the other
+    issue a real request to api.zotero.org. A transport sits underneath both,
+    and leaves pyzotero's own retry and error handling — the thing these
+    tests exist to pin — actually running.
+
+    Constructing a Zotero opens no socket, and the mock transport never lets
+    one open.
     """
-    zot = _zotero()
     seq = iter(responses)
-
-    def replay(*args, **kw):
-        return next(seq)
-
-    zot.client.request = replay
-    zot.client.get = replay
+    zot = Zotero(
+        library_id="1", library_type="user", api_key="x" * 24,
+        client=_http.Client(transport=_http.MockTransport(lambda request: next(seq))),
+    )
     zot._set_backoff = lambda *a, **kw: None  # don't sleep in tests
     return zot
 
@@ -82,7 +76,6 @@ def _client(responses):
 class TestUpstreamRateLimitHandling:
     """Pins the pyzotero behaviour find_existing_items is built on."""
 
-    @pytest.mark.skip(reason="fork retry guard removed upstream (825fe1d): pyzotero >=1.13.5 now retries 429 internally")
     def test_transient_429_is_retried_and_recovers(self):
         zot = _client([_429(), _200()])
 
@@ -91,7 +84,6 @@ class TestUpstreamRateLimitHandling:
         assert isinstance(out, list)
         assert [i["key"] for i in out] == ["EXIST001"]
 
-    @pytest.mark.skip(reason="fork retry guard removed upstream (825fe1d): pyzotero >=1.13.5 now retries 429 internally")
     def test_persistent_throttling_raises_rather_than_returning_bytes(self):
         zot = _client([_429()] * _UPSTREAM_ATTEMPTS)
 
@@ -109,7 +101,6 @@ class TestUpstreamRateLimitHandling:
 
 
 class TestDedupUnderThrottling:
-    @pytest.mark.skip(reason="fork retry guard removed upstream (825fe1d): pyzotero >=1.13.5 now retries 429 internally")
     def test_throttled_search_does_not_read_as_no_match(self):
         """A failed search degrades to "no match" so the caller creates the
         item. A *throttled* search hasn't answered the question, and treating
@@ -119,7 +110,6 @@ class TestDedupUnderThrottling:
         with pytest.raises(TooManyRetriesError):
             _helpers.find_existing_items(zot, doi="10.1234/test", ctx=DummyContext())
 
-    @pytest.mark.skip(reason="fork retry guard removed upstream (825fe1d): pyzotero >=1.13.5 now retries 429 internally")
     def test_transient_throttling_still_finds_the_existing_item(self):
         zot = _client([_429(), _200()])
 

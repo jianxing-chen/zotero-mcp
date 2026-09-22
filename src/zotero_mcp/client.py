@@ -492,9 +492,9 @@ def probe_local_server_id(timeout: float = 3.0, force: bool = False) -> str | No
 
     # Deliberately not ZOTERO_LOCAL_PORT: pyzotero hardcodes port 23119 for
     # local mode, so probing anywhere else could report "writes supported"
-    # for a server the writes will never reach. And 127.0.0.1 rather than
-    # localhost, mirroring pyzotero >=1.15.2: naming the IP keeps the probe
-    # off HTTP proxies configured to intercept "localhost".
+    # for a server the writes will never reach. By IP, as pyzotero >=1.15.2
+    # does: Zotero listens on 127.0.0.1 only, and "localhost" can resolve to
+    # ::1 first or be routed through a proxy.
     server_id = None
     try:
         with _make_local_http_client(timeout) as http:
@@ -1010,6 +1010,7 @@ def generate_bibtex(item: dict[str, Any]) -> str:
         ("title", "title"),
         ("publicationTitle", "journal"),
         ("bookTitle", "booktitle"),
+        ("proceedingsTitle", "booktitle"),
         ("volume", "volume"),
         ("issue", "number"),
         ("pages", "pages"),

@@ -3,6 +3,7 @@
 import json
 
 import pytest
+from conftest import pyzotero_local_endpoint
 from pyzotero.errors import LocalAPIDeniedError, TooManyRequestsError
 
 from zotero_mcp import client as _client
@@ -181,13 +182,7 @@ class TestGetLocalWriteClient:
         assert zot.local_api_key == "k"
         # Cached so the first write of each call doesn't re-probe.
         assert zot.server_id == "srv-9"
-        # pyzotero switched the local endpoint's host to 127.0.0.1 in 1.15.2
-        # (loopback by IP sidesteps proxy setups that intercept "localhost");
-        # <=1.15.1 reports localhost. Both are supported, so pin the shape.
-        assert zot.endpoint in (
-            "http://localhost:23119/api",
-            "http://127.0.0.1:23119/api",
-        )
+        assert zot.endpoint == pyzotero_local_endpoint()
 
     def test_user_library_is_always_users_zero(self, local_mode, monkeypatch):
         """The local API addresses the user library as users/0, whatever the

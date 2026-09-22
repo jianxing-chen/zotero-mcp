@@ -1567,6 +1567,9 @@ def _isbn10_to_isbn13(isbn10):
     return core + str(check)
 
 
+_ARXIV_LEGACY_RE = r"[a-z][a-z\-]*(?:\.[a-z][a-z\-]*)?/\d{7}(?:v\d+)?"
+
+
 def _normalize_arxiv_id(raw):
     """Normalize an arXiv ID from various input formats."""
     if not raw:
@@ -1576,16 +1579,16 @@ def _normalize_arxiv_id(raw):
         s = s[6:].strip()
     if s.lower().startswith("http://") or s.lower().startswith("https://"):
         m = re.search(
-            r"arxiv\.org/(?:abs|pdf)/([0-9]{4}\.[0-9]{4,5}(?:v\d+)?|[a-z\-]+/\d{7}(?:v\d+)?)(?:\.pdf)?",
-            s,
-            flags=re.IGNORECASE,
+            r"arxiv\.org/(?:abs|pdf)/([0-9]{4}\.[0-9]{4,5}(?:v\d+)?|"
+            + _ARXIV_LEGACY_RE + r")(?:\.pdf)?",
+            s, flags=re.IGNORECASE,
         )
         if not m:
             return None
         s = m.group(1)
     if re.match(r"^[0-9]{4}\.[0-9]{4,5}(?:v\d+)?$", s):
         return s
-    if re.match(r"^[a-z\-]+/\d{7}(?:v\d+)?$", s, flags=re.IGNORECASE):
+    if re.match(rf"^{_ARXIV_LEGACY_RE}$", s, flags=re.IGNORECASE):
         return s
     return None
 

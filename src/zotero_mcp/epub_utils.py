@@ -714,6 +714,7 @@ def generate_cfi_python(
         return {"error": f"Failed to parse EPUB: {e}"}
 
     try:
+        # Track cumulative character count for pseudo-page calculation
         spine_char_counts: list[int] = []
 
         # First pass: count characters in each spine item

@@ -135,7 +135,15 @@ class ChromaClient:
                 # caller can re-embed from scratch instead of burning API
                 # quota on vectors that can never be stored.
                 try:
-                    if self.collection.count() > 0:
+                    # Guard only the providers we own — the uniform-dimension
+                    # rebuild concern is about our custom functions. For a
+                    # foreign one (ChromaDB's DefaultEmbeddingFunction) a reset
+                    # here would silently wipe a collection Chroma itself can
+                    # still serve, the exact regression #565 pins as forbidden.
+                    if (
+                        isinstance(self.embedding_function, CUSTOM_EMBEDDING_FUNCTIONS)
+                        and self.collection.count() > 0
+                    ):
                         probe = self.collection.get(limit=1, include=["embeddings"])
                         # ChromaDB returns embeddings as a numpy array (or
                         # None when the collection is empty). Using Python
@@ -304,23 +312,16 @@ class ChromaClient:
                 "where_document": where_document,
             }
 
-            # Use embed_query for our custom embedding functions that implement
-            # correct query-time task types (e.g. Gemini retrieval_query).
-            # Do NOT use embed_query on ChromaDB's DefaultEmbeddingFunction —
-            # its embed_query returns chunked results, not a single vector.
-            _is_custom_ef = isinstance(
-                self.embedding_function,
-                (
-                    OpenAIEmbeddingFunction,
-                    GeminiEmbeddingFunction,
-                    HuggingFaceEmbeddingFunction,
-                    OllamaEmbeddingFunction,
-                ),
-            )
-            if _is_custom_ef and hasattr(self.embedding_function, "embed_query") and query_texts:
+            # Embed queries ourselves through embed_query_text, so our custom
+            # embedding functions apply their query-time tuning (e.g. Gemini's
+            # retrieval_query task type). Only our own classes have that
+            # method; anything else — ChromaDB's DefaultEmbeddingFunction
+            # included — is handed query_texts and left to embed them itself.
+            _is_custom_ef = isinstance(self.embedding_function, CUSTOM_EMBEDDING_FUNCTIONS)
+            if _is_custom_ef and query_texts:
                 query_embeddings = []
                 for qt in query_texts:
-                    emb = self.embedding_function.embed_query(qt)
+                    emb = self.embedding_function.embed_query_text(qt)
                     # Ensure plain Python floats (some providers return numpy)
                     if hasattr(emb, "tolist"):
                         emb = emb.tolist()
