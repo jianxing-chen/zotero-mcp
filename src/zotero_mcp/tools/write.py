@@ -219,8 +219,8 @@ def _duplicate_of_message(kind: str, position: int) -> str:
 # rendered text is a stopgap: add_by_doi/url/isbn hand back pre-rendered
 # strings, so this is the only success signal the recursive URL/ISBN paths
 # expose. The real fix is the convergence _format_multi_result's docstring
-# describes — structured per-item dicts rendered through
-# _format_batch_result — at which point these go away.
+# describes — structured per-item dicts rendered through one batch
+# formatter — at which point these go away.
 _CREATED_MARKERS = (
     "Successfully added",       # add_by_doi, add_by_isbn, embedded metadata
     "Successfully added arXiv",  # _add_by_arxiv
@@ -252,16 +252,12 @@ def _format_multi_result(kind: str, tokens: list[str], results: list[str]) -> st
     return value for that adder — this just labels and stacks them, so
     batch output is a plain superset of what a single call already prints.
 
-    Deliberately a second, simpler batch strategy alongside
-    ``_format_batch_result`` (used by add_by_bibtex/add_by_csl_json), which
-    aggregates structured per-item dicts instead of pre-rendered strings.
-    Chosen here to keep the diff small and single-item output byte-for-byte
-    unchanged. If a third source ever needs batching, or the two formats
-    need to converge, the natural refactor is to make add_by_doi/url/isbn
-    return the same per-item dict shape (like a hypothetical
-    ``_add_one_by_doi`` helper) and render everything through
-    ``_format_batch_result`` — see the recursive per-token loops below for
-    the redundant-work cost that refactor would also remove.
+    Deliberately simple: chosen to keep the diff small and single-item
+    output byte-for-byte unchanged. If a third source ever needs batching,
+    the natural refactor is to make add_by_doi/url/isbn return the same
+    per-item dict shape the bibtex/csl-json importers build, and render
+    everything through one batch formatter — see the recursive per-token
+    loops below for the redundant-work cost that refactor would remove.
     """
     counts = _summarize_multi_results(results)
     total = len(tokens)
@@ -5564,7 +5560,7 @@ def _create_and_attach_batch(
 def _maybe_reuse_existing(read_zot, write_zot, item_data, coll_keys, tags, if_exists, ctx) -> dict | None:
     """Batch-import dedup: reuse an existing item matching the entry's DOI.
 
-    Returns a result dict for _format_batch_result when if_exists is
+    Returns a result dict for the import worker's status report when if_exists is
     'file'/'skip' and a DOI match exists; otherwise None (proceed to
     create). Entries without a DOI always create — title matching is out
     of scope (#4).
@@ -5619,52 +5615,6 @@ def _maybe_reuse_existing(read_zot, write_zot, item_data, coll_keys, tags, if_ex
         "existed": f"reused existing — {detail}",
     }
 
-
-def _format_batch_result(header: str, results: list[dict]) -> str:
-    """Render a per-entry markdown summary for add_by_bibtex / add_by_csl_json."""
-    ok_count = sum(1 for r in results if r["ok"])
-    reused_count = sum(1 for r in results if r["ok"] and r.get("existed"))
-    lines = [header, ""]
-    if len(results) == 1:
-        r = results[0]
-        if r["ok"]:
-            verb = "Already in library" if r.get("existed") else "Successfully added"
-            lines.append(f"{verb}: **{r['title']}**")
-            lines.append("")
-            lines.append(f"Item key: `{r['key']}`")
-            if r["doi"]:
-                lines.append(f"DOI: {r['doi']}")
-            if r.get("existed"):
-                lines.append(f"Status: {r['existed']}")
-            if r["pdf_status"]:
-                lines.append(f"PDF: {r['pdf_status']}")
-            if r.get("collections_failed"):
-                lines.append(f"WARNING: failed to file in {r['collections_failed']}")
-        else:
-            lines.append(f"Failed to add **{r['title']}**: {r['error']}")
-    else:
-        summary_line = f"Added {ok_count - reused_count}/{len(results)} items."
-        if reused_count:
-            summary_line += f" {reused_count} already existed (reused, not duplicated)."
-        lines.append(summary_line)
-        lines.append("")
-        for i, r in enumerate(results, 1):
-            if r["ok"]:
-                line = f"{i}. `{r['key']}` — {r['title']}"
-                if r["doi"]:
-                    line += f" (DOI: {r['doi']})"
-                if r.get("existed"):
-                    line += f" [{r['existed']}]"
-                if r["pdf_status"]:
-                    line += f" [{r['pdf_status']}]"
-                if r.get("collections_failed"):
-                    line += f" [failed to file in {r['collections_failed']}]"
-                lines.append(line)
-            else:
-                lines.append(f"{i}. ❌ {r['title']}: {r['error']}")
-    lines.append("")
-    lines.append("_Note: To include new items in semantic search, run zotero_update_search_database._")
-    return "\n".join(lines)
 
 
 def add_by_bibtex(

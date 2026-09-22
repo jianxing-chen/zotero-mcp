@@ -1299,7 +1299,6 @@ def switch_library(
         Confirmation message with active library details.
     """
     try:
-        # TODO(human): Implement validate_library_switch() below
         if library_type == "default":
             _client.clear_active_library()
             ctx.info("Reset to default library configuration")
