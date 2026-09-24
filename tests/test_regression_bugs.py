@@ -419,6 +419,22 @@ class TestProgressWidthClipping:
     last physical line and the screen above turns to residue.
     """
 
+    def test_tag_parameter_exists_in_signature(self):
+        import inspect
+        sig = inspect.signature(server.batch_update_tags)
+        assert "tag" in sig.parameters, (
+            "batch_update_tags must have a 'tag' parameter for tag-based filtering"
+        )
+
+
+class TestProgressWidthClipping:
+    """update-db \\r progress lines must never wrap the terminal.
+
+    A len()-based slice lets a CJK title occupy twice the columns it has
+    characters; once the line wraps, every later \\r redraw repaints only the
+    last physical line and the screen above turns to residue.
+    """
+
     def test_cjk_title_cannot_wrap_the_progress_line(self):
         from zotero_mcp.semantic_search import _clip_to_width, _display_cols
 

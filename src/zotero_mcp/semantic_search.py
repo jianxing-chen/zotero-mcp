@@ -133,7 +133,7 @@ def _clip_to_width(line: str, max_cols: int) -> str:
     """Truncate a single-line progress string to ``max_cols`` display columns.
 
     A len()-based slice lets a CJK title wrap the terminal (57 chars ≈ 114
-    columns), and once a ``\\r`` line wraps, every later redraw repaints only
+    columns), and once a ``\r`` line wraps, every later redraw repaints only
     the last physical line — the residue above it is the garbled progress
     output users see.
     """
