@@ -35,6 +35,7 @@ from zotero_mcp.html_metadata import (
     EmbeddedMetadata,
     extract_embedded_metadata,
 )
+from zotero_mcp.identifiers import doi_match_key, metadata_match_keys
 from zotero_mcp.tools import _helpers
 
 logger = logging.getLogger(__name__)
@@ -1015,6 +1016,21 @@ def batch_update(
             "remove_tags, set_keys, and/or remove_keys."
         )
 
+    # Resolve a query/tag selection once and hand both halves the same keys.
+    # Searching again for the Extra half would run after the tag half has
+    # already edited tags, so tag='to-read' + remove_tags=['to-read'] found
+    # nothing and the Extra edits were silently dropped.
+    if tag_action and extra_action and not item_keys:
+        try:
+            item_keys = _search_item_keys(
+                _client.get_zotero_client(), query, _normalize_tag_selector(tag),
+                _helpers._normalize_limit(limit, default=50),
+            )
+        except Exception as e:
+            return f"Error selecting items: {_helpers.format_zotero_error(e)}"
+        if not item_keys:
+            return "No items found matching the given query/tag filters"
+
     reports = []
     if tag_action:
         reports.append(batch_update_tags(
@@ -1034,7 +1050,8 @@ def batch_update(
     description=(
         "Create a new collection (project/folder) in your Zotero library. "
         "To create a subcollection, pass parent_collection (not parent_key) as either "
-        "a collection key (8-character string like 'KMMQDFQ4') or a collection name. "
+        "a collection key (8-character string like 'KMMQDFQ4'), a collection name, "
+        "or a 'Parent/Child' path when the name is shared. "
         "Use zotero_search_collections to find collection keys."
     ),
 )
@@ -1048,11 +1065,12 @@ def create_collection(name: str, parent_collection: str | None = None, *, ctx: C
     try:
         ctx.info(f"Creating collection '{name}'")
 
-        # Resolve parent_collection name if it doesn't look like a key
-        parent_key = parent_collection
-        if parent_collection and not re.match(r"^[A-Z0-9]{8}$", parent_collection):
+        # A key, name or 'parent/child' path. A name shared by several
+        # collections is an error listing them, not the first match.
+        parent_key = None
+        if parent_collection:
             try:
-                keys = _helpers._resolve_collection_names(read_zot, [parent_collection], ctx=ctx)
+                keys = _helpers.resolve_collection_specs(read_zot, [parent_collection], ctx=ctx)
                 parent_key = keys[0] if keys else None
             except ValueError as e:
                 return f"Error resolving parent collection: {_helpers.format_zotero_error(e)}"
@@ -1121,7 +1139,7 @@ def delete_collection(collection_key: str, *, ctx: Context) -> str:
         "Rename a collection or move it under a different parent, keeping its "
         "key, subcollections and item membership (#517). collection_key: the "
         "8-character key of the collection to change. name: the new name, or "
-        "omit to keep it. parent_collection: key or name of the new parent; "
+        "omit to keep it. parent_collection: key, name or 'Parent/Child' path of the new parent; "
         "a collection cannot be moved under itself or one of its own "
         "subcollections. to_top_level=True moves it out of any parent. Pass "
         "at least one change. Use zotero_search_collections to find keys. "
@@ -1168,15 +1186,15 @@ def update_collection(
             changes.append(f"renamed to \"{name}\"")
 
         if parent_collection:
-            parent_key = parent_collection
-            if not re.match(r"^[A-Z0-9]{8}$", parent_collection):
-                try:
-                    keys = _helpers._resolve_collection_names(read_zot, [parent_collection], ctx=ctx)
-                except ValueError as e:
-                    return f"Error resolving parent collection: {_helpers.format_zotero_error(e)}"
-                parent_key = keys[0] if keys else None
-                if not parent_key:
-                    return f"Error: parent collection not found: {parent_collection}"
+            # A key, name or 'parent/child' path; an ambiguous name is an
+            # error listing the candidates, not the first match.
+            try:
+                keys = _helpers.resolve_collection_specs(read_zot, [parent_collection], ctx=ctx)
+            except ValueError as e:
+                return f"Error resolving parent collection: {_helpers.format_zotero_error(e)}"
+            parent_key = keys[0] if keys else None
+            if not parent_key:
+                return f"Error: parent collection not found: {parent_collection}"
             # Zotero accepts a parent that is the collection itself or one of
             # its descendants and the tree then disappears from the desktop
             # client, so refuse the cycle here.
@@ -1532,9 +1550,12 @@ def _crossref_to_item_data(cr: dict, normalized: str, template_fn,
         "ISSN": (cr.get("ISSN") or [""])[0],
     }
 
+    # A chapter's container is bookTitle and a conference paper's is
+    # proceedingsTitle; neither template has publicationTitle.
     container = (cr.get("container-title") or [""])[0]
-    if container:
-        field_map["publicationTitle"] = container
+    container_field = _citation_import._pick_container_field(zot_type, item_data)
+    if container and container_field:
+        field_map[container_field] = container
 
     abstract = _utils.clean_html(cr.get("abstract", ""), collapse_whitespace=True)
     if abstract:
@@ -2731,9 +2752,7 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto
             with tempfile.TemporaryDirectory() as tmpdir:
                 filename = f"arxiv_{arxiv_id.replace('/', '_')}.pdf"
                 filepath = os.path.join(tmpdir, filename)
-                with open(filepath, "wb") as f:
-                    for chunk in pdf_resp.iter_content(chunk_size=8192):
-                        f.write(chunk)
+                _helpers._stream_pdf_download(pdf_resp, filepath)
                 webdav_suffix = _helpers._webdav_first_attach(
                     write_zot,
                     filename,
@@ -3287,11 +3306,15 @@ def update_item(
 
         # Handle item_type migration first so subsequent field updates are
         # validated against the NEW type's schema. Reshape by merging old
-        # data into the new type's template: overlapping typed fields are
-        # preserved; type-specific fields not present in the new template
-        # are dropped; internal bookkeeping fields (key, version, tags,
-        # collections, relations, creators, dateAdded, dateModified) are
-        # always preserved regardless of type.
+        # data into the new type's template: fields the new type shares by
+        # name are preserved; a type-specific field the new type names
+        # differently is carried over to its counterpart through the shared
+        # Zotero base field (publicationTitle -> proceedingsTitle) unless
+        # that target is already filled; fields with no counterpart on the
+        # new type are dropped; internal bookkeeping fields (key, version,
+        # tags, collections, relations, creators, dateAdded, dateModified)
+        # are always preserved regardless of type.
+        carried: list[tuple[str, str]] = []
         if item_type is not None:
             old_item_type = data.get("itemType", "")
             if old_item_type != item_type:
@@ -3314,6 +3337,19 @@ def update_item(
                 for k, v in data.items():
                     if k in preserved or k in new_template:
                         reshaped[k] = v
+                # Carry type-specific fields across through their shared base
+                # field (publicationTitle -> proceedingsTitle, websiteTitle ->
+                # blogTitle, ...) the way Zotero desktop does on a type change,
+                # instead of dropping the value.
+                new_fields = set(new_template) | _schema.valid_fields(item_type)
+                for k, v in data.items():
+                    if k in reshaped or v in ("", None):
+                        continue
+                    base = _schema.base_field_of(old_item_type, k)
+                    target = _schema.resolve_field(item_type, base)
+                    if target in new_fields and not reshaped.get(target):
+                        reshaped[target] = v
+                        carried.append((k, target))
                 reshaped["itemType"] = item_type
                 data = reshaped
                 item["data"] = data
@@ -3370,16 +3406,17 @@ def update_item(
             data["tags"] = [{"tag": t} for t in tag_list]
             changes.append(f"- **tags**: replaced with {tag_list}")
         elif add_tags is not None or remove_tags is not None:
-            existing = {t["tag"] for t in data.get("tags", [])}
+            to_add = _helpers._normalize_str_list_input(add_tags, "add_tags")
+            to_remove = set(_helpers._normalize_str_list_input(remove_tags, "remove_tags"))
+            # Existing tag dicts are kept verbatim so automatic (type 1)
+            # tags stay automatic.
+            data["tags"] = _helpers._apply_tag_changes(
+                data.get("tags", []), [{"tag": t} for t in to_add], to_remove
+            )
             if add_tags is not None:
-                to_add = _helpers._normalize_str_list_input(add_tags, "add_tags")
-                existing.update(to_add)
                 changes.append(f"- **tags**: added {to_add}")
             if remove_tags is not None:
-                to_remove = set(_helpers._normalize_str_list_input(remove_tags, "remove_tags"))
-                existing -= to_remove
                 changes.append(f"- **tags**: removed {list(to_remove)}")
-            data["tags"] = [{"tag": t} for t in sorted(existing)]
 
         # Collections — REPLACE membership (matches tags semantics and the
         # docstring contract). For incremental moves use
@@ -3438,7 +3475,14 @@ def update_item(
                 )
             else:
                 headline = f"Successfully updated item `{item_key}`:"
-            return f"{headline}\n\n" + "\n".join(changes) + skip_warning
+            carried_note = ""
+            if carried:
+                moves = ", ".join(f"{a} -> {b}" for a, b in carried)
+                carried_note = f"\n\nCarried over to the new type: {moves}"
+            return (
+                f"{headline}\n\n" + "\n".join(changes) + carried_note
+                + skip_warning
+            )
         return "Failed to update item: write operation returned failure"
 
     except ValueError as e:
@@ -3528,17 +3572,6 @@ _DUP_SCAN_MAX_ITEMS = 5000
 _DUP_GROUP_MAX_LIMIT = 500
 
 
-def _normalize_dup_title(title: str | None) -> str:
-    """Lowercase, strip punctuation and a leading article, collapse spaces."""
-    t = (title or "").lower().strip()
-    t = re.sub(r'[^\w\s]', '', t)
-    t = re.sub(r'\s+', ' ', t).strip()
-    for article in ("a ", "an ", "the "):
-        if t.startswith(article):
-            t = t[len(article):]
-    return t
-
-
 def _collect_duplicate_groups(zot, method, collection_key=None):
     """Group the active library's items into duplicate candidates.
 
@@ -3547,6 +3580,13 @@ def _collect_duplicate_groups(zot, method, collection_key=None):
     with two or more items, in sorted key order so that paging over it is
     stable across calls. ``error`` is a message to hand straight back to the
     caller (library too large), in which case ``groups`` is empty.
+
+    The keys themselves come from ``identifiers.metadata_match_keys``, which
+    is also what ``find_existing_items`` and the semantic-search work-level
+    filter use (#496); this function's only policy is which kinds of key
+    ``method`` admits. Canonicalising there rather than here is what makes
+    ``10.1000/ABC``, ``https://doi.org/10.1000/abc`` and ``doi:10.1000/abc.``
+    one group, and what stops a DOI field holding ``n/a`` from forming one.
 
     Both zotero_find_duplicates and zotero_merge_duplicates(auto=True) go
     through here, so "merge everything that qualifies" and "show me what
@@ -3575,24 +3615,16 @@ def _collect_duplicate_groups(zot, method, collection_key=None):
             "Please scope by collection_key to reduce the search."
         )
 
+    wanted = {"doi", "title"} if method == "both" else {method}
+
     groups: dict[str, list] = {}
     for item in items:
         data = item.get("data", {})
         if data.get("itemType") in ("attachment", "note", "annotation"):
             continue
 
-        keys_to_check = []
-        if method in ("title", "both"):
-            nt = _normalize_dup_title(data.get("title", ""))
-            if nt:
-                keys_to_check.append(("title", nt))
-        if method in ("doi", "both"):
-            doi_val = (data.get("DOI") or "").strip().lower()
-            if doi_val:
-                keys_to_check.append(("doi", doi_val))
-
-        for group_type, group_key in keys_to_check:
-            groups.setdefault(f"{group_type}:{group_key}", []).append(item)
+        for kind, value in metadata_match_keys(item, kinds=wanted):
+            groups.setdefault(f"{kind}:{value}", []).append(item)
 
     return {k: v for k, v in sorted(groups.items()) if len(v) >= 2}, None
 
@@ -3747,14 +3779,41 @@ def _render_skipped(skipped: list[tuple], heading: str) -> list[str]:
     return lines
 
 
-def _attachment_sig(data: dict) -> tuple:
-    """Identity of an attachment for "the keeper already has this one" checks."""
+def _attachment_sig(data: dict) -> tuple | None:
+    """Identity of an attachment for "the keeper already has this one" checks.
+
+    Returns None when the attachment carries nothing that identifies its
+    content (no md5, path or url), e.g. linked-file PDFs, which have no
+    filename or md5. Such attachments must never be treated as duplicates,
+    or a distinct file is left on the duplicate and trashed with it.
+    """
+    if not (data.get("md5") or data.get("path") or data.get("url")):
+        return None
     return (
+        data.get("linkMode", ""),
         data.get("contentType", ""),
         data.get("filename", ""),
         data.get("md5", ""),
+        data.get("path", ""),
         data.get("url", ""),
     )
+
+
+def _has_children(write_zot, item_key: str) -> bool:
+    """Whether an attachment has children (annotations, an embedded note).
+
+    Annotations are asked for by type: Zotero's local API leaves them out of
+    a plain children listing. An unanswerable check counts as "has children":
+    the caller then moves the attachment instead of trashing it, which can
+    never lose anything.
+    """
+    try:
+        return bool(
+            write_zot.children(item_key, limit=1)
+            or write_zot.children(item_key, itemType="annotation", limit=1)
+        )
+    except Exception:
+        return True
 
 
 def _keeper_rank(entry: dict) -> tuple:
@@ -3810,9 +3869,19 @@ def _merge_plan(write_zot, keeper_key: str, dup_keys: list[str]) -> dict:
     all_collections = set(keeper_data.get("collections", []))
     total_children_to_move = 0
 
+    # One tag object per name from the duplicates, so a tag copied to the
+    # keeper keeps its type. If the duplicates disagree, manual (type 0) wins:
+    # "Delete Automatic Tags" never removes a manual tag.
+    dup_tag_objects: dict[str, dict] = {}
     for dup in duplicates:
         dup_data = dup["item"].get("data", {})
-        all_tags.update(t.get("tag", "") for t in dup_data.get("tags", []))
+        for t in dup_data.get("tags", []):
+            name = t.get("tag", "")
+            all_tags.add(name)
+            if t.get("type"):
+                dup_tag_objects.setdefault(name, {"tag": name, "type": t["type"]})
+            else:
+                dup_tag_objects[name] = {"tag": name}
         all_collections.update(dup_data.get("collections", []))
         total_children_to_move += len(dup["children"])
 
@@ -3823,13 +3892,19 @@ def _merge_plan(write_zot, keeper_key: str, dup_keys: list[str]) -> dict:
         for kc in keeper_children
         if kc.get("data", {}).get("itemType") == "attachment"
     }
-    skipped_attachment_count = sum(
-        1
+    keeper_attachment_sigs.discard(None)
+    # A copy of a file the keeper already has is left on the duplicate and
+    # trashed with it, unless it carries annotations or a note of its own:
+    # those live on that copy, not on the keeper's, so it moves instead.
+    skip_attachment_keys = {
+        child.get("key")
         for dup in duplicates
         for child in dup["children"]
         if child.get("data", {}).get("itemType") == "attachment"
         and _attachment_sig(child.get("data", {})) in keeper_attachment_sigs
-    )
+        and not _has_children(write_zot, child.get("key"))
+    }
+    skipped_attachment_count = len(skip_attachment_keys)
 
     return {
         "keeper_key": keeper_key,
@@ -3839,10 +3914,12 @@ def _merge_plan(write_zot, keeper_key: str, dup_keys: list[str]) -> dict:
         "dup_keys": list(dup_keys),
         "all_tags": all_tags,
         "new_tags": all_tags - keeper_tags,
+        "dup_tag_objects": dup_tag_objects,
         "new_collections": all_collections - set(keeper_data.get("collections", [])),
         "children_to_move": total_children_to_move - skipped_attachment_count,
         "skipped_attachment_count": skipped_attachment_count,
         "keeper_attachment_sigs": keeper_attachment_sigs,
+        "skip_attachment_keys": skip_attachment_keys,
     }
 
 
@@ -3883,8 +3960,11 @@ def _execute_merge(write_zot, plan: dict, ctx) -> dict:
 
     if plan["new_tags"]:
         keeper_data = keeper.get("data", {})
-        existing_tags = [t.get("tag", "") for t in keeper_data.get("tags", [])]
-        keeper_data["tags"] = [{"tag": t} for t in sorted(set(existing_tags) | plan["all_tags"])]
+        # Keep the keeper's tag dicts verbatim (automatic tags stay type 1).
+        keeper_data["tags"] = _helpers._apply_tag_changes(
+            keeper_data.get("tags", []),
+            [plan["dup_tag_objects"].get(t, {"tag": t}) for t in sorted(plan["new_tags"])],
+        )
         _helpers._strip_unwritable_fields(keeper)
         resp = write_zot.update_item(keeper)
         if not _helpers._handle_write_response(resp, ctx):
@@ -3905,8 +3985,9 @@ def _execute_merge(write_zot, plan: dict, ctx) -> dict:
                 fresh_child = write_zot.item(child_key)
                 child_data = fresh_child.get("data", {})
                 if (
-                    child_data.get("itemType") == "attachment"
+                    child_key in plan["skip_attachment_keys"]
                     and _attachment_sig(child_data) in plan["keeper_attachment_sigs"]
+                    and not _has_children(write_zot, child_key)
                 ):
                     result["skipped_dupes"].append(child_key)
                     continue
@@ -3972,8 +4053,11 @@ def _auto_merge_groups(read_zot, write_zot, method, collection_key, max_groups):
             skipped.append((group_key, keys, f"mixed item types ({types})"))
             continue
 
-        dois = {(i.get("data", {}).get("DOI") or "").strip().lower() for i in group_items}
-        dois.discard("")
+        dois = {
+            doi_match_key(raw) or raw.lower()
+            for i in group_items
+            if (raw := (i.get("data", {}).get("DOI") or "").strip())
+        }
         if len(dois) > 1:
             skipped.append((group_key, keys, "members carry different DOIs"))
             continue
@@ -5059,9 +5143,10 @@ def _attach_from_url(write_zot, item_key, url, filename, ctx):
 
     with tempfile.TemporaryDirectory() as tmpdir:
         filepath = os.path.join(tmpdir, filename)
-        with open(filepath, "wb") as f:
-            for chunk in resp.iter_content(chunk_size=8192):
-                f.write(chunk)
+        try:
+            _helpers._stream_pdf_download(resp, filepath)
+        except _helpers.PdfDownloadError as e:
+            return f"Error: {e}."
         if os.path.getsize(filepath) < 1000:
             return (
                 "Error: Downloaded file is under 1 KB — likely an error "

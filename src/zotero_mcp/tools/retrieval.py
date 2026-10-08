@@ -42,6 +42,11 @@ def _fulltext_display_max_pages() -> int:
     return DEFAULT_FULLTEXT_DISPLAY_MAX if configured is None else configured
 
 
+def _fulltext_error(metadata: str, detail: str) -> str:
+    """Return a fulltext failure with an error marker before the metadata."""
+    return f"Error: {detail}\n\n---\n\n{metadata}"
+
+
 def _fulltext_section_heading(
     truncated: bool, page_count: int | None, max_pages: int, item_key: str
 ) -> tuple[str, str]:
@@ -229,6 +234,7 @@ def get_item_fulltext(item_key: str, *, ctx: Context) -> str:
                     db_path=zotero_db_path,
                     pdf_max_pages=max_pages,
                     attachment_priority=config.semantic_search.extraction.attachment_priority,
+                    reuse_pdf_parse=True,
                 ) as reader:
                     local_item = reader.get_item_by_key(item_key)
                     if local_item:
@@ -293,36 +299,33 @@ def get_item_fulltext(item_key: str, *, ctx: Context) -> str:
                     # page bookkeeping and not only its text (#448).
                     doc = extract_file(download.path, max_pages=max_pages)
                     if doc is None:
-                        heading, notice = "## Full Text", ""
-                        converted_text = f"Error converting file to markdown: {download.path.name}"
-                    else:
-                        heading, notice = _fulltext_section_heading(
-                            doc.truncated, doc.page_count, max_pages, item_key
+                        return _fulltext_error(
+                            metadata,
+                            f"converting file to markdown: {download.path.name}",
                         )
-                        converted_text = doc.text
-                    body = "\n\n".join(
-                        part for part in (heading, notice, converted_text) if part
+                    heading, notice = _fulltext_section_heading(
+                        doc.truncated, doc.page_count, max_pages, item_key
                     )
+                    body = "\n\n".join(part for part in (heading, notice, doc.text) if part)
                     return _helpers._prepend_size_warning(
                         f"{metadata}\n\n---\n\n{body}",
                         "Consider using zotero_semantic_search to find specific content instead of reading full papers."
                     )
 
                 error_details = "\n".join(f"  - {err}" for err in download.errors) or "  - No download source succeeded"
-                return (
-                    f"{metadata}\n\n---\n\nFile download failed.\n\n"
+                return _fulltext_error(
+                    metadata,
+                    "File download failed.\n\n"
                     f"Attempted sources:\n{error_details}\n\n"
                     "For WebDAV-backed attachments, configure "
-                    "ZOTERO_WEBDAV_URL / ZOTERO_WEBDAV_USERNAME / ZOTERO_WEBDAV_PASSWORD."
+                    "ZOTERO_WEBDAV_URL / ZOTERO_WEBDAV_USERNAME / ZOTERO_WEBDAV_PASSWORD.",
                 )
         except Exception as download_error:
             ctx.error(f"Error downloading/converting file: {str(download_error)}")
+            detail = f"accessing attachment: {str(download_error)}"
             if local_extract_error_msg:
-                return (
-                    f"{metadata}\n\n---\n\nError accessing attachment: {str(download_error)}\n\n"
-                    f"Local extraction fallback error: {local_extract_error_msg}"
-                )
-            return f"{metadata}\n\n---\n\nError accessing attachment: {str(download_error)}"
+                detail += f"\n\nLocal extraction fallback error: {local_extract_error_msg}"
+            return _fulltext_error(metadata, detail)
 
     except Exception as e:
         ctx.error(f"Error fetching item full text: {str(e)}")
@@ -1144,7 +1147,7 @@ def get_tags(limit: int | str | None = None, *, ctx: Context) -> str:
     name="zotero_list_libraries",
     description=(
         "List every Zotero library this MCP can address: the user's "
-        "personal library (libraryID=1 conventionally), all group "
+        "personal library (switch to it with library_type='user'), all group "
         "libraries the user is a member of (with groupID), and (in "
         "local mode) RSS feed libraries. Each entry shows the "
         "library/group ID, display name, and item count. "
@@ -1199,7 +1202,11 @@ def list_libraries(*, ctx: Context) -> str:
                 if user_libs:
                     output.append("## User Library")
                     for lib in user_libs:
-                        output.append(f"- **My Library** — {lib['itemCount']} items (libraryID={lib['libraryID']})")
+                        output.append(
+                            f"- **My Library** — {lib['itemCount']} items "
+                            f"(libraryID={lib['libraryID']}; switch with "
+                            f"library_type='user')"
+                        )
                     output.append("")
 
                 # Group libraries
@@ -1254,6 +1261,12 @@ def list_libraries(*, ctx: Context) -> str:
         return f"Error listing libraries: {str(e)}"
 
 
+#: Closing sentence of a successful ``switch_library``. Right for the MCP
+#: server, whose process keeps the switch; zotero-cli replaces it (each command
+#: is a new process), so it lives here for both to use.
+SWITCH_SUCCESS_NOTE = "All tools now operate on this library."
+
+
 @mcp.tool(
     name="zotero_switch_library",
     description=(
@@ -1265,7 +1278,7 @@ def list_libraries(*, ctx: Context) -> str:
         "first; don't guess. "
         "library_id: library ID string as returned by "
         "zotero_list_libraries (numeric for user/group, numeric for "
-        "feeds). "
+        "feeds); for the personal library 'user' or '0' also work. "
         "library_type: 'user' — the personal library; 'group' (default) "
         "— a group library; 'feeds' — a local RSS feed library; "
         "'default' — RESET to whatever the ZOTERO_LIBRARY_ID / "
@@ -1278,6 +1291,7 @@ def list_libraries(*, ctx: Context) -> str:
         "library_id='', library_type='default')."
     ),
 )
+
 @with_zotero_api_lock
 def switch_library(
     library_id: str,
@@ -1290,7 +1304,8 @@ def switch_library(
 
     Args:
         library_id: The library/group ID to switch to.
-            For user library: "0" (local mode) or your user ID (web mode).
+            For user library: "0" or "user"; in local mode also the
+            libraryID zotero_list_libraries shows; in web mode your user ID.
             For group libraries: the groupID (e.g. "6069773").
         library_type: "user", "group", or "default" to reset to env var defaults.
         ctx: MCP context
@@ -1310,7 +1325,24 @@ def switch_library(
 
         error = validate_library_switch(library_id, library_type)
         if error:
-            return error
+            # Leads with "Error" like every other refusal, which is what the
+            # CLI looks for to turn it into a failed envelope (#595).
+            return f"Error: {error}"
+
+        if library_type == "user":
+            # #603: "user", "0" and (local mode) the SQLite libraryID that
+            # zotero_list_libraries shows all name the one personal library.
+            local = os.getenv("ZOTERO_LOCAL", "").lower() in ["true", "yes", "1"]
+            if local:
+                library_id = "0"
+            elif (
+                library_id in ("user", "0", "")
+                and os.getenv("ZOTERO_LIBRARY_ID")
+                and (os.getenv("ZOTERO_LIBRARY_TYPE") or "user").strip().lower() != "group"
+            ):
+                # With a group configured, ZOTERO_LIBRARY_ID is a groupID,
+                # not the user's id, so there is nothing to map to.
+                library_id = os.getenv("ZOTERO_LIBRARY_ID")
 
         _client.set_active_library(library_id, library_type)
         ctx.info(f"Switched to library {library_id} (type={library_type})")
@@ -1326,7 +1358,7 @@ def switch_library(
         if _library.get_library_backend().name == "sqlite":
             return (
                 f"Successfully switched to library **{library_id}** "
-                f"(type={library_type}). All tools now operate on this library."
+                f"(type={library_type}). {SWITCH_SUCCESS_NOTE}"
             )
         try:
             zot = _client.get_zotero_client()
@@ -1334,7 +1366,7 @@ def switch_library(
             zot.items()
             return (
                 f"Successfully switched to library **{library_id}** "
-                f"(type={library_type}). All tools now operate on this library."
+                f"(type={library_type}). {SWITCH_SUCCESS_NOTE}"
             )
         except Exception as e:
             # Roll back on failure
@@ -1380,10 +1412,15 @@ def validate_library_switch(library_id: str, library_type: str) -> str | None:
                     # serving reads, so the check has to live here instead.
                     # A local database holds exactly one personal library,
                     # addressed as "0" by convention (see get_zotero_client).
-                    if library_id not in ("0", "", None):
+                    # zotero_list_libraries shows its SQLite libraryID, so
+                    # accept that too (#603).
+                    valid_ids = {"0", "", "user"} | {
+                        str(library["libraryID"]) for library in libraries if library["type"] == "user"
+                    }
+                    if library_id not in valid_ids:
                         return (
                             f"Personal library id '{library_id}' is not addressable "
-                            f"in local mode. Use '0', or switch to a group with "
+                            f"in local mode. Use '0' or 'user', or switch to a group with "
                             f"library_type='group'."
                         )
                 elif library_type == "feed":
@@ -1429,7 +1466,7 @@ def list_feeds(*, ctx: Context) -> str:
     try:
         local = os.getenv("ZOTERO_LOCAL", "").lower() in ["true", "yes", "1"]
         if not local:
-            return "RSS feeds are only accessible in local mode (ZOTERO_LOCAL=true)."
+            return "Error: RSS feeds are only accessible in local mode (ZOTERO_LOCAL=true)."
 
         ctx.info("Listing RSS feeds")
         from zotero_mcp.local_db import LocalZoteroReader
@@ -1500,7 +1537,7 @@ def get_feed_items(
     try:
         local = os.getenv("ZOTERO_LOCAL", "").lower() in ["true", "yes", "1"]
         if not local:
-            return "RSS feed items are only accessible in local mode (ZOTERO_LOCAL=true)."
+            return "Error: RSS feed items are only accessible in local mode (ZOTERO_LOCAL=true)."
 
         ctx.info(f"Fetching items from feed (libraryID={library_id})")
         from zotero_mcp.local_db import LocalZoteroReader

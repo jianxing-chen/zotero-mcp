@@ -11,6 +11,7 @@ import re
 import socket
 import tempfile
 import threading
+import time
 from ipaddress import ip_address
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
@@ -38,8 +39,16 @@ from zotero_mcp import client as _client
 # Sci-Hub is globally disabled — no longer wired into the PDF cascade.
 # The scihub_client module is kept for reference but not imported here.
 from zotero_mcp import utils as _utils
-from zotero_mcp.identifiers import normalize_doi
-from zotero_mcp.local_db import get_local_zotero_reader
+from zotero_mcp.identifiers import (
+    TITLE_TAG_RE,
+    arxiv_identity,
+    doi_match_key,
+    isbn_match_keys,
+    normalize_arxiv_id,
+    normalize_doi,
+    normalize_isbn,
+)
+from zotero_mcp.local_db import get_local_zotero_reader, note_local_write
 from zotero_mcp.utils import _paginate
 
 
@@ -205,6 +214,10 @@ def resolve_write_client(ctx=None, *, op_description: str = "write operations"):
     writing to the other is precisely the mismatch that forces hybrid mode to
     re-fetch every item before touching it.
     """
+    # Every write resolves its client here first. Lift the WAL-snapshot copy
+    # throttle so the next local read sees this write instead of a copy taken
+    # just before it landed (local_db._wal_snapshot_path).
+    note_local_write()
     if not _utils.is_local_mode():
         zot = _client.get_zotero_client()
         return zot, zot, "web"
@@ -872,6 +885,27 @@ def _normalize_str_list_input(value, field_name="value"):
     raise ValueError(f"{field_name} must be a list of strings or a string")
 
 
+def _apply_tag_changes(existing, add=None, remove=None):
+    """Return a new tag list: *existing* kept verbatim (incl. ``type``),
+    names in *remove* dropped, and *add* tags not already present appended.
+
+    *add* is a list of tag dicts (``{"tag": name}``, optionally with
+    ``type``); *remove* an iterable of names. Never rebuilds existing tags from their names,
+    which would silently turn automatic (type 1) tags into manual ones.
+    """
+    remove_set = set(remove or ())
+    result = [
+        dict(t) for t in (existing or [])
+        if isinstance(t, dict) and t.get("tag") not in remove_set
+    ]
+    present = {t.get("tag") for t in result}
+    for t in add or ():
+        if t["tag"] not in present and t["tag"] not in remove_set:
+            result.append(dict(t))
+            present.add(t["tag"])
+    return result
+
+
 def _normalize_tag_filter(value):
     """Normalize a tag-filter argument into a list[str] for pyzotero.
 
@@ -1179,14 +1213,6 @@ def _create_collection_path(write_zot, paths, spec, ctx=None) -> str:
     return parent_key
 
 
-#: A tag, as far as a search query is concerned: '<' or '</' followed
-#: directly by a letter. Not ``clean_html``'s '<.*?>': CrossRef titles reach
-#: us entity-decoded (``utils.repair_crossref_string``), so a title about
-#: '&lt;10 Hz' arrives with a bare '<', and '<.*?>' would read everything up
-#: to the next '>' as one tag and delete the words in between.
-_TITLE_TAG_RE = re.compile(r"</?[A-Za-z][^<>]*>")
-
-
 def _title_search_query(title):
     """Reduce a freshly-fetched title to something quick search can match.
 
@@ -1229,7 +1255,7 @@ def _title_search_query(title):
     # Strip tags before resolving entities: an escaped '&lt;i&gt;' is
     # literal text in a title and must survive, which it would not if
     # unescaping ran first and handed a real tag to the tag stripper.
-    cleaned = _html.unescape(_TITLE_TAG_RE.sub(" ", str(title)))
+    cleaned = _html.unescape(TITLE_TAG_RE.sub(" ", str(title)))
     return " ".join(cleaned.split()) or None
 
 
@@ -1281,15 +1307,25 @@ def find_existing_items(zot, *, doi=None, arxiv_id=None, isbn=None, url=None,
     """
     if doi:
         query = doi
-
+        # doi_match_key case-folds both sides so a stored DOI in a different
+        # case (Zotero preserves whatever case an item arrived with; DOIs are
+        # case-insensitive for resolution) still matches. The ``or
+        # doi.lower()`` fallback does not widen anything — a malformed `doi`
+        # matches no stored DOI with it or without it. Its job is to keep
+        # ``want`` from being None, which is what a malformed `doi` would
+        # otherwise leave it as: every candidate whose DOI field is empty or
+        # equally unparseable keys to None too, so the comparison below would
+        # report unrelated items as the existing copy, and an
+        # ``if_exists='update'`` add would overwrite one of them.
+        want = doi_match_key(doi) or doi.lower()
         def _matches(data):
-            return _normalize_doi(data.get("DOI") or "") == doi
+            return doi_match_key(data.get("DOI")) == want
     elif arxiv_id:
         # Compare on the version-independent identity, and search on it too:
         # quick-search is a substring match, so the bare id finds a stored
         # 'arXiv:2401.00001v2' while the versioned form would miss a stored
         # bare one.
-        ident = _arxiv_identity(arxiv_id) or arxiv_id
+        ident = arxiv_identity(arxiv_id) or arxiv_id
         query = ident
         def _matches(data):
             # Zotero stores an arXiv identity in up to four places depending
@@ -1297,20 +1333,14 @@ def find_existing_items(zot, *, doi=None, arxiv_id=None, isbn=None, url=None,
             # Checking only url+extra misses connector- and DOI-sourced items,
             # which is how a re-add duplicates a paper already in the library.
             for field in ("url", "archiveID", "DOI"):
-                if _arxiv_identity(data.get(field) or "") == ident:
+                if arxiv_identity(data.get(field) or "") == ident:
                     return True
             return f"arxiv:{ident}".lower() in (data.get("extra") or "").lower()
     elif isbn:
         query = isbn
 
         def _matches(data):
-            # Zotero's ISBN field may hold several space-separated values,
-            # in 10- or 13-digit form; compare each normalized to ISBN-13.
-            raw = data.get("ISBN") or ""
-            for token in re.split(r"[,;\s]+", raw):
-                if token and _normalize_isbn(token) == isbn:
-                    return True
-            return False
+            return isbn in isbn_match_keys(data.get("ISBN"))
     elif url:
         query = url
 
@@ -1510,119 +1540,12 @@ def identifier_lock(kind, raw):
                     del _identifier_locks[key]
 
 
-def _normalize_isbn(raw):
-    """Normalize an ISBN string and validate the checksum.
-
-    Accepts ISBN-10, ISBN-13, and prefixed/URL forms (isbn:, https://isbndb.com/...).
-    Strips hyphens, spaces, and any prefix. Returns the canonical digits-only
-    form (13-digit preferred — ISBN-10 inputs are converted to ISBN-13).
-    Returns None on invalid input or failing checksum.
-    """
-    if not raw:
-        return None
-    s = str(raw).strip()
-    if s.lower().startswith("isbn:"):
-        s = s[5:].strip()
-    if s.lower().startswith("isbn-") or s.lower().startswith("isbn "):
-        s = s[5:].strip()
-    if s.lower().startswith("http://") or s.lower().startswith("https://"):
-        m = re.search(r"/(97[89][\- ]?\d[\- ]?\d{3}[\- ]?\d{5}[\- ]?\d|\d{9}[\dX])", s, flags=re.IGNORECASE)
-        if not m:
-            return None
-        s = m.group(1)
-    digits = re.sub(r"[\s\-]", "", s)
-    if re.match(r"^\d{9}[\dXx]$", digits):
-        if not _isbn10_checksum_valid(digits):
-            return None
-        return _isbn10_to_isbn13(digits)
-    if re.match(r"^97[89]\d{10}$", digits):
-        if not _isbn13_checksum_valid(digits):
-            return None
-        return digits
-    return None
-
-
-def _isbn10_checksum_valid(s):
-    total = 0
-    for i, ch in enumerate(s):
-        v = 10 if ch in ("X", "x") else int(ch)
-        total += v * (10 - i)
-    return total % 11 == 0
-
-
-def _isbn13_checksum_valid(s):
-    total = 0
-    for i, ch in enumerate(s):
-        v = int(ch)
-        total += v if i % 2 == 0 else v * 3
-    return total % 10 == 0
-
-
-def _isbn10_to_isbn13(isbn10):
-    core = "978" + isbn10[:9]
-    total = 0
-    for i, ch in enumerate(core):
-        total += int(ch) * (1 if i % 2 == 0 else 3)
-    check = (10 - total % 10) % 10
-    return core + str(check)
-
-
-_ARXIV_LEGACY_RE = r"[a-z][a-z\-]*(?:\.[a-z][a-z\-]*)?/\d{7}(?:v\d+)?"
-
-
-def _normalize_arxiv_id(raw):
-    """Normalize an arXiv ID from various input formats."""
-    if not raw:
-        return None
-    s = raw.strip()
-    if s.lower().startswith("arxiv:"):
-        s = s[6:].strip()
-    if s.lower().startswith("http://") or s.lower().startswith("https://"):
-        m = re.search(
-            r"arxiv\.org/(?:abs|pdf)/([0-9]{4}\.[0-9]{4,5}(?:v\d+)?|"
-            + _ARXIV_LEGACY_RE + r")(?:\.pdf)?",
-            s, flags=re.IGNORECASE,
-        )
-        if not m:
-            return None
-        s = m.group(1)
-    if re.match(r"^[0-9]{4}\.[0-9]{4,5}(?:v\d+)?$", s):
-        return s
-    if re.match(rf"^{_ARXIV_LEGACY_RE}$", s, flags=re.IGNORECASE):
-        return s
-    return None
-
-
-# arXiv's DataCite DOIs are minted as 10.48550/arXiv.<id>, which is what
-# Zotero puts in the DOI field for a preprint imported from arXiv.
-_ARXIV_DOI_RE = re.compile(r"^(?:https?://(?:dx\.)?doi\.org/)?10\.48550/arxiv\.(.+)$",
-                           re.IGNORECASE)
-_ARXIV_VERSION_RE = re.compile(r"v\d+$", re.IGNORECASE)
-
-
-def _arxiv_identity(raw):
-    """The version-independent arXiv identity of an ID, URL, DOI or archiveID.
-
-    ``_normalize_arxiv_id`` deliberately keeps the ``v2`` suffix: callers use
-    its result to fetch a specific version from arXiv. Deduplication wants the
-    opposite — 2401.00001v1 and 2401.00001v2 are the same paper and must not
-    become two library items — so identity comparison goes through here
-    instead. This also accepts arXiv's DataCite DOI form, so an item added by
-    DOI is recognized by a later add of the same paper's arXiv ID.
-
-    Returns the bare, unversioned ID, or None if ``raw`` isn't an arXiv
-    identifier in any of those forms.
-    """
-    if not raw:
-        return None
-    s = str(raw).strip()
-    m = _ARXIV_DOI_RE.match(s)
-    if m:
-        s = m.group(1)
-    ident = _normalize_arxiv_id(s)
-    if not ident:
-        return None
-    return _ARXIV_VERSION_RE.sub("", ident)
+#: Compatibility aliases. The implementations moved to the public,
+#: stdlib-only :mod:`zotero_mcp.identifiers` so consumers can import them
+#: without pulling in the tool layer. Existing callers keep working.
+_normalize_isbn = normalize_isbn
+_normalize_arxiv_id = normalize_arxiv_id
+_arxiv_identity = arxiv_identity
 
 
 # ---------------------------------------------------------------------------
@@ -1631,6 +1554,57 @@ def _arxiv_identity(raw):
 
 _MAX_PDF_REDIRECTS = 5
 _REDIRECT_STATUSES = {301, 302, 303, 307, 308}
+
+#: Ceiling on one downloaded PDF. The URL comes from the caller or a
+#: third-party metadata API, and the download runs under the global API lock,
+#: so without a ceiling a huge or endless response fills the disk and keeps
+#: every other write tool waiting until it ends. Generous on purpose: scanned
+#: books run to a few hundred MB.
+_PDF_MAX_BYTES = 500 * 1024 * 1024
+#: Wall-clock ceiling on one download. ``requests``' timeout only bounds each
+#: read, so a server that sends a byte every few seconds never trips it. With
+#: the size cap in place this only has to catch a stalled server.
+_PDF_DOWNLOAD_DEADLINE = 300.0
+
+
+class PdfDownloadError(Exception):
+    """A PDF download was stopped for being too large or too slow."""
+
+
+def _stream_pdf_download(resp, filepath: str, deadline: float = _PDF_DOWNLOAD_DEADLINE) -> None:
+    """Write a streamed PDF response to ``filepath``.
+
+    Raises ``PdfDownloadError`` (after closing the response) once the body
+    passes the size ceiling or the download runs past ``deadline`` seconds.
+    The caller's temp directory removes the partial file.
+    """
+    max_bytes = _PDF_MAX_BYTES
+    limit_mb = max_bytes // (1024 * 1024)
+    try:
+        declared = int(resp.headers.get("Content-Length") or 0)
+    except (TypeError, ValueError):
+        declared = 0
+    if declared > max_bytes:
+        resp.close()
+        raise PdfDownloadError(
+            f"PDF is {declared // (1024 * 1024)} MB, over the {limit_mb} MB limit"
+        )
+    started = time.monotonic()
+    total = 0
+    with open(filepath, "wb") as f:
+        for chunk in resp.iter_content(chunk_size=65536):
+            total += len(chunk)
+            if total > max_bytes:
+                resp.close()
+                raise PdfDownloadError(
+                    f"PDF download passed the {limit_mb} MB limit"
+                )
+            if time.monotonic() - started > deadline:
+                resp.close()
+                raise PdfDownloadError(
+                    f"PDF download took longer than {int(deadline)} s"
+                )
+            f.write(chunk)
 
 
 def _url_resolves_to_public_host(url: str) -> bool:
@@ -1739,9 +1713,7 @@ def _download_and_attach_pdf(write_zot, item_key, pdf_url, doi, ctx):
             safe_doi = doi if doi else "article"
             filename = f"{safe_doi.replace('/', '_')}.pdf"
             filepath = os.path.join(tmpdir, filename)
-            with open(filepath, "wb") as f:
-                for chunk in pdf_resp.iter_content(chunk_size=8192):
-                    f.write(chunk)
+            _stream_pdf_download(pdf_resp, filepath)
 
             if os.path.getsize(filepath) < 1000:
                 ctx.info("Downloaded file too small, likely not a real PDF")
@@ -1928,6 +1900,16 @@ def _trash_pdf_attachments(write_zot, item_key, ctx, *, only_keys: set[str] | No
     return trashed
 
 
+def _is_group_client(write_zot) -> bool:
+    """True when *write_zot* writes to a group library.
+
+    Group libraries always store files in Zotero Storage; WebDAV can only be
+    configured for My Library. A configured WebDAV therefore never applies to
+    a group upload (#591).
+    """
+    return str(getattr(write_zot, "library_type", "") or "").startswith("group")
+
+
 def _maybe_upload_to_webdav(attach_result, file_path, ctx, write_zot=None):
     """Suffix to append to a user-facing 'file attached' message.
 
@@ -1951,7 +1933,7 @@ def _maybe_upload_to_webdav(attach_result, file_path, ctx, write_zot=None):
     """
     from zotero_mcp import webdav as _webdav
 
-    if getattr(write_zot, "local", False):
+    if getattr(write_zot, "local", False) or _is_group_client(write_zot):
         return ""
 
     if not _webdav.is_webdav_configured():
@@ -2037,7 +2019,7 @@ def _webdav_first_attach(write_zot, filename, file_path, parent_key, ctx, conten
     # which files them in its own storage and syncs them to WebDAV itself;
     # the workaround below is a web-API-only concern. See
     # ``_maybe_upload_to_webdav`` for the same reasoning on the other side.
-    if getattr(write_zot, "local", False):
+    if getattr(write_zot, "local", False) or _is_group_client(write_zot):
         return None
 
     if not _webdav.is_webdav_configured():

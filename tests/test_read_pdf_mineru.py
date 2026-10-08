@@ -86,7 +86,7 @@ def _patch_fallback_extract(monkeypatch, pages_text, total=None):
     def _count(_p):
         return n
 
-    def _extract(_p, *, pages=None, max_pages=None):
+    def _extract(_p, *, pages=None, max_pages=None, reuse=False):
         wanted = [p for p in (range(n) if pages is None else pages) if 0 <= p < n]
         texts = [pages_text[i % len(pages_text)] for i in wanted]
         return ExtractedDoc(

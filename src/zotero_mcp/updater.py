@@ -6,6 +6,7 @@ method and preserves all user configurations.
 """
 
 import logging
+import json
 import os
 import re
 import shutil
@@ -362,6 +363,19 @@ def is_newer_version(current: str, latest: str) -> bool:
         return as_tuple(latest_norm) > as_tuple(current_norm)
 
 
+def _chroma_dir() -> Path:
+    """The index directory the server uses: ``semantic_search.persist_directory`` or the default (#617)."""
+    from zotero_mcp.config import resolve_chroma_dir
+
+    configured = None
+    try:
+        cfg = json.loads((Path.home() / ".config" / "zotero-mcp" / "config.json").read_text())
+        configured = cfg.get("semantic_search", {}).get("persist_directory")
+    except (OSError, ValueError, AttributeError):
+        pass
+    return resolve_chroma_dir(configured)
+
+
 def backup_configurations() -> Path:
     """
     Backup current configurations before update.
@@ -395,7 +409,7 @@ def backup_configurations() -> Path:
             logger.warning(f"Could not backup semantic search config: {e}")
 
     # Backup ChromaDB database (if exists)
-    chroma_db_path = Path.home() / ".config" / "zotero-mcp" / "chroma_db"
+    chroma_db_path = _chroma_dir()
     if chroma_db_path.exists():
         try:
             backup_chroma_path = backup_dir / "chroma_db"
@@ -451,7 +465,7 @@ def restore_configurations(backup_dir: Path) -> bool:
     chroma_backup = backup_dir / "chroma_db"
     if chroma_backup.exists():
         try:
-            chroma_db_path = Path.home() / ".config" / "zotero-mcp" / "chroma_db"
+            chroma_db_path = _chroma_dir()
             if chroma_db_path.exists():
                 shutil.rmtree(chroma_db_path)
             shutil.copytree(chroma_backup, chroma_db_path)

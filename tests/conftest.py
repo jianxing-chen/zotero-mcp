@@ -438,3 +438,20 @@ def _mineru_disabled_by_default(monkeypatch, request):
     from zotero_mcp import mineru_client
 
     monkeypatch.setattr(mineru_client, "load_mineru_config", lambda *a, **k: {"enabled": False})
+
+
+@pytest.fixture(autouse=True)
+def _isolated_update_lock(tmp_path, monkeypatch):
+    """Keep update_database() off the user's real update lock.
+
+    It lives under ~/.config/zotero-mcp. Shared, a second test run (or a
+    real update-db) holding it made the indexing tests skip their work and
+    fail at random.
+    """
+    try:
+        from zotero_mcp import semantic_search
+    except ImportError:  # no [semantic] extra: nothing here takes the lock
+        return
+    monkeypatch.setattr(
+        semantic_search, "_update_lock_path", lambda: tmp_path / "update.lock"
+    )
